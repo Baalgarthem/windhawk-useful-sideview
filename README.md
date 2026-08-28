@@ -13,6 +13,11 @@ lightweight, adaptive video player.
 - Uses the native Windows Media Foundation pipeline and runs only in
   `prevhost.exe` to minimize memory and CPU overhead.
 
-Install `useful-sideview.wh.cpp` as a local Windhawk mod and enable Explorer's
+Install `dist/useful-sideview.wh.cpp` as a local Windhawk mod and enable Explorer's
 preview pane with `Alt+P`. Supported formats depend on the Media Foundation
 codecs installed in Windows.
+
+Editable sources live in `src/`, organized by responsibility: `archivos`,
+`host`, `interfaz`, `nucleo`, `reproductor`, `runtime`, and `windhawk`. Generate
+the single-file Windhawk distribution with
+`powershell -ExecutionPolicy Bypass -File tools/build.ps1`.
