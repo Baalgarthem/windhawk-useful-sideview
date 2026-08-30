@@ -6,18 +6,19 @@ lightweight, adaptive video player.
 ## Features
 
 - Play/pause by clicking the video or the playback button.
-- Seekable timeline.
+- Interactive timeline with click, drag, visible thumb and keyboard seeking.
+- Centered Windows 11 Fluent controls for play, mute and loop.
 - Responsive layout that follows preview-pane resizing.
 - Audio toggle; muted by default.
 - Optional autoplay; disabled by default.
-- Uses the native Windows Media Foundation pipeline and runs only in
-  `prevhost.exe` to minimize memory and CPU overhead.
+- Uses the native Windows Media Foundation pipeline and integrates with
+  `explorer.exe`, where the modern Windows 11 preview pane is hosted.
 
 Install `dist/useful-sideview.wh.cpp` as a local Windhawk mod and enable Explorer's
 preview pane with `Alt+P`. Supported formats depend on the Media Foundation
 codecs installed in Windows.
 
 Editable sources live in `src/`, organized by responsibility: `archivos`,
-`host`, `interfaz`, `nucleo`, `reproductor`, `runtime`, and `windhawk`. Generate
+`ejecucion`, `integracion`, `interfaz`, `nucleo`, `reproductor`, and `windhawk`. Generate
 the single-file Windhawk distribution with
-`powershell -ExecutionPolicy Bypass -File tools/build.ps1`.
+`build.cmd` or `powershell -ExecutionPolicy Bypass -File build.ps1`.

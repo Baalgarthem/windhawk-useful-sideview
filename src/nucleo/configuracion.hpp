@@ -6,5 +6,3 @@ struct Configuracion {
     std::atomic_bool reproduccionAutomatica{false};
     std::atomic_bool sonidoHabilitado{false};
 };
-
-void cargarConfiguracion();

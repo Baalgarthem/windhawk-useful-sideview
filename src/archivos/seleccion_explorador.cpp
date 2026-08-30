@@ -1,88 +1,126 @@
-bool esRutaDeVideo(const wchar_t* ruta) {
-    if (!ruta || !*ruta || PathIsDirectoryW(ruta)) return false;
-    const wchar_t* extension = PathFindExtensionW(ruta);
+bool esRutaDeVideo(const wchar_t* rutaArchivo) {
+    if (!rutaArchivo || !*rutaArchivo || PathIsDirectoryW(rutaArchivo)) {
+        return false;
+    }
+
+    const wchar_t* extensionArchivo = PathFindExtensionW(rutaArchivo);
     static constexpr const wchar_t* EXTENSIONES_VIDEO[] = {
         L".mp4", L".m4v", L".mov", L".wmv", L".avi", L".mkv",
         L".webm", L".mpg", L".mpeg", L".mts", L".m2ts", L".3gp"};
     for (const wchar_t* extensionVideo : EXTENSIONES_VIDEO) {
-        if (_wcsicmp(extension, extensionVideo) == 0) return true;
+        if (_wcsicmp(extensionArchivo, extensionVideo) == 0) return true;
     }
     return false;
 }
 
-std::wstring obtenerVideoSeleccionado() {
-    IShellWindows* ventanasShell = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL,
-                                IID_PPV_ARGS(&ventanasShell)))) {
+std::wstring obtenerRutaVideoDeSeleccion(IWebBrowserApp* explorador) {
+    PunteroCom<IServiceProvider> proveedorServicios;
+    if (FAILED(explorador->QueryInterface(
+            IID_PPV_ARGS(proveedorServicios.recibir())))) {
         return {};
     }
 
-    std::wstring rutaSeleccionada;
-    long cantidad = 0;
-    ventanasShell->get_Count(&cantidad);
-    for (long indice = 0; indice < cantidad && rutaSeleccionada.empty(); ++indice) {
-        VARIANT posicion;
-        VariantInit(&posicion);
-        posicion.vt = VT_I4;
-        posicion.lVal = indice;
-        IDispatch* despacho = nullptr;
-        if (FAILED(ventanasShell->Item(posicion, &despacho)) || !despacho) continue;
-
-        IWebBrowserApp* navegador = nullptr;
-        if (SUCCEEDED(despacho->QueryInterface(IID_PPV_ARGS(&navegador)))) {
-            SHANDLE_PTR identificadorVentana = 0;
-            navegador->get_HWND(&identificadorVentana);
-            HWND candidata = reinterpret_cast<HWND>(identificadorVentana);
-            DWORD idProceso = 0;
-            GetWindowThreadProcessId(candidata, &idProceso);
-
-            // Cada instancia inyectada atiende únicamente sus propias ventanas
-            // de Explorer, incluso cuando ShellWindows enumera todas globalmente.
-            if (idProceso == GetCurrentProcessId() && IsWindowVisible(candidata)) {
-                IServiceProvider* proveedor = nullptr;
-                if (SUCCEEDED(navegador->QueryInterface(IID_PPV_ARGS(&proveedor)))) {
-                    IShellBrowser* navegadorShell = nullptr;
-                    if (SUCCEEDED(proveedor->QueryService(
-                            SID_STopLevelBrowser, IID_PPV_ARGS(&navegadorShell)))) {
-                        IShellView* vistaShell = nullptr;
-                        if (SUCCEEDED(navegadorShell->QueryActiveShellView(&vistaShell))) {
-                            IFolderView2* vistaCarpeta = nullptr;
-                            if (SUCCEEDED(vistaShell->QueryInterface(
-                                    IID_PPV_ARGS(&vistaCarpeta)))) {
-                                IShellItemArray* seleccion = nullptr;
-                                if (SUCCEEDED(vistaCarpeta->GetSelection(
-                                        TRUE, &seleccion)) && seleccion) {
-                                    DWORD elementos = 0;
-                                    seleccion->GetCount(&elementos);
-                                    if (elementos == 1) {
-                                        IShellItem* elemento = nullptr;
-                                        if (SUCCEEDED(seleccion->GetItemAt(0, &elemento))) {
-                                            PWSTR ruta = nullptr;
-                                            if (SUCCEEDED(elemento->GetDisplayName(
-                                                    SIGDN_FILESYSPATH, &ruta)) &&
-                                                esRutaDeVideo(ruta)) {
-                                                rutaSeleccionada = ruta;
-                                                ventanaHost = candidata;
-                                            }
-                                            CoTaskMemFree(ruta);
-                                            elemento->Release();
-                                        }
-                                    }
-                                    seleccion->Release();
-                                }
-                                vistaCarpeta->Release();
-                            }
-                            vistaShell->Release();
-                        }
-                        navegadorShell->Release();
-                    }
-                    proveedor->Release();
-                }
-            }
-            navegador->Release();
-        }
-        despacho->Release();
+    PunteroCom<IShellBrowser> navegadorCarpetas;
+    if (FAILED(proveedorServicios->QueryService(
+            SID_STopLevelBrowser,
+            IID_PPV_ARGS(navegadorCarpetas.recibir())))) {
+        return {};
     }
-    ventanasShell->Release();
-    return rutaSeleccionada;
+
+    PunteroCom<IShellView> vistaActiva;
+    if (FAILED(navegadorCarpetas->QueryActiveShellView(
+            vistaActiva.recibir()))) {
+        return {};
+    }
+
+    PunteroCom<IFolderView2> vistaCarpeta;
+    if (FAILED(vistaActiva->QueryInterface(
+            IID_PPV_ARGS(vistaCarpeta.recibir())))) {
+        return {};
+    }
+
+    PunteroCom<IShellItemArray> elementosSeleccionados;
+    if (FAILED(vistaCarpeta->GetSelection(
+            TRUE, elementosSeleccionados.recibir()))) {
+        return {};
+    }
+
+    DWORD cantidadElementosSeleccionados = 0;
+    if (FAILED(elementosSeleccionados->GetCount(
+            &cantidadElementosSeleccionados)) ||
+        cantidadElementosSeleccionados != 1) {
+        return {};
+    }
+
+    PunteroCom<IShellItem> elementoSeleccionado;
+    if (FAILED(elementosSeleccionados->GetItemAt(
+            0, elementoSeleccionado.recibir()))) {
+        return {};
+    }
+
+    PWSTR rutaElementoSeleccionado = nullptr;
+    if (FAILED(elementoSeleccionado->GetDisplayName(
+            SIGDN_FILESYSPATH, &rutaElementoSeleccionado))) {
+        return {};
+    }
+
+    std::wstring rutaVideo;
+    if (esRutaDeVideo(rutaElementoSeleccionado)) {
+        rutaVideo = rutaElementoSeleccionado;
+    }
+    CoTaskMemFree(rutaElementoSeleccionado);
+    return rutaVideo;
+}
+
+std::wstring obtenerVideoSeleccionado(IShellWindows* ventanasShell) {
+    if (!ventanasShell) return {};
+
+    long cantidadVentanasShell = 0;
+    if (FAILED(ventanasShell->get_Count(&cantidadVentanasShell))) return {};
+
+    // IShellWindows solo expone Item mediante una posición numérica. El índice
+    // queda confinado a este recorrido y nombra explícitamente qué representa.
+    for (long posicionVentanaShell = 0;
+         posicionVentanaShell < cantidadVentanasShell;
+         ++posicionVentanaShell) {
+        VARIANT identificadorVentanaShell;
+        VariantInit(&identificadorVentanaShell);
+        identificadorVentanaShell.vt = VT_I4;
+        identificadorVentanaShell.lVal = posicionVentanaShell;
+
+        PunteroCom<IDispatch> despachoVentana;
+        if (FAILED(ventanasShell->Item(
+                identificadorVentanaShell, despachoVentana.recibir()))) {
+            continue;
+        }
+
+        PunteroCom<IWebBrowserApp> explorador;
+        if (FAILED(despachoVentana->QueryInterface(
+                IID_PPV_ARGS(explorador.recibir())))) {
+            continue;
+        }
+
+        SHANDLE_PTR identificadorVentana = 0;
+        if (FAILED(explorador->get_HWND(&identificadorVentana))) continue;
+
+        HWND ventanaExplorador =
+            reinterpret_cast<HWND>(identificadorVentana);
+        DWORD identificadorProceso = 0;
+        GetWindowThreadProcessId(ventanaExplorador, &identificadorProceso);
+
+        // Cada instancia inyectada atiende únicamente sus propias ventanas,
+        // aunque ShellWindows enumere ventanas de otros procesos Explorer.
+        if (identificadorProceso != GetCurrentProcessId() ||
+            !IsWindowVisible(ventanaExplorador)) {
+            continue;
+        }
+
+        std::wstring rutaVideo =
+            obtenerRutaVideoDeSeleccion(explorador.obtener());
+        if (!rutaVideo.empty()) {
+            ventanaExploradorAnfitriona = ventanaExplorador;
+            return rutaVideo;
+        }
+    }
+    return {};
 }

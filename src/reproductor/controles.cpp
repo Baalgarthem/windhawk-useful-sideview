@@ -1,44 +1,240 @@
+void reiniciarCacheTiempoReproduccion() {
+    posicionReproduccionCache.store(0);
+    duracionReproduccionCache.store(0);
+    tiempoReproduccionDisponible.store(false);
+    cambioPosicionPendiente.store(false);
+    posicionamientoDisponible.store(false);
+}
+
+void invalidarInterfazControles() {
+    if (ventanaControles) {
+        InvalidateRect(ventanaControles, nullptr, FALSE);
+    }
+}
+
+// Solo válido en el hilo reproductor: ahí vive IMFPMediaPlayer y COM responde
+// correctamente a GetPosition y GetDuration.
+bool leerTiempoDesdeReproductor(LONGLONG* posicionActual,
+                                LONGLONG* duracionTotal) {
+    if (!reproductor || !posicionActual || !duracionTotal) return false;
+
+    PROPVARIANT propiedadPosicion;
+    PROPVARIANT propiedadDuracion;
+    PropVariantInit(&propiedadPosicion);
+    PropVariantInit(&propiedadDuracion);
+    HRESULT resultadoPosicion = reproductor->GetPosition(
+        MFP_POSITIONTYPE_100NS, &propiedadPosicion);
+    HRESULT resultadoDuracion = reproductor->GetDuration(
+        MFP_POSITIONTYPE_100NS, &propiedadDuracion);
+    LONGLONG posicionExtraida = 0;
+    LONGLONG duracionExtraida = 0;
+    bool tiempoDisponible =
+        SUCCEEDED(resultadoPosicion) && SUCCEEDED(resultadoDuracion) &&
+        extraerPosicionMediaFoundation(propiedadPosicion,
+                                        &posicionExtraida) &&
+        extraerDuracionMediaFoundation(propiedadDuracion,
+                                        &duracionExtraida) &&
+        duracionExtraida > 0;
+    if (tiempoDisponible) {
+        *posicionActual = posicionExtraida;
+        *duracionTotal = duracionExtraida;
+    }
+    PropVariantClear(&propiedadPosicion);
+    PropVariantClear(&propiedadDuracion);
+    return tiempoDisponible;
+}
+
+void actualizarCacheTiempoReproduccion() {
+    if (!reproductor) {
+        reiniciarCacheTiempoReproduccion();
+        return;
+    }
+
+    LONGLONG posicionActual = 0;
+    LONGLONG duracionTotal = 0;
+    if (!leerTiempoDesdeReproductor(&posicionActual, &duracionTotal)) {
+        return;
+    }
+
+    bool teniaTiempo = tiempoReproduccionDisponible.load();
+    long long posicionAnterior = posicionReproduccionCache.load();
+    posicionReproduccionCache.store(posicionActual);
+    duracionReproduccionCache.store(duracionTotal);
+    tiempoReproduccionDisponible.store(true);
+
+    long long deltaPosicion = posicionActual - posicionAnterior;
+    if (deltaPosicion < 0) {
+        deltaPosicion = -deltaPosicion;
+    }
+    constexpr long long umbralActualizacion = 500000LL;
+    if (ventanaControles &&
+        (!teniaTiempo || deltaPosicion >= umbralActualizacion)) {
+        PostMessageW(ventanaControles, MENSAJE_ACTUALIZAR_INTERFAZ, 0, 0);
+    }
+}
+
+bool obtenerTiempoReproduccionCache(LONGLONG* posicionActual,
+                                    LONGLONG* duracionTotal) {
+    if (!tiempoReproduccionDisponible.load() || !posicionActual ||
+        !duracionTotal) {
+        return false;
+    }
+    *posicionActual = posicionReproduccionCache.load();
+    *duracionTotal = duracionReproduccionCache.load();
+    return *duracionTotal > 0;
+}
+
+bool aplicarPosicionAlReproductor(LONGLONG posicionObjetivo,
+                                  bool reproducirAlCompletar) {
+    if (!reproductor) return false;
+
+    PROPVARIANT propiedadPosicion;
+    PropVariantInit(&propiedadPosicion);
+    propiedadPosicion.vt = VT_I8;
+    propiedadPosicion.hVal.QuadPart = posicionObjetivo;
+
+    reproducirTrasCambioPosicion.store(reproducirAlCompletar);
+    HRESULT resultadoPosicion = reproductor->SetPosition(
+        MFP_POSITIONTYPE_100NS, &propiedadPosicion);
+    PropVariantClear(&propiedadPosicion);
+
+    if (FAILED(resultadoPosicion)) {
+        reproducirTrasCambioPosicion.store(false);
+        Wh_Log(L"No fue posible cambiar la posición (HRESULT 0x%08X)",
+               static_cast<unsigned int>(resultadoPosicion));
+        return false;
+    }
+
+    invalidarInterfazControles();
+    return true;
+}
+
+// Respaldo en el hilo reproductor cuando la caché todavía no tiene duración.
+bool buscarEnReproductorDesdeHilo(double proporcionObjetivo,
+                                  bool reproducirAlCompletar = false) {
+    if (!reproductor) return false;
+
+    LONGLONG posicionActual = 0;
+    LONGLONG duracionTotal = 0;
+    if (!leerTiempoDesdeReproductor(&posicionActual, &duracionTotal)) {
+        return false;
+    }
+
+    double proporcionLimitada =
+        limitarProporcionProgreso(proporcionObjetivo);
+    LONGLONG posicionObjetivo = calcularPosicionTemporal(
+        duracionTotal, proporcionLimitada);
+    if (!aplicarPosicionAlReproductor(posicionObjetivo, reproducirAlCompletar)) {
+        return false;
+    }
+
+    duracionReproduccionCache.store(duracionTotal);
+    tiempoReproduccionDisponible.store(true);
+    return true;
+}
+
+// La caché evita consultar la duración durante cada interacción. Si todavía
+// no está preparada, el delegado ejecuta una única lectura en el hilo dueño.
+bool buscarEnReproduccion(double proporcionObjetivo,
+                          bool reproducirAlCompletar = false) {
+    if (!reproductor || !posicionamientoDisponible.load()) return false;
+
+    double proporcionLimitada =
+        limitarProporcionProgreso(proporcionObjetivo);
+    proporcionPosicionSolicitada.store(proporcionLimitada);
+    cambioPosicionPendiente.store(true);
+    LONGLONG duracionTotal = duracionReproduccionCache.load();
+    if (duracionTotal <= 0) {
+        reproducirTrasCambioPosicion.store(reproducirAlCompletar);
+        if (ventanaDelegadoReproductor &&
+            IsWindow(ventanaDelegadoReproductor)) {
+            bool busquedaAplicada =
+                SendMessageW(ventanaDelegadoReproductor,
+                             MENSAJE_EJECUTAR_BUSQUEDA, 0, 0) != 0;
+            if (!busquedaAplicada) cambioPosicionPendiente.store(false);
+            return busquedaAplicada;
+        }
+        cambioPosicionPendiente.store(false);
+        return false;
+    }
+
+    LONGLONG posicionObjetivo =
+        calcularPosicionTemporal(duracionTotal, proporcionLimitada);
+    bool busquedaAplicada =
+        aplicarPosicionAlReproductor(posicionObjetivo,
+                                     reproducirAlCompletar);
+    if (!busquedaAplicada) cambioPosicionPendiente.store(false);
+    return busquedaAplicada;
+}
+
 void alternarReproduccion() {
     if (!reproductor) return;
-    MFP_MEDIAPLAYER_STATE estado;
-    if (SUCCEEDED(reproductor->GetState(&estado)) &&
-        estado == MFP_MEDIAPLAYER_STATE_PLAYING) {
+    MFP_MEDIAPLAYER_STATE estadoReproduccion;
+    if (SUCCEEDED(reproductor->GetState(&estadoReproduccion)) &&
+        estadoReproduccion == MFP_MEDIAPLAYER_STATE_PLAYING) {
         reproductor->Pause();
     } else {
         reproductor->Play();
     }
-    InvalidateRect(ventanaReproductor, nullptr, FALSE);
+    invalidarInterfazControles();
 }
 
 void alternarSonido() {
     if (!reproductor) return;
-    BOOL silenciado = TRUE;
-    reproductor->GetMute(&silenciado);
-    reproductor->SetMute(!silenciado);
-    InvalidateRect(ventanaReproductor, nullptr, FALSE);
+    BOOL sonidoSilenciado = TRUE;
+    reproductor->GetMute(&sonidoSilenciado);
+    reproductor->SetMute(!sonidoSilenciado);
+    invalidarInterfazControles();
 }
 
-void buscarDesdeCoordenada(int posicionX) {
-    if (!reproductor || !ventanaReproductor) return;
-    RECT areaCliente;
-    GetClientRect(ventanaReproductor, &areaCliente);
-    int inicio = ANCHO_BOTON_REPRODUCIR + 10;
-    int fin = areaCliente.right - ANCHO_BOTON_SONIDO - 10;
-    if (fin <= inicio) return;
+void alternarRepeticion() {
+    repeticionHabilitada.store(!repeticionHabilitada.load());
+    invalidarInterfazControles();
+}
 
-    double proporcion = static_cast<double>(
-                            std::max(inicio, std::min(posicionX, fin)) - inicio) /
-                        static_cast<double>(fin - inicio);
-    PROPVARIANT duracion;
-    PropVariantInit(&duracion);
-    if (SUCCEEDED(reproductor->GetDuration(MFP_POSITIONTYPE_100NS, &duracion)) &&
-        duracion.vt == VT_I8) {
-        PROPVARIANT posicion;
-        PropVariantInit(&posicion);
-        posicion.vt = VT_I8;
-        posicion.hVal.QuadPart =
-            static_cast<LONGLONG>(duracion.hVal.QuadPart * proporcion);
-        reproductor->SetPosition(MFP_POSITIONTYPE_100NS, &posicion);
+void iniciarArrastreBarraProgreso(HWND ventana, int posicionHorizontal) {
+    if (!reproductor || !posicionamientoDisponible.load()) return;
+
+    DisenoBarraProgreso disenoBarraProgreso =
+        calcularDisenoBarraProgreso(ventana);
+    proporcionProgreso = calcularProporcionProgreso(
+        disenoBarraProgreso, posicionHorizontal);
+    arrastrandoBarraProgreso = true;
+
+    SetFocus(ventana);
+    SetCapture(ventana);
+    invalidarInterfazControles();
+}
+
+void actualizarArrastreBarraProgreso(HWND ventana, int posicionHorizontal) {
+    if (!arrastrandoBarraProgreso) return;
+
+    DisenoBarraProgreso disenoBarraProgreso =
+        calcularDisenoBarraProgreso(ventana);
+    proporcionProgreso = calcularProporcionProgreso(
+        disenoBarraProgreso, posicionHorizontal);
+
+    invalidarInterfazControles();
+}
+
+void finalizarArrastreBarraProgreso(HWND ventana, bool aplicarCambio) {
+    if (!arrastrandoBarraProgreso) return;
+    if (aplicarCambio) {
+        buscarEnReproduccion(proporcionProgreso);
     }
-    PropVariantClear(&duracion);
+    arrastrandoBarraProgreso = false;
+    if (GetCapture() == ventana) ReleaseCapture();
+    invalidarInterfazControles();
+}
+
+void desplazarBarraProgresoConTeclado(double incrementoProporcion) {
+    LONGLONG posicionActual = 0;
+    LONGLONG duracionTotal = 0;
+    if (!obtenerTiempoReproduccionCache(&posicionActual, &duracionTotal)) {
+        return;
+    }
+    buscarEnReproduccion(
+        static_cast<double>(posicionActual) /
+            static_cast<double>(duracionTotal) +
+        incrementoProporcion);
 }
