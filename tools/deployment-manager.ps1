@@ -117,10 +117,11 @@ function Invoke-UnitTests {
 
 function Invoke-InjectMod {
     Write-Host "`n>>> [INJECT] Inyectando mod en Windhawk ModsSource..." -ForegroundColor Yellow
+    Write-Host "    Origen : $distFile (Exclusivamente desde carpeta dist)" -ForegroundColor DarkGray
     Write-Host "    Destino: $targetFile" -ForegroundColor DarkGray
 
     if (-not (Test-Path -LiteralPath $distFile)) {
-        Write-Host "    dist\useful-sideview.wh.cpp no existe. Ejecutando build primero..." -ForegroundColor DarkGray
+        Write-Host "    dist\useful-sideview.wh.cpp no existe. Ejecutando build obligatorio primero..." -ForegroundColor DarkGray
         $buildOk = Invoke-BuildMod
         if (-not $buildOk) { return }
     }
@@ -130,7 +131,7 @@ function Invoke-InjectMod {
             New-Item -ItemType Directory -Path $modsSourceDir -Force | Out-Null
         }
         Copy-Item -LiteralPath $distFile -Destination $targetFile -Force -ErrorAction Stop
-        Write-Host "    OK  Mod inyectado exitosamente en:" -ForegroundColor Green
+        Write-Host "    OK  Mod inyectado exitosamente desde dist\useful-sideview.wh.cpp en:" -ForegroundColor Green
         Write-Host "        $targetFile" -ForegroundColor Cyan
         Write-Host "    -> Recarga el mod en Windhawk para activar los cambios." -ForegroundColor Gray
     } catch {
@@ -140,7 +141,7 @@ function Invoke-InjectMod {
             $cmd = "Copy-Item -LiteralPath '$distFile' -Destination '$targetFile' -Force"
             $proc = Start-Process powershell -Verb RunAs -ArgumentList "-NoProfile -ExecutionPolicy Bypass -Command `"$cmd`"" -PassThru -Wait
             if ($proc.ExitCode -eq 0) {
-                Write-Host "    OK  Mod inyectado exitosamente con privilegios elevados en:" -ForegroundColor Green
+                Write-Host "    OK  Mod inyectado exitosamente desde dist\useful-sideview.wh.cpp con privilegios elevados en:" -ForegroundColor Green
                 Write-Host "        $targetFile" -ForegroundColor Cyan
                 Write-Host "    -> Recarga el mod en Windhawk para activar los cambios." -ForegroundColor Gray
             } else {
