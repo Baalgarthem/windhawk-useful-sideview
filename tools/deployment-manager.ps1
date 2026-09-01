@@ -63,9 +63,10 @@ function Set-Author([string]$newAuthor = '') {
     $current = Get-CurrentAuthor
     Write-Host "`n[AUTOR] Actualizando autor: '$current' -> '$newAuthor'" -ForegroundColor Cyan
     if (Test-Path -LiteralPath $modFile) {
-        $m = Get-Content -LiteralPath $modFile -Raw
+        $m = [System.IO.File]::ReadAllText($modFile, [System.Text.Encoding]::UTF8)
         $m = $m -replace '(?m)^\/\/\s*@author\s+.+$', "// @author          $newAuthor"
-        Set-Content -LiteralPath $modFile -Value $m -NoNewline
+        $utf8SinBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($modFile, $m, $utf8SinBom)
         Write-Host "    Autor actualizado en src\useful-sideview.cpp." -ForegroundColor Green
         Write-Host "    Ejecutando build para reflejar el cambio en dist\useful-sideview.wh.cpp..." -ForegroundColor DarkGray
         Invoke-BuildMod
@@ -219,11 +220,12 @@ function Step-Version([string]$type, [string]$customVer = '') {
 
     Write-Host "`n[VERSION] Incrementando versión: $current -> $newVer ($type)" -ForegroundColor Cyan
 
-    # 1. Actualizar src/useful-sideview.cpp
+    # 1. Actualizar src/useful-sideview.cpp en UTF-8 sin BOM
     if (Test-Path -LiteralPath $modFile) {
-        $m = Get-Content -LiteralPath $modFile -Raw
+        $m = [System.IO.File]::ReadAllText($modFile, [System.Text.Encoding]::UTF8)
         $m = $m -replace '(?m)^\/\/\s*@version\s+[0-9\.]+', "// @version         $newVer"
-        Set-Content -LiteralPath $modFile -Value $m -NoNewline
+        $utf8SinBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($modFile, $m, $utf8SinBom)
     }
 
     Write-Host "    Versión actualizada a v$newVer en src\useful-sideview.cpp." -ForegroundColor Green
@@ -285,31 +287,38 @@ function Pause-Menu {
 function Execute-Action([string]$act) {
     switch -Regex ($act.Trim()) {
         '^(1|build|b)$' {
-            [void](Invoke-BuildMod)
+            return (Invoke-BuildMod)
         }
         '^(2|quality|qg)$' {
-            [void](Invoke-QualityGate)
+            return (Invoke-QualityGate)
         }
         '^(3|inject|i)$' {
             Invoke-InjectMod
+            return $true
         }
         '^(4|tests?|t)$' {
             Invoke-UnitTests
+            return ($LASTEXITCODE -eq 0)
         }
         '^(5|patch|p)$' {
             Step-Version 'patch'
+            return $true
         }
         '^(6|minor|m)$' {
             Step-Version 'minor'
+            return $true
         }
         '^(7|major)$' {
             Step-Version 'major'
+            return $true
         }
         '^(8|custom|v)$' {
             Step-Version 'custom'
+            return $true
         }
         '^(9|author|a)$' {
             Set-Author
+            return $true
         }
         '^(0|q|exit)$' {
             Write-Host "`nSaliendo del Deployment Manager. ¡Hasta pronto!`n" -ForegroundColor Cyan
@@ -317,15 +326,19 @@ function Execute-Action([string]$act) {
         }
         default {
             Write-Host "`nOpción no válida: '$act'" -ForegroundColor Red
+            return $false
         }
     }
-    return $true
 }
 
 # Si se pasó una acción directa por parámetro o pipeline
 if ($Action -ne '') {
-    [void](Execute-Action $Action)
-    exit $LASTEXITCODE
+    $resultadoAccion = Execute-Action $Action
+    if ($resultadoAccion -eq $true) {
+        exit 0
+    } else {
+        exit 1
+    }
 }
 
 # Modo interactivo en bucle

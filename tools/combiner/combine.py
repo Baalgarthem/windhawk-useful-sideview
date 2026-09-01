@@ -162,7 +162,7 @@ def add_file(file: Path, file_name: Optional[str] = None) -> None:
         if not file_name:
             file_name = file.name
         error_line(f'Processing: {file_name}')
-        with file.open('r', errors='replace') as opened:
+        with file.open('r', encoding='utf-8', errors='replace') as opened:
             for line in opened:
                 line = line.rstrip('\n')
                 match_include = include_regex.match(line)
@@ -208,7 +208,7 @@ parser.add_argument('-r', '--root', action='append', type=Path, help='file root 
 parser.add_argument('-x', '--exclude',  action='append', help='file to completely exclude from inlining')
 parser.add_argument('-k', '--keep', action='append', help='file to exclude from inlining but keep the include directive')
 parser.add_argument('-p', '--pragma', action='store_true', default=False, help='keep any "#pragma once" directives (removed by default)')
-parser.add_argument('-o', '--output', type=argparse.FileType('w'), help='output file (otherwise stdout)')
+parser.add_argument('-o', '--output', type=Path, help='output file (otherwise stdout)')
 parser.add_argument('input', type=Path, help='input file')
 args = parser.parse_args()
 
@@ -229,8 +229,8 @@ keep_pragma = args.pragma
 # Then recursively process the input file
 try:
     if args.output:
-        destn = args.output
+        destn = open(args.output, 'w', encoding='utf-8', newline='\n')
     add_file(args.input)
 finally:
-    if destn:
+    if destn and destn is not sys.stdout:
         destn.close()

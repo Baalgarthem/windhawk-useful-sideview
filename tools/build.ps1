@@ -13,7 +13,7 @@ if (-not (Test-Path -LiteralPath $combinadorFuentes)) {
 }
 
 New-Item -ItemType Directory -Force -Path $directorioDistribucion | Out-Null
-& $interpretePython.Source $combinadorFuentes `
+& $interpretePython.Source -X utf8 $combinadorFuentes `
     -r (Join-Path $raizProyecto 'src') `
     -o $fuenteTemporal `
     $fuenteEntrada
