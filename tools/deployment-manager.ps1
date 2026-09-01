@@ -155,7 +155,7 @@ function Invoke-InjectMod {
 }
 
 function Invoke-GitActions([string]$version) {
-    Write-Host "`n>>> [GIT] Gestión de control de versiones Git..." -ForegroundColor Magenta
+    Write-Host "`n>>> [GIT] Gestión de control de versiones y tags Git..." -ForegroundColor Magenta
     $gitAvailable = Get-Command git -ErrorAction SilentlyContinue
     if (-not $gitAvailable) {
         Write-Host "    Git no está disponible en este entorno." -ForegroundColor DarkGray
@@ -163,30 +163,63 @@ function Invoke-GitActions([string]$version) {
     }
 
     $gitStatus = & git status --porcelain
-    if ([string]::IsNullOrWhiteSpace($gitStatus)) {
+    if (-not [string]::IsNullOrWhiteSpace($gitStatus)) {
+        Write-Host "    Cambios detectados tras actualizar la versión y generar el build." -ForegroundColor Cyan
+        $confirmCommit = $null
+        try {
+            $confirmCommit = Read-Host "    ¿Deseas ejecutar 'git add .' y 'git commit' ahora? (S/N)"
+        } catch {}
+
+        if ($confirmCommit -match '^(s|si|y|yes)$') {
+            & git add .
+            $defaultMsg = "v${version}: actualizacion de version y bundle generado"
+            $customMsg = $null
+            try {
+                $customMsg = Read-Host "    Mensaje de commit (Enter para '$defaultMsg')"
+            } catch {}
+            $finalMsg = if ([string]::IsNullOrWhiteSpace($customMsg)) { $defaultMsg } else { $customMsg }
+            & git commit -m "$finalMsg"
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "    OK  Commit realizado exitosamente." -ForegroundColor Green
+            }
+        }
+    } else {
         Write-Host "    El repositorio está limpio. No hay cambios pendientes por commitear." -ForegroundColor DarkGray
-        return
     }
 
-    Write-Host "    Cambios detectados tras actualizar la versión y generar el build." -ForegroundColor Cyan
-    $confirmCommit = Read-Host "    ¿Deseas ejecutar 'git add .' y 'git commit' ahora? (S/N)"
-    if ($confirmCommit -match '^(s|si|y|yes)$') {
-        & git add .
-        $defaultMsg = "v${version}: actualizacion de version y bundle generado"
-        $customMsg = Read-Host "    Mensaje de commit (Enter para '$defaultMsg')"
-        $finalMsg = if ([string]::IsNullOrWhiteSpace($customMsg)) { $defaultMsg } else { $customMsg }
-        & git commit -m "$finalMsg"
-        Write-Host "    OK  Commit realizado exitosamente." -ForegroundColor Green
+    # Creación automática del git tag correspondiente a la versión modificada
+    $tagName = "v${version}"
+    Write-Host "`n    [TAG] Creando git tag '$tagName'..." -ForegroundColor Cyan
+    $existingTag = & git tag -l $tagName
+    if (-not [string]::IsNullOrWhiteSpace($existingTag)) {
+        Write-Host "    Aviso: El tag '$tagName' ya existe localmente. Actualizando anotación..." -ForegroundColor Yellow
+        & git tag -a $tagName -m "Release $tagName" -f
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    OK  Tag '$tagName' actualizado exitosamente." -ForegroundColor Green
+        }
+    } else {
+        & git tag -a $tagName -m "Release $tagName"
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    OK  Tag '$tagName' creado exitosamente." -ForegroundColor Green
+        } else {
+            Write-Host "    Aviso: No se pudo crear el tag '$tagName' (código: $LASTEXITCODE)." -ForegroundColor Yellow
+        }
+    }
 
-        $confirmPush = Read-Host "    ¿Deseas ejecutar 'git push' ahora? (S/N)"
-        if ($confirmPush -match '^(s|si|y|yes)$') {
-            Write-Host "    Ejecutando git push..." -ForegroundColor DarkGray
-            & git push
-            if ($LASTEXITCODE -eq 0) {
-                Write-Host "    OK  Cambios enviados al repositorio remoto." -ForegroundColor Green
-            } else {
-                Write-Host "    Aviso: git push finalizó con código $LASTEXITCODE." -ForegroundColor Yellow
-            }
+    $confirmPush = $null
+    try {
+        $confirmPush = Read-Host "`n    ¿Deseas ejecutar 'git push' y 'git push --tags' ahora? (S/N)"
+    } catch {}
+
+    if ($confirmPush -match '^(s|si|y|yes)$') {
+        Write-Host "    Ejecutando git push..." -ForegroundColor DarkGray
+        & git push
+        Write-Host "    Ejecutando git push --tags..." -ForegroundColor DarkGray
+        & git push --tags
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    OK  Cambios y tags enviados al repositorio remoto." -ForegroundColor Green
+        } else {
+            Write-Host "    Aviso: git push finalizó con código $LASTEXITCODE." -ForegroundColor Yellow
         }
     }
 }
@@ -236,10 +269,55 @@ function Step-Version([string]$type, [string]$customVer = '') {
     if ($buildOk) {
         Write-Host "    Build completado exitosamente con la nueva versión v$newVer." -ForegroundColor Green
 
-        # 3. Acciones de Git posteriores a la subida de versión y build
+        # 3. Acciones de Git y creación de Tag posteriores a la subida de versión y build
         Invoke-GitActions $newVer
     } else {
         Write-Host "    ERROR: El build falló tras actualizar la versión. No se realizarán acciones de Git." -ForegroundColor Red
+    }
+}
+
+function Invoke-GitSyncGeneral {
+    Write-Host "`n>>> [GIT SYNC] Ejecutando sincronización general de Git (add, commit y push)..." -ForegroundColor Magenta
+    $gitAvailable = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $gitAvailable) {
+        Write-Host "    ERROR: Git no está disponible en este entorno." -ForegroundColor Red
+        return $false
+    }
+
+    $gitStatus = & git status --porcelain
+    if ([string]::IsNullOrWhiteSpace($gitStatus)) {
+        Write-Host "    El repositorio está limpio. No hay cambios pendientes por commitear." -ForegroundColor DarkGray
+        Write-Host "    Verificando y enviando commits locales pendientes con 'git push'..." -ForegroundColor Cyan
+        & git push
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "    OK  Repositorio sincronizado con el remoto." -ForegroundColor Green
+            return $true
+        } else {
+            Write-Host "    Aviso: git push finalizó con código $LASTEXITCODE." -ForegroundColor Yellow
+            return $false
+        }
+    }
+
+    Write-Host "    Cambios pendientes detectados. Agregando archivos con 'git add .'..." -ForegroundColor Cyan
+    & git add .
+
+    $mensajeCommit = "mejoras en código de software"
+    Write-Host "    Creando commit: '$mensajeCommit'..." -ForegroundColor Cyan
+    & git commit -m "$mensajeCommit"
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "    ERROR: Falló 'git commit' (código: $LASTEXITCODE)." -ForegroundColor Red
+        return $false
+    }
+    Write-Host "    OK  Commit realizado exitosamente." -ForegroundColor Green
+
+    Write-Host "    Enviando cambios al repositorio remoto con 'git push'..." -ForegroundColor Cyan
+    & git push
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "    OK  Sincronización Git completada exitosamente." -ForegroundColor Green
+        return $true
+    } else {
+        Write-Host "    Aviso: git push finalizó con código $LASTEXITCODE." -ForegroundColor Yellow
+        return $false
     }
 }
 
@@ -266,12 +344,13 @@ function Show-Menu {
     Write-Host "  [3] Inyectar en Windhawk  (Copiar a ModsSource\local@useful-sideview.wh.cpp)" -ForegroundColor White
     Write-Host "  [4] Ejecutar Tests        (Pruebas unitarias de tiempo y geometría)" -ForegroundColor Cyan
     Write-Host ""
-    Write-Host "  --- Gestión de Versionado y Autor ---" -ForegroundColor DarkCyan
-    Write-Host "  [5] Subir versión PATCH   (+0.0.1 -> Build -> Git opcional)" -ForegroundColor Gray
-    Write-Host "  [6] Subir versión MINOR   (+0.1.0 -> Build -> Git opcional)" -ForegroundColor Gray
-    Write-Host "  [7] Subir versión MAJOR   (+1.0.0 -> Build -> Git opcional)" -ForegroundColor Gray
-    Write-Host "  [8] Versión personalizada (Ingresar versión -> Build -> Git opcional)" -ForegroundColor Gray
-    Write-Host "  [9] Cambiar Autor         (Actualizar autor y re-empaquetar)" -ForegroundColor Magenta
+    Write-Host "  --- Gestión de Versionado y Git ---" -ForegroundColor DarkCyan
+    Write-Host "  [5] Subir versión PATCH   (+0.0.1 -> Build -> Git Tag)" -ForegroundColor Gray
+    Write-Host "  [6] Subir versión MINOR   (+0.1.0 -> Build -> Git Tag)" -ForegroundColor Gray
+    Write-Host "  [7] Subir versión MAJOR   (+1.0.0 -> Build -> Git Tag)" -ForegroundColor Gray
+    Write-Host "  [8] Versión personalizada (Ingresar versión -> Build -> Git Tag)" -ForegroundColor Gray
+    Write-Host "  [9] Sincronizar Git       (git add . -> commit 'mejoras en código de software' -> push)" -ForegroundColor Magenta
+    Write-Host "  [10] Cambiar Autor        (Actualizar autor y re-empaquetar)" -ForegroundColor DarkGray
     Write-Host ""
     Write-Host "  [0] Salir (o presiona 'Q')" -ForegroundColor DarkYellow
     Write-Host "==========================================================" -ForegroundColor Cyan
@@ -316,7 +395,10 @@ function Execute-Action([string]$act) {
             Step-Version 'custom'
             return $true
         }
-        '^(9|author|a)$' {
+        '^(9|sync|git|s)$' {
+            return (Invoke-GitSyncGeneral)
+        }
+        '^(10|author|a)$' {
             Set-Author
             return $true
         }
