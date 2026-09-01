@@ -48,7 +48,12 @@ class ReceptorEventosMediaFoundation final : public IMFPMediaPlayerCallback {
                 (caracteristicasElemento & MFP_MEDIAITEM_HAS_SLOW_SEEK) == 0;
             posicionamientoDisponible.store(permitePosicionamiento);
             reproductor->SetMute(!configuracion.sonidoHabilitado.load());
-            if (configuracion.reproduccionAutomatica.load()) {
+            float velocidadConfigurada = velocidadReproduccionActual.load();
+            if (velocidadConfigurada > 0.0f && velocidadConfigurada != 1.0f) {
+                reproductor->SetRate(velocidadConfigurada);
+            }
+            if (configuracion.reproduccionAutomatica.load() ||
+                navegacionManualEnCurso.exchange(false)) {
                 reproductor->Play();
             }
             if (ventanaDelegadoReproductor &&

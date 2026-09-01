@@ -27,54 +27,96 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
                static_cast<unsigned int>(resultadoInicializacionCom));
         return 1;
     }
-    if (FAILED(MFStartup(MF_VERSION))) {
-        Wh_Log(L"No fue posible inicializar Media Foundation");
-        CoUninitialize();
-        return 1;
+    bool mfIniciado = SUCCEEDED(MFStartup(MF_VERSION));
+    if (!mfIniciado) {
+        Wh_Log(L"Media Foundation no está disponible; se omitirá la reproducción de video");
     }
+
     if (!asegurarDelegadoReproductor()) {
-        MFShutdown();
+        if (mfIniciado) MFShutdown();
         CoUninitialize();
         return 1;
     }
 
     PunteroCom<IShellWindows> ventanasShell;
-    HRESULT resultadoCreacionShell = CoCreateInstance(
-        CLSID_ShellWindows, nullptr, CLSCTX_ALL,
-        IID_PPV_ARGS(ventanasShell.recibir()));
-    if (FAILED(resultadoCreacionShell)) {
-        Wh_Log(L"No fue posible obtener IShellWindows (HRESULT 0x%08X)",
-               static_cast<unsigned int>(resultadoCreacionShell));
-        MFShutdown();
-        CoUninitialize();
-        return 1;
-    }
 
     while (!detenerHilo.load()) {
-        // La configuración se aplica una sola vez por cambio. Así, el botón de
-        // sonido conserva la elección interactiva del usuario.
-        if (reproductor && configuracionPendiente.exchange(false)) {
-            reproductor->SetMute(!configuracion.sonidoHabilitado.load());
+        if (!ventanasShell.obtener()) {
+            CoCreateInstance(CLSID_ShellWindows, nullptr, CLSCTX_ALL,
+                             IID_PPV_ARGS(ventanasShell.recibir()));
         }
 
-        std::wstring rutaSeleccionada =
-            obtenerVideoSeleccionado(ventanasShell.obtener());
-        if (!rutaSeleccionada.empty() &&
-            rutaSeleccionada != rutaVideoActiva &&
-            asegurarReproductor(rutaSeleccionada)) {
-            rutaVideoActiva = rutaSeleccionada;
-        }
-        if (rutaSeleccionada.empty()) {
-            rutaVideoActiva.clear();
-            if (ventanaReproductor) {
-                ShowWindow(ventanaReproductor, SW_HIDE);
+        // La configuración se aplica una sola vez por cambio.
+        if (configuracionPendiente.exchange(false)) {
+            if (reproductor) {
+                reproductor->SetMute(!configuracion.sonidoHabilitado.load());
             }
-        } else if (ventanaReproductor) {
-            ajustarReproductorAlPanel();
+            if (ventanaReproductor && IsWindowVisible(ventanaReproductor)) {
+                ajustarReproductorAlPanel();
+                invalidarInterfaz();
+            }
         }
 
+        if (ventanasShell.obtener()) {
+            long totalVentanas = 0;
+            if (FAILED(ventanasShell->get_Count(&totalVentanas))) {
+                // Desconexión RPC o instancia inválida: liberar para reconectar en el siguiente ciclo
+                ventanasShell.liberar();
+            }
+        }
+
+        std::wstring rutaCarpetaContenedora;
+        std::vector<std::wstring> rutasSeleccionadas =
+            obtenerArchivosSeleccionados(ventanasShell.obtener(),
+                                         &rutaCarpetaContenedora);
+
+        RECT areaPanel{};
+        bool panelPrevisualizacionAbierto = obtenerAreaPanel(&areaPanel);
+        if (!panelPrevisualizacionAbierto) {
+            if (!rutaArchivoActivo.empty() ||
+                (ventanaReproductor && IsWindowVisible(ventanaReproductor))) {
+                liberarRecursosDeTodasCategorias();
+                rutaArchivoActivo.clear();
+                rutaVideoActiva.clear();
+                if (ventanaReproductor) {
+                    ShowWindow(ventanaReproductor, SW_HIDE);
+                }
+            }
+        } else {
+            if (!rutasSeleccionadas.empty()) {
+                std::wstring claveSeleccion;
+                for (const auto& rutaElemento : rutasSeleccionadas) {
+                    claveSeleccion += rutaElemento + L"|";
+                }
+                if (claveSeleccion != rutaArchivoActivo &&
+                    asegurarVisualizadorParaArchivos(rutasSeleccionadas)) {
+                    rutaArchivoActivo = claveSeleccion;
+                    rutaVideoActiva = rutasSeleccionadas.front();
+                }
+            } else if (!rutaCarpetaContenedora.empty()) {
+                std::wstring claveVistaVacia =
+                    L"VISTA_VACIA|" + rutaCarpetaContenedora;
+                if (claveVistaVacia != rutaArchivoActivo &&
+                    asegurarVisorVistaVacia(rutaCarpetaContenedora)) {
+                    rutaArchivoActivo = claveVistaVacia;
+                    rutaVideoActiva.clear();
+                }
+            } else {
+                rutaArchivoActivo.clear();
+                rutaVideoActiva.clear();
+                if (ventanaReproductor) {
+                    ShowWindow(ventanaReproductor, SW_HIDE);
+                }
+            }
+            if (ventanaReproductor && IsWindowVisible(ventanaReproductor)) {
+                ajustarReproductorAlPanel(&areaPanel);
+            }
+        }
+
+        DWORD intervaloEspera =
+            ((GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0) ? 16 : 100;
         DWORD resultadoEspera = MsgWaitForMultipleObjects(
-            1, &eventoDetener, FALSE, 100, QS_ALLINPUT);
+            1, &eventoDetener, FALSE, intervaloEspera, QS_ALLINPUT);
         if (resultadoEspera == WAIT_OBJECT_0) break;
         if (resultadoEspera == WAIT_FAILED) {
             Wh_Log(L"Falló la espera del hilo reproductor (error %u)",
@@ -95,7 +137,9 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
     }
     // Las referencias COM deben liberarse antes de cerrar el apartamento.
     ventanasShell.liberar();
-    MFShutdown();
+    if (mfIniciado) {
+        MFShutdown();
+    }
     CoUninitialize();
     return 0;
 }

@@ -18,29 +18,49 @@ std::wstring formatearTiempo(LONGLONG unidadesCienNanosegundos) {
            formatearDosDigitos(segundos);
 }
 
+std::wstring formatearEtiquetaVelocidad(float velocidad) {
+    for (int posicionOpcion = 0; posicionOpcion < TOTAL_OPCIONES_VELOCIDAD;
+         ++posicionOpcion) {
+        if (std::abs(VALORES_VELOCIDAD[posicionOpcion] - velocidad) < 0.01f) {
+            return ETIQUETAS_VELOCIDAD[posicionOpcion];
+        }
+    }
+    wchar_t buferVelocidad[16];
+    swprintf_s(buferVelocidad, L"%.2fx", static_cast<double>(velocidad));
+    return buferVelocidad;
+}
+
 bool crearRecursosInterfaz() {
     fuenteIconos = CreateFontW(
-        -20, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        -18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe Fluent Icons");
     fuenteTexto = CreateFontW(
         -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
         DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
-    if (fuenteIconos && fuenteTexto) return true;
+    fuenteTextoPequeno = CreateFontW(
+        -11, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    if (fuenteIconos && fuenteTexto && fuenteTextoPequeno) return true;
 
     if (fuenteIconos) DeleteObject(fuenteIconos);
     if (fuenteTexto) DeleteObject(fuenteTexto);
+    if (fuenteTextoPequeno) DeleteObject(fuenteTextoPequeno);
     fuenteIconos = nullptr;
     fuenteTexto = nullptr;
+    fuenteTextoPequeno = nullptr;
     return false;
 }
 
 void liberarRecursosInterfaz() {
     if (fuenteIconos) DeleteObject(fuenteIconos);
     if (fuenteTexto) DeleteObject(fuenteTexto);
+    if (fuenteTextoPequeno) DeleteObject(fuenteTextoPequeno);
     fuenteIconos = nullptr;
     fuenteTexto = nullptr;
+    fuenteTextoPequeno = nullptr;
 }
 
 void dibujarLinea(HDC contextoDibujo, int limiteIzquierdo,
@@ -87,18 +107,1307 @@ void dibujarBotonControl(HDC contextoDibujo, const RECT& areaBoton,
     SelectObject(contextoDibujo, fuenteAnterior);
 }
 
+void dibujarBotonTexto(HDC contextoDibujo, const RECT& areaBoton,
+                       const wchar_t* texto, bool resaltado) {
+    COLORREF colorFondo = resaltado ? RGB(0, 120, 212) : RGB(43, 43, 43);
+    COLORREF colorBorde = resaltado ? RGB(94, 181, 255) : RGB(72, 72, 72);
+    HBRUSH pincelFondo = CreateSolidBrush(colorFondo);
+    HPEN lapizBorde = CreatePen(PS_SOLID, 1, colorBorde);
+    HBRUSH pincelAnterior =
+        static_cast<HBRUSH>(SelectObject(contextoDibujo, pincelFondo));
+    HPEN lapizAnterior =
+        static_cast<HPEN>(SelectObject(contextoDibujo, lapizBorde));
+    RoundRect(contextoDibujo, areaBoton.left, areaBoton.top,
+              areaBoton.right, areaBoton.bottom, 10, 10);
+    SelectObject(contextoDibujo, lapizAnterior);
+    SelectObject(contextoDibujo, pincelAnterior);
+    DeleteObject(lapizBorde);
+    DeleteObject(pincelFondo);
+
+    HFONT fuenteAnterior =
+        static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
+    SetTextColor(contextoDibujo, RGB(245, 245, 245));
+    RECT areaTexto = areaBoton;
+    DrawTextW(contextoDibujo, texto, -1, &areaTexto,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(contextoDibujo, fuenteAnterior);
+}
+
+void dibujarMenuVelocidadFlotante(HWND ventana) {
+    PAINTSTRUCT pintura;
+    HDC contextoPantalla = BeginPaint(ventana, &pintura);
+    RECT areaCliente;
+    GetClientRect(ventana, &areaCliente);
+    int anchoCliente = areaCliente.right - areaCliente.left;
+    int altoCliente = areaCliente.bottom - areaCliente.top;
+
+    if (anchoCliente > 0 && altoCliente > 0) {
+        HDC contextoMemoria = CreateCompatibleDC(contextoPantalla);
+        HBITMAP mapaBitsMemoria =
+            CreateCompatibleBitmap(contextoPantalla, anchoCliente, altoCliente);
+        HBITMAP mapaBitsAnterior = static_cast<HBITMAP>(
+            SelectObject(contextoMemoria, mapaBitsMemoria));
+
+        HBRUSH pincelFondoPanel = CreateSolidBrush(RGB(28, 28, 28));
+        HPEN lapizBordePanel = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+        HBRUSH pincelAnterior =
+            static_cast<HBRUSH>(SelectObject(contextoMemoria, pincelFondoPanel));
+        HPEN lapizAnterior =
+            static_cast<HPEN>(SelectObject(contextoMemoria, lapizBordePanel));
+
+        RoundRect(contextoMemoria, areaCliente.left, areaCliente.top,
+                  areaCliente.right, areaCliente.bottom, 10, 10);
+
+        SelectObject(contextoMemoria, lapizAnterior);
+        SelectObject(contextoMemoria, pincelAnterior);
+        DeleteObject(lapizBordePanel);
+        DeleteObject(pincelFondoPanel);
+
+        HFONT fuenteAnterior =
+            static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTextoPequeno));
+        SetBkMode(contextoMemoria, TRANSPARENT);
+        float velocidadActual = velocidadReproduccionActual.load();
+
+        for (int posicionOpcion = 0; posicionOpcion < TOTAL_OPCIONES_VELOCIDAD;
+             ++posicionOpcion) {
+            int topeOpcion = 4 + posicionOpcion * ALTO_OPCION_VELOCIDAD;
+            RECT areaOpcion = {4, topeOpcion, anchoCliente - 4,
+                               topeOpcion + ALTO_OPCION_VELOCIDAD};
+            bool esVelocidadSeleccionada =
+                std::abs(VALORES_VELOCIDAD[posicionOpcion] - velocidadActual) <
+                0.01f;
+            bool esOpcionHover =
+                posicionOpcion == opcionVelocidadResaltada;
+
+            if (esVelocidadSeleccionada || esOpcionHover) {
+                COLORREF colorOpcion = esVelocidadSeleccionada
+                                           ? RGB(0, 120, 212)
+                                           : RGB(55, 55, 55);
+                HBRUSH pincelOpcion = CreateSolidBrush(colorOpcion);
+                HPEN lapizOpcion = CreatePen(PS_SOLID, 1, colorOpcion);
+                HBRUSH pincelOpAnterior = static_cast<HBRUSH>(
+                    SelectObject(contextoMemoria, pincelOpcion));
+                HPEN lapizOpAnterior = static_cast<HPEN>(
+                    SelectObject(contextoMemoria, lapizOpcion));
+                RoundRect(contextoMemoria, areaOpcion.left, areaOpcion.top,
+                          areaOpcion.right, areaOpcion.bottom, 6, 6);
+                SelectObject(contextoMemoria, lapizOpAnterior);
+                SelectObject(contextoMemoria, pincelOpAnterior);
+                DeleteObject(lapizOpcion);
+                DeleteObject(pincelOpcion);
+            }
+
+            SetTextColor(contextoMemoria, esVelocidadSeleccionada
+                                             ? RGB(255, 255, 255)
+                                             : (esOpcionHover ? RGB(245, 245, 245)
+                                                              : RGB(210, 210, 210)));
+            RECT areaTextoOpcion = areaOpcion;
+            DrawTextW(contextoMemoria, ETIQUETAS_VELOCIDAD[posicionOpcion], -1,
+                      &areaTextoOpcion,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        SelectObject(contextoMemoria, fuenteAnterior);
+
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente, contextoMemoria,
+               0, 0, SRCCOPY);
+
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+    }
+    EndPaint(ventana, &pintura);
+}
+
+void dibujarLienzoComprimidos(HDC contextoMemoria, const RECT& areaCliente) {
+    int anchoCliente = areaCliente.right - areaCliente.left;
+    int altoCliente = areaCliente.bottom - areaCliente.top;
+    if (anchoCliente <= 0 || altoCliente <= 0) return;
+
+    HBRUSH brochaFondo = CreateSolidBrush(RGB(18, 18, 18));
+    FillRect(contextoMemoria, &areaCliente, brochaFondo);
+    DeleteObject(brochaFondo);
+
+    Gdiplus::Graphics graficos(contextoMemoria);
+    graficos.SetInterpolationMode(
+        Gdiplus::InterpolationModeHighQualityBicubic);
+    graficos.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+
+    if (estadoComprimidos.esModoComic) {
+        size_t totalElementos = estadoComprimidos.elementosSeleccionados.size();
+        if (totalElementos == 1) {
+            const ElementoComprimido& elemento =
+                estadoComprimidos.elementosSeleccionados.front();
+            if (elemento.portadaCargada) {
+                int anchoImagen = static_cast<int>(elemento.portadaCargada->GetWidth());
+                int altoImagen = static_cast<int>(elemento.portadaCargada->GetHeight());
+                if (anchoImagen > 0 && altoImagen > 0) {
+                    float escalaHorizontal =
+                        static_cast<float>(anchoCliente - 24) /
+                        static_cast<float>(anchoImagen);
+                    float escalaVertical =
+                        static_cast<float>(altoCliente - 24) /
+                        static_cast<float>(altoImagen);
+                    float escalaOptima =
+                        std::min(escalaHorizontal, escalaVertical);
+
+                    int anchoDestino =
+                        static_cast<int>(static_cast<float>(anchoImagen) * escalaOptima);
+                    int altoDestino =
+                        static_cast<int>(static_cast<float>(altoImagen) * escalaOptima);
+                    int posicionX = (anchoCliente - anchoDestino) / 2;
+                    int posicionY = (altoCliente - altoDestino) / 2;
+
+                    graficos.DrawImage(elemento.portadaCargada, posicionX,
+                                       posicionY, anchoDestino, altoDestino);
+                }
+            } else {
+                RECT areaIcono{0, altoCliente / 2 - 40, anchoCliente,
+                               altoCliente / 2};
+                RECT areaTexto{10, altoCliente / 2 + 5, anchoCliente - 10,
+                               altoCliente / 2 + 30};
+                RECT areaTamano{10, altoCliente / 2 + 30, anchoCliente - 10,
+                                altoCliente / 2 + 50};
+
+                HFONT fuenteIconoGrande = CreateFontW(
+                    -42, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                    DEFAULT_PITCH | FF_DONTCARE, L"Segoe Fluent Icons");
+                HFONT fuentePrevia = static_cast<HFONT>(
+                    SelectObject(contextoMemoria, fuenteIconoGrande));
+                SetBkMode(contextoMemoria, TRANSPARENT);
+                SetTextColor(contextoMemoria, RGB(255, 140, 0));
+                DrawTextW(contextoMemoria, GLIFO_COMPRIMIDO, -1, &areaIcono,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                SelectObject(contextoMemoria, fuenteTexto);
+                SetTextColor(contextoMemoria, RGB(230, 230, 230));
+                DrawTextW(contextoMemoria, elemento.nombreArchivo.c_str(), -1,
+                          &areaTexto,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                              DT_NOPREFIX);
+
+                SetTextColor(contextoMemoria, RGB(160, 160, 160));
+                DrawTextW(contextoMemoria, elemento.textoTamano.c_str(), -1,
+                          &areaTamano,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                SelectObject(contextoMemoria, fuentePrevia);
+                DeleteObject(fuenteIconoGrande);
+            }
+        } else if (totalElementos >= 2) {
+            int limite = configuracion.limiteCuadriculaComprimidos.load();
+            if (limite != 4 && limite != 6 && limite != 8 && limite != 10) {
+                limite = 4;
+            }
+            int totalFilas = (limite + 1) / 2;
+
+            int margen = 12;
+            int separacion = 8;
+            int anchoDisponible = anchoCliente - margen * 2 - separacion;
+            int altoDisponible =
+                altoCliente - margen * 2 - (totalFilas - 1) * separacion;
+            int anchoCelda = std::max(40, anchoDisponible / 2);
+            int altoCelda = std::max(40, altoDisponible / totalFilas);
+
+            size_t cantidadADibujar = std::min<size_t>(
+                static_cast<size_t>(limite), totalElementos);
+
+            for (size_t posicion = 0; posicion < cantidadADibujar; ++posicion) {
+                int fila = static_cast<int>(posicion / 2);
+                int columna = static_cast<int>(posicion % 2);
+                int izquierdaCelda = margen + columna * (anchoCelda + separacion);
+                int topeCelda = margen + fila * (altoCelda + separacion);
+
+                RECT areaCelda{izquierdaCelda, topeCelda,
+                               izquierdaCelda + anchoCelda,
+                               topeCelda + altoCelda};
+                HBRUSH brochaCelda = CreateSolidBrush(RGB(28, 28, 28));
+                FillRect(contextoMemoria, &areaCelda, brochaCelda);
+                DeleteObject(brochaCelda);
+
+                const ElementoComprimido& elemento =
+                    estadoComprimidos.elementosSeleccionados[posicion];
+                if (elemento.portadaCargada) {
+                    int anchoImg = static_cast<int>(elemento.portadaCargada->GetWidth());
+                    int altoImg = static_cast<int>(elemento.portadaCargada->GetHeight());
+                    float escH = static_cast<float>(anchoCelda - 8) /
+                                 static_cast<float>(anchoImg);
+                    float escV = static_cast<float>(altoCelda - 8) /
+                                 static_cast<float>(altoImg);
+                    float esc = std::min(escH, escV);
+                    int anchoD = static_cast<int>(static_cast<float>(anchoImg) * esc);
+                    int altoD = static_cast<int>(static_cast<float>(altoImg) * esc);
+                    int posX = izquierdaCelda + (anchoCelda - anchoD) / 2;
+                    int posY = topeCelda + (altoCelda - altoD) / 2;
+                    graficos.DrawImage(elemento.portadaCargada, posX, posY,
+                                       anchoD, altoD);
+                } else {
+                    HFONT fuenteIconoPrevia = static_cast<HFONT>(
+                        SelectObject(contextoMemoria, fuenteIconos));
+                    SetBkMode(contextoMemoria, TRANSPARENT);
+                    SetTextColor(contextoMemoria, RGB(255, 140, 0));
+                    RECT areaIconoCelda{izquierdaCelda, topeCelda + 6,
+                                        izquierdaCelda + anchoCelda,
+                                        topeCelda + altoCelda / 2};
+                    DrawTextW(contextoMemoria, GLIFO_COMPRIMIDO, -1,
+                              &areaIconoCelda,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+                    SelectObject(contextoMemoria, fuenteTextoPequeno);
+                    SetTextColor(contextoMemoria, RGB(220, 220, 220));
+                    RECT areaTextoCelda{izquierdaCelda + 4,
+                                        topeCelda + altoCelda / 2,
+                                        izquierdaCelda + anchoCelda - 4,
+                                        topeCelda + altoCelda - 4};
+                    DrawTextW(contextoMemoria, elemento.nombreArchivo.c_str(), -1,
+                              &areaTextoCelda,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE |
+                                  DT_END_ELLIPSIS | DT_NOPREFIX);
+                    SelectObject(contextoMemoria, fuenteIconoPrevia);
+                }
+
+                HPEN lapizCelda = CreatePen(PS_SOLID, 1, RGB(48, 48, 48));
+                HPEN lapizPrevio =
+                    static_cast<HPEN>(SelectObject(contextoMemoria, lapizCelda));
+                HBRUSH brochaNula =
+                    static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+                HBRUSH brochaPrevia =
+                    static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaNula));
+                Rectangle(contextoMemoria, areaCelda.left, areaCelda.top,
+                          areaCelda.right, areaCelda.bottom);
+                SelectObject(contextoMemoria, brochaPrevia);
+                SelectObject(contextoMemoria, lapizPrevio);
+                DeleteObject(lapizCelda);
+            }
+
+            if (estadoComprimidos.totalSeleccionados > static_cast<size_t>(limite)) {
+                std::wstring textoContador =
+                    L"+" + std::to_wstring(
+                               estadoComprimidos.totalSeleccionados -
+                               static_cast<size_t>(limite));
+                int anchoBadge = 46;
+                int altoBadge = 26;
+                int izquierdaBadge = anchoCliente - margen - anchoBadge;
+                int topeBadge = margen;
+                RECT areaBadge{izquierdaBadge, topeBadge,
+                               izquierdaBadge + anchoBadge,
+                               topeBadge + altoBadge};
+
+                HBRUSH brochaBadge = CreateSolidBrush(RGB(0, 120, 215));
+                HPEN lapizBadge = CreatePen(PS_SOLID, 1, RGB(0, 140, 240));
+                HBRUSH brochaBadgePrevia = static_cast<HBRUSH>(
+                    SelectObject(contextoMemoria, brochaBadge));
+                HPEN lapizBadgePrevio =
+                    static_cast<HPEN>(SelectObject(contextoMemoria, lapizBadge));
+                RoundRect(contextoMemoria, areaBadge.left, areaBadge.top,
+                          areaBadge.right, areaBadge.bottom, 12, 12);
+                SelectObject(contextoMemoria, brochaBadgePrevia);
+                SelectObject(contextoMemoria, lapizBadgePrevio);
+                DeleteObject(brochaBadge);
+                DeleteObject(lapizBadge);
+
+                HFONT fuentePrevia = static_cast<HFONT>(
+                    SelectObject(contextoMemoria, fuenteTextoPequeno));
+                SetBkMode(contextoMemoria, TRANSPARENT);
+                SetTextColor(contextoMemoria, RGB(255, 255, 255));
+                DrawTextW(contextoMemoria, textoContador.c_str(), -1, &areaBadge,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(contextoMemoria, fuentePrevia);
+            }
+        }
+        return;
+    }
+
+    // --- MODO COMPRIMIDOS COMUNES (TREEMAP) ---
+    int margenSuperior = 10;
+    int altoCabecera = 36;
+    if (estadoComprimidos.archivosSeleccionados.size() > 1) {
+        int anchoBoton = 72;
+        int altoBoton = 24;
+        estadoComprimidos.botonAnteriorComprimido = {
+            12, margenSuperior + 4, 12 + anchoBoton, margenSuperior + 4 + altoBoton
+        };
+        estadoComprimidos.botonSiguienteComprimido = {
+            anchoCliente - 12 - anchoBoton, margenSuperior + 4, anchoCliente - 12, margenSuperior + 4 + altoBoton
+        };
+
+        auto dibujarBotonNav = [&](const RECT& rect, const wchar_t* texto, bool hover) {
+            COLORREF colorFondo = hover ? RGB(48, 54, 61) : RGB(33, 38, 45);
+            COLORREF colorBorde = hover ? RGB(110, 118, 129) : RGB(48, 54, 61);
+            HBRUSH brochaBtn = CreateSolidBrush(colorFondo);
+            HPEN lapizBtn = CreatePen(PS_SOLID, 1, colorBorde);
+            HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaBtn));
+            HPEN lapizPrev = static_cast<HPEN>(SelectObject(contextoMemoria, lapizBtn));
+            RoundRect(contextoMemoria, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+            SelectObject(contextoMemoria, lapizPrev);
+            SelectObject(contextoMemoria, brochaPrev);
+            DeleteObject(lapizBtn);
+            DeleteObject(brochaBtn);
+
+            SetBkMode(contextoMemoria, TRANSPARENT);
+            SetTextColor(contextoMemoria, hover ? RGB(255, 255, 255) : RGB(201, 209, 217));
+            HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTextoPequeno));
+            RECT rTexto = rect;
+            DrawTextW(contextoMemoria, texto, -1, &rTexto, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SelectObject(contextoMemoria, fuentePrev);
+        };
+
+        dibujarBotonNav(estadoComprimidos.botonAnteriorComprimido, L"◀ Ant", estadoComprimidos.hoverBotonAnterior);
+        dibujarBotonNav(estadoComprimidos.botonSiguienteComprimido, L"Sig ▶", estadoComprimidos.hoverBotonSiguiente);
+
+        std::wstring nombreArchivoActual = L"";
+        if (estadoComprimidos.indiceArchivoActual < estadoComprimidos.archivosSeleccionados.size()) {
+            nombreArchivoActual = PathFindFileNameW(
+                estadoComprimidos.archivosSeleccionados[estadoComprimidos.indiceArchivoActual].c_str());
+        }
+
+        std::wstring textoCentro = nombreArchivoActual + L" (" +
+                                   std::to_wstring(estadoComprimidos.indiceArchivoActual + 1) +
+                                   L"/" + std::to_wstring(estadoComprimidos.archivosSeleccionados.size()) + L")";
+        RECT areaCentro{
+            estadoComprimidos.botonAnteriorComprimido.right + 6,
+            margenSuperior,
+            estadoComprimidos.botonSiguienteComprimido.left - 6,
+            margenSuperior + altoCabecera
+        };
+        SetBkMode(contextoMemoria, TRANSPARENT);
+        SetTextColor(contextoMemoria, RGB(240, 240, 240));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTexto));
+        DrawTextW(contextoMemoria, textoCentro.c_str(), -1, &areaCentro,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(contextoMemoria, fuentePrev);
+    } else {
+        std::wstring nombreArchivoActual = L"";
+        if (!estadoComprimidos.archivosSeleccionados.empty()) {
+            nombreArchivoActual = PathFindFileNameW(
+                estadoComprimidos.archivosSeleccionados.front().c_str());
+        }
+        RECT areaTitulo{14, margenSuperior, anchoCliente - 14, margenSuperior + altoCabecera};
+        SetBkMode(contextoMemoria, TRANSPARENT);
+        SetTextColor(contextoMemoria, RGB(240, 240, 240));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTexto));
+        DrawTextW(contextoMemoria, (L"📦 " + nombreArchivoActual).c_str(), -1, &areaTitulo,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(contextoMemoria, fuentePrev);
+    }
+
+    // Área del TreeMap Box
+    int margenArbol = 12;
+    int topeArbol = margenSuperior + altoCabecera + 4;
+    int altoArbolBox = altoCliente - topeArbol - 10;
+    if (altoArbolBox < 40) return;
+
+    estadoComprimidos.areaCajaArbol = {
+        margenArbol, topeArbol, anchoCliente - margenArbol, topeArbol + altoArbolBox
+    };
+
+    HBRUSH brochaCaja = CreateSolidBrush(RGB(13, 17, 23));
+    HPEN lapizCaja = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HBRUSH brochaPrevCaja = static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaCaja));
+    HPEN lapizPrevCaja = static_cast<HPEN>(SelectObject(contextoMemoria, lapizCaja));
+    RoundRect(contextoMemoria, estadoComprimidos.areaCajaArbol.left,
+              estadoComprimidos.areaCajaArbol.top, estadoComprimidos.areaCajaArbol.right,
+              estadoComprimidos.areaCajaArbol.bottom, 8, 8);
+    SelectObject(contextoMemoria, lapizPrevCaja);
+    SelectObject(contextoMemoria, brochaPrevCaja);
+    DeleteObject(lapizCaja);
+    DeleteObject(brochaCaja);
+
+    if (estadoComprimidos.protegidoConContrasena && !estadoComprimidos.contrasenaDesbloqueada) {
+        SelectObject(contextoMemoria, fuenteTexto);
+        SetTextColor(contextoMemoria, RGB(255, 180, 50));
+        RECT areaIconoPass{estadoComprimidos.areaCajaArbol.left + 16,
+                           estadoComprimidos.areaCajaArbol.top + 30,
+                           estadoComprimidos.areaCajaArbol.right - 16,
+                           estadoComprimidos.areaCajaArbol.top + 55};
+        DrawTextW(contextoMemoria, L"🔒 Archivo protegido con contraseña", -1,
+                  &areaIconoPass, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        SelectObject(contextoMemoria, fuenteTextoPequeno);
+        SetTextColor(contextoMemoria, RGB(139, 148, 158));
+        RECT areaDescPass{estadoComprimidos.areaCajaArbol.left + 20,
+                          estadoComprimidos.areaCajaArbol.top + 62,
+                          estadoComprimidos.areaCajaArbol.right - 20,
+                          estadoComprimidos.areaCajaArbol.top + 105};
+        DrawTextW(contextoMemoria,
+                  L"Este archivo comprimido está cifrado. Para visualizar los archivos contenidos en el primer nivel, introduzca su contraseña.",
+                  -1, &areaDescPass, DT_CENTER | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+
+        int anchoBotonDesbloquear = 200;
+        int altoBotonDesbloquear = 32;
+        int centroX = (estadoComprimidos.areaCajaArbol.left + estadoComprimidos.areaCajaArbol.right) / 2;
+        int topBoton = estadoComprimidos.areaCajaArbol.top + 115;
+        estadoComprimidos.areaBotonDesbloquear = {
+            centroX - anchoBotonDesbloquear / 2, topBoton,
+            centroX + anchoBotonDesbloquear / 2, topBoton + altoBotonDesbloquear
+        };
+
+        bool hoverDesbloquear = estadoComprimidos.hoverBotonDesbloquear;
+        HBRUSH brochaDesb = CreateSolidBrush(hoverDesbloquear ? RGB(48, 54, 61) : RGB(33, 38, 45));
+        HPEN lapizDesb = CreatePen(PS_SOLID, 1, hoverDesbloquear ? RGB(88, 166, 255) : RGB(48, 54, 61));
+        HBRUSH brochaPrevDesb = static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaDesb));
+        HPEN lapizPrevDesb = static_cast<HPEN>(SelectObject(contextoMemoria, lapizDesb));
+        RoundRect(contextoMemoria, estadoComprimidos.areaBotonDesbloquear.left,
+                  estadoComprimidos.areaBotonDesbloquear.top,
+                  estadoComprimidos.areaBotonDesbloquear.right,
+                  estadoComprimidos.areaBotonDesbloquear.bottom, 6, 6);
+        SelectObject(contextoMemoria, lapizPrevDesb);
+        SelectObject(contextoMemoria, brochaPrevDesb);
+        DeleteObject(lapizDesb);
+        DeleteObject(brochaDesb);
+
+        SetTextColor(contextoMemoria, hoverDesbloquear ? RGB(255, 255, 255) : RGB(230, 237, 243));
+        RECT rTextoBtn = estadoComprimidos.areaBotonDesbloquear;
+        DrawTextW(contextoMemoria, L"🔑 Desbloquear contenido", -1, &rTextoBtn,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        return;
+    }
+
+    int altoLineaArbol = 22;
+    int totalElementosArbol = static_cast<int>(estadoComprimidos.elementosArbol.size());
+    estadoComprimidos.altoTotalArbol = totalElementosArbol * altoLineaArbol;
+
+    int yInicio = estadoComprimidos.areaCajaArbol.top + 8 - estadoComprimidos.desplazamientoScrollY;
+
+    HRGN regionRecorte = CreateRectRgn(
+        estadoComprimidos.areaCajaArbol.left + 2,
+        estadoComprimidos.areaCajaArbol.top + 2,
+        estadoComprimidos.areaCajaArbol.right - 2,
+        estadoComprimidos.areaCajaArbol.bottom - 2);
+    SelectClipRgn(contextoMemoria, regionRecorte);
+
+    HFONT fuenteItemArbol = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoMemoria, fuenteItemArbol));
+
+    for (int posicionElemento = 0; posicionElemento < totalElementosArbol; ++posicionElemento) {
+        int posicionVerticalItem = yInicio + posicionElemento * altoLineaArbol;
+        if (posicionVerticalItem + altoLineaArbol < estadoComprimidos.areaCajaArbol.top ||
+            posicionVerticalItem > estadoComprimidos.areaCajaArbol.bottom) {
+            continue;
+        }
+
+        const auto& elementoActual = estadoComprimidos.elementosArbol[static_cast<size_t>(posicionElemento)];
+        int sangria = 10 + elementoActual.nivelJerarquia * 16;
+        int posicionHorizontalItem = estadoComprimidos.areaCajaArbol.left + sangria;
+
+        std::wstring prefijo = elementoActual.esDirectorio ? L"📁 " : L"📄 ";
+        std::wstring textoCompleto = prefijo + elementoActual.nombre;
+
+        RECT areaItem{posicionHorizontalItem, posicionVerticalItem, estadoComprimidos.areaCajaArbol.right - 80, posicionVerticalItem + altoLineaArbol};
+        SetBkMode(contextoMemoria, TRANSPARENT);
+        SetTextColor(contextoMemoria, elementoActual.esDirectorio ? RGB(88, 166, 255) : RGB(201, 209, 217));
+        DrawTextW(contextoMemoria, textoCompleto.c_str(), -1, &areaItem,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (!elementoActual.esDirectorio && elementoActual.tamanoBytes > 0) {
+            std::wstring txtTamano = formatearTamanoArchivo(elementoActual.tamanoBytes);
+            RECT areaTam{estadoComprimidos.areaCajaArbol.right - 78, posicionVerticalItem,
+                         estadoComprimidos.areaCajaArbol.right - 10, posicionVerticalItem + altoLineaArbol};
+            SetTextColor(contextoMemoria, RGB(139, 148, 158));
+            DrawTextW(contextoMemoria, txtTamano.c_str(), -1, &areaTam,
+                      DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+    }
+
+    SelectClipRgn(contextoMemoria, nullptr);
+    DeleteObject(regionRecorte);
+    SelectObject(contextoMemoria, fuentePrev);
+    DeleteObject(fuenteItemArbol);
+}
+
+void dibujarControlesComprimidos(HDC contextoMemoria, HWND ventana,
+                                 const RECT& areaCliente) {
+    DisenoComprimidos diseno = calcularDisenoComprimidos(ventana);
+
+    HFONT fuentePrevia =
+        static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTexto));
+    SetBkMode(contextoMemoria, TRANSPARENT);
+
+    // --- 1. FILA ABRIR CON ---
+    SetTextColor(contextoMemoria, RGB(220, 220, 220));
+    DrawTextW(contextoMemoria, L"Abrir con:", -1,
+              &diseno.areaEtiquetaAbrirCon,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    HBRUSH brochaProg = CreateSolidBrush(
+        estadoComprimidos.menuProgramasAbierto ? RGB(45, 45, 45)
+                                               : RGB(35, 35, 35));
+    HPEN lapizProg = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+    HBRUSH brochaPreviaProg =
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaProg));
+    HPEN lapizPrevioProg =
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizProg));
+    RoundRect(contextoMemoria, diseno.botonDesplegablePrograma.left,
+              diseno.botonDesplegablePrograma.top,
+              diseno.botonDesplegablePrograma.right,
+              diseno.botonDesplegablePrograma.bottom, 6, 6);
+    SelectObject(contextoMemoria, brochaPreviaProg);
+    SelectObject(contextoMemoria, lapizPrevioProg);
+    DeleteObject(brochaProg);
+    DeleteObject(lapizProg);
+
+    RECT areaTextoProg = diseno.botonDesplegablePrograma;
+    areaTextoProg.left += 8;
+    areaTextoProg.right -= 22;
+    SetTextColor(contextoMemoria, RGB(240, 240, 240));
+
+    std::wstring textoProgramaActual = L"Añade un programa";
+    std::wstring rutaResuelta = resolverProgramaParaComprimidos();
+    if (!rutaResuelta.empty()) {
+        textoProgramaActual = PathFindFileNameW(rutaResuelta.c_str());
+    }
+
+    DrawTextW(contextoMemoria, textoProgramaActual.c_str(), -1,
+              &areaTextoProg,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                  DT_NOPREFIX);
+
+    RECT areaFlechaProg = diseno.botonDesplegablePrograma;
+    areaFlechaProg.left = areaFlechaProg.right - 20;
+    SelectObject(contextoMemoria, fuenteIconos);
+    SetTextColor(contextoMemoria, RGB(180, 180, 180));
+    DrawTextW(contextoMemoria, GLIFO_CHEVRON_ABAJO, -1, &areaFlechaProg,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    HBRUSH brochaAbrir = CreateSolidBrush(RGB(0, 120, 215));
+    HPEN lapizAbrir = CreatePen(PS_SOLID, 1, RGB(0, 140, 240));
+    HBRUSH brochaPreviaAbrir =
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaAbrir));
+    HPEN lapizPrevioAbrir =
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizAbrir));
+    RoundRect(contextoMemoria, diseno.botonEjecutarAbrir.left,
+              diseno.botonEjecutarAbrir.top,
+              diseno.botonEjecutarAbrir.right,
+              diseno.botonEjecutarAbrir.bottom, 6, 6);
+    SelectObject(contextoMemoria, brochaPreviaAbrir);
+    SelectObject(contextoMemoria, lapizPrevioAbrir);
+    DeleteObject(brochaAbrir);
+    DeleteObject(lapizAbrir);
+
+    SelectObject(contextoMemoria, fuenteTextoPequeno);
+    SetTextColor(contextoMemoria, RGB(255, 255, 255));
+    DrawTextW(contextoMemoria, L"Abrir", -1,
+              &diseno.botonEjecutarAbrir,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // --- 2. FILA CONVERTIR A ---
+    SelectObject(contextoMemoria, fuenteTexto);
+    SetTextColor(contextoMemoria, RGB(220, 220, 220));
+    DrawTextW(contextoMemoria, L"Convertir a:", -1,
+              &diseno.areaEtiquetaConversion,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    HBRUSH brochaCombo = CreateSolidBrush(
+        estadoComprimidos.menuDesplegableAbierto ? RGB(45, 45, 45)
+                                                 : RGB(35, 35, 35));
+    HPEN lapizCombo = CreatePen(PS_SOLID, 1, RGB(70, 70, 70));
+    HBRUSH brochaPreviaCombo =
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaCombo));
+    HPEN lapizPrevioCombo =
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizCombo));
+    RoundRect(contextoMemoria, diseno.botonDesplegableFormato.left,
+              diseno.botonDesplegableFormato.top,
+              diseno.botonDesplegableFormato.right,
+              diseno.botonDesplegableFormato.bottom, 6, 6);
+    SelectObject(contextoMemoria, brochaPreviaCombo);
+    SelectObject(contextoMemoria, lapizPrevioCombo);
+    DeleteObject(brochaCombo);
+    DeleteObject(lapizCombo);
+
+    RECT areaTextoCombo = diseno.botonDesplegableFormato;
+    areaTextoCombo.left += 8;
+    areaTextoCombo.right -= 22;
+    SetTextColor(contextoMemoria, RGB(240, 240, 240));
+    DrawTextW(contextoMemoria,
+              FORMATOS_DESTINO[estadoComprimidos.indiceFormatoDestino], -1,
+              &areaTextoCombo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                  DT_NOPREFIX);
+
+    RECT areaFlechaCombo = diseno.botonDesplegableFormato;
+    areaFlechaCombo.left = areaFlechaCombo.right - 20;
+    SelectObject(contextoMemoria, fuenteIconos);
+    SetTextColor(contextoMemoria, RGB(180, 180, 180));
+    DrawTextW(contextoMemoria, GLIFO_CHEVRON_ABAJO, -1, &areaFlechaCombo,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    HBRUSH brochaBoton = CreateSolidBrush(
+        estadoComprimidos.conversionEnCurso ? RGB(0, 90, 160)
+                                            : RGB(0, 120, 215));
+    HPEN lapizBoton = CreatePen(
+        PS_SOLID, 1,
+        estadoComprimidos.conversionEnCurso ? RGB(0, 110, 180)
+                                            : RGB(0, 140, 240));
+    HBRUSH brochaPreviaBoton =
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaBoton));
+    HPEN lapizPrevioBoton =
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizBoton));
+    RoundRect(contextoMemoria, diseno.botonEjecutarConversion.left,
+              diseno.botonEjecutarConversion.top,
+              diseno.botonEjecutarConversion.right,
+              diseno.botonEjecutarConversion.bottom, 6, 6);
+    SelectObject(contextoMemoria, brochaPreviaBoton);
+    SelectObject(contextoMemoria, lapizPrevioBoton);
+    DeleteObject(brochaBoton);
+    DeleteObject(lapizBoton);
+
+    SelectObject(contextoMemoria, fuenteTextoPequeno);
+    SetTextColor(contextoMemoria, RGB(255, 255, 255));
+    std::wstring textoBoton =
+        estadoComprimidos.conversionEnCurso ? L"Convirtiendo..." : L"Convertir";
+    DrawTextW(contextoMemoria, textoBoton.c_str(), -1,
+              &diseno.botonEjecutarConversion,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // --- 3. RECUADRO LOG ---
+    HBRUSH brochaLog = CreateSolidBrush(RGB(16, 16, 16));
+    HPEN lapizLog = CreatePen(PS_SOLID, 1, RGB(45, 45, 45));
+    HBRUSH brochaPreviaLog =
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaLog));
+    HPEN lapizPrevioLog =
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizLog));
+    RoundRect(contextoMemoria, diseno.areaRecuadroLog.left,
+              diseno.areaRecuadroLog.top, diseno.areaRecuadroLog.right,
+              diseno.areaRecuadroLog.bottom, 8, 8);
+    SelectObject(contextoMemoria, brochaPreviaLog);
+    SelectObject(contextoMemoria, lapizPrevioLog);
+    DeleteObject(brochaLog);
+    DeleteObject(lapizLog);
+
+    SelectObject(contextoMemoria, fuenteTextoPequeno);
+    int altoLineaLog = 18;
+    int margenInternoLog = 6;
+    int topePrimerLinea = diseno.areaRecuadroLog.top + margenInternoLog;
+    int lineasVisibles = std::max<int>(
+        1, (static_cast<int>(diseno.areaRecuadroLog.bottom -
+                             diseno.areaRecuadroLog.top) -
+            margenInternoLog * 2) /
+               altoLineaLog);
+
+    int totalLineas =
+        static_cast<int>(estadoComprimidos.lineasRegistro.size());
+    int inicioLinea = std::max(
+        0, std::min(estadoComprimidos.desplazamientoScrollLog,
+                    std::max(0, totalLineas - lineasVisibles)));
+
+    for (int indiceVisible = 0; indiceVisible < lineasVisibles;
+         ++indiceVisible) {
+        int indiceLineaReal = inicioLinea + indiceVisible;
+        if (indiceLineaReal >= totalLineas) break;
+
+        const std::wstring& textoLinea =
+            estadoComprimidos.lineasRegistro[static_cast<size_t>(indiceLineaReal)];
+        RECT areaLinea{
+            diseno.areaRecuadroLog.left + margenInternoLog,
+            topePrimerLinea + indiceVisible * altoLineaLog,
+            diseno.areaRecuadroLog.right - margenInternoLog,
+            topePrimerLinea + (indiceVisible + 1) * altoLineaLog};
+
+        if (textoLinea.find(L"[Completado]") != std::wstring::npos ||
+            textoLinea.find(L"éxito") != std::wstring::npos) {
+            SetTextColor(contextoMemoria, RGB(100, 220, 100));
+        } else if (textoLinea.find(L"[Error") != std::wstring::npos) {
+            SetTextColor(contextoMemoria, RGB(240, 100, 100));
+        } else if (textoLinea.find(L"Iniciando") != std::wstring::npos ||
+                   textoLinea.find(L"Abriendo") != std::wstring::npos) {
+            SetTextColor(contextoMemoria, RGB(100, 180, 240));
+        } else {
+            SetTextColor(contextoMemoria, RGB(190, 190, 190));
+        }
+
+        DrawTextW(contextoMemoria, textoLinea.c_str(), -1, &areaLinea,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                      DT_NOPREFIX);
+    }
+
+    // --- 4. PANELES FLOTANTES DESPLEGABLES ---
+    if (diseno.tieneComics && estadoComprimidos.menuProgramasAbierto) {
+        HBRUSH brochaPanelProg = CreateSolidBrush(RGB(38, 38, 38));
+        HPEN lapizPanelProg = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
+        HBRUSH brochaPreviaPanelProg =
+            static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaPanelProg));
+        HPEN lapizPrevioPanelProg =
+            static_cast<HPEN>(SelectObject(contextoMemoria, lapizPanelProg));
+        RoundRect(contextoMemoria, diseno.panelOpcionesPrograma.left,
+                  diseno.panelOpcionesPrograma.top,
+                  diseno.panelOpcionesPrograma.right,
+                  diseno.panelOpcionesPrograma.bottom, 6, 6);
+        SelectObject(contextoMemoria, brochaPreviaPanelProg);
+        SelectObject(contextoMemoria, lapizPrevioPanelProg);
+        DeleteObject(brochaPanelProg);
+        DeleteObject(lapizPanelProg);
+
+        SelectObject(contextoMemoria, fuenteTextoPequeno);
+        const std::vector<std::wstring>& listaProgramasActivaMenu =
+            obtenerListaProgramasActivaConst();
+
+        for (size_t posicion = 0;
+             posicion < diseno.opcionesPrograma.size(); ++posicion) {
+            const RECT& areaOpcion = diseno.opcionesPrograma[posicion];
+            bool esHover = (static_cast<int>(posicion) ==
+                            estadoComprimidos.opcionProgramaHover);
+            bool esSeleccionada =
+                (posicion < listaProgramasActivaMenu.size() &&
+                 static_cast<int>(posicion) ==
+                     estadoComprimidos.indiceProgramaSeleccionado);
+
+            if (esHover || esSeleccionada) {
+                HBRUSH brochaOp = CreateSolidBrush(
+                    esSeleccionada ? RGB(0, 120, 215) : RGB(58, 58, 58));
+                HPEN lapizOp = CreatePen(
+                    PS_SOLID, 1,
+                    esSeleccionada ? RGB(0, 140, 240) : RGB(70, 70, 70));
+                HBRUSH brochaPreviaOp = static_cast<HBRUSH>(
+                    SelectObject(contextoMemoria, brochaOp));
+                HPEN lapizPrevioOp = static_cast<HPEN>(
+                    SelectObject(contextoMemoria, lapizOp));
+                RoundRect(contextoMemoria, areaOpcion.left, areaOpcion.top,
+                          areaOpcion.right, areaOpcion.bottom, 4, 4);
+                SelectObject(contextoMemoria, brochaPreviaOp);
+                SelectObject(contextoMemoria, lapizPrevioOp);
+                DeleteObject(brochaOp);
+                DeleteObject(lapizOp);
+            }
+
+            SetTextColor(contextoMemoria, (esHover || esSeleccionada)
+                                              ? RGB(255, 255, 255)
+                                              : RGB(210, 210, 210));
+            RECT areaTextoOpcion = areaOpcion;
+            areaTextoOpcion.left += 6;
+
+            std::wstring etiquetaOpcion;
+            if (posicion < listaProgramasActivaMenu.size()) {
+                etiquetaOpcion = PathFindFileNameW(
+                    listaProgramasActivaMenu[posicion].c_str());
+            } else {
+                etiquetaOpcion = L"+ Añadir programa...";
+            }
+
+            DrawTextW(contextoMemoria, etiquetaOpcion.c_str(), -1,
+                      &areaTextoOpcion,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS |
+                          DT_NOPREFIX);
+        }
+    }
+
+    if (estadoComprimidos.menuDesplegableAbierto) {
+        HBRUSH brochaPanel = CreateSolidBrush(RGB(38, 38, 38));
+        HPEN lapizPanel = CreatePen(PS_SOLID, 1, RGB(80, 80, 80));
+        HBRUSH brochaPreviaPanel =
+            static_cast<HBRUSH>(SelectObject(contextoMemoria, brochaPanel));
+        HPEN lapizPrevioPanel =
+            static_cast<HPEN>(SelectObject(contextoMemoria, lapizPanel));
+        RoundRect(contextoMemoria, diseno.panelOpcionesFormato.left,
+                  diseno.panelOpcionesFormato.top,
+                  diseno.panelOpcionesFormato.right,
+                  diseno.panelOpcionesFormato.bottom, 6, 6);
+        SelectObject(contextoMemoria, brochaPreviaPanel);
+        SelectObject(contextoMemoria, lapizPrevioPanel);
+        DeleteObject(brochaPanel);
+        DeleteObject(lapizPanel);
+
+        SelectObject(contextoMemoria, fuenteTextoPequeno);
+        for (int posicion = 0; posicion < TOTAL_FORMATOS_DESTINO; ++posicion) {
+            const RECT& areaOpcion = diseno.opcionesFormato[posicion];
+            bool esHover = (posicion == estadoComprimidos.opcionFormatoHover);
+            bool esSeleccionada =
+                (posicion == estadoComprimidos.indiceFormatoDestino);
+
+            if (esHover || esSeleccionada) {
+                HBRUSH brochaOp = CreateSolidBrush(
+                    esSeleccionada ? RGB(0, 120, 215) : RGB(58, 58, 58));
+                HPEN lapizOp = CreatePen(
+                    PS_SOLID, 1,
+                    esSeleccionada ? RGB(0, 140, 240) : RGB(70, 70, 70));
+                HBRUSH brochaPreviaOp = static_cast<HBRUSH>(
+                    SelectObject(contextoMemoria, brochaOp));
+                HPEN lapizPrevioOp = static_cast<HPEN>(
+                    SelectObject(contextoMemoria, lapizOp));
+                RoundRect(contextoMemoria, areaOpcion.left, areaOpcion.top,
+                          areaOpcion.right, areaOpcion.bottom, 4, 4);
+                SelectObject(contextoMemoria, brochaPreviaOp);
+                SelectObject(contextoMemoria, lapizPrevioOp);
+                DeleteObject(brochaOp);
+                DeleteObject(lapizOp);
+            }
+
+            SetTextColor(contextoMemoria, (esHover || esSeleccionada)
+                                              ? RGB(255, 255, 255)
+                                              : RGB(210, 210, 210));
+            RECT areaTextoOpcion = areaOpcion;
+            areaTextoOpcion.left += 6;
+            DrawTextW(contextoMemoria, FORMATOS_DESTINO[posicion], -1,
+                      &areaTextoOpcion,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+    }
+
+    SelectObject(contextoMemoria, fuentePrevia);
+}
+
+inline void dibujarBarraControlesPendiente(HDC contextoDibujo,
+                                           const RECT& areaCliente,
+                                           TipoContenidoArchivo tipo) {
+    HBRUSH pincelFondo = CreateSolidBrush(RGB(18, 18, 18));
+    FillRect(contextoDibujo, &areaCliente, pincelFondo);
+    DeleteObject(pincelFondo);
+
+    HPEN lapizBorde = CreatePen(PS_SOLID, 1, RGB(45, 45, 45));
+    HPEN lapizPrevio = static_cast<HPEN>(SelectObject(contextoDibujo, lapizBorde));
+    MoveToEx(contextoDibujo, areaCliente.left, areaCliente.top, nullptr);
+    LineTo(contextoDibujo, areaCliente.right, areaCliente.top);
+    SelectObject(contextoDibujo, lapizPrevio);
+    DeleteObject(lapizBorde);
+
+    EstadoPendienteImplementacion& estado =
+        (tipo == TipoContenidoArchivo::Documento) ? estadoDocumentos : estadoCodigo;
+
+    int anchoBoton = 84;
+    int altoBoton = 24;
+    int margenVertical = (areaCliente.bottom - areaCliente.top - altoBoton) / 2;
+
+    estado.botonAnterior = {
+        areaCliente.left + 12,
+        areaCliente.top + margenVertical,
+        areaCliente.left + 12 + anchoBoton,
+        areaCliente.top + margenVertical + altoBoton
+    };
+
+    estado.botonSiguiente = {
+        areaCliente.right - 12 - anchoBoton,
+        areaCliente.top + margenVertical,
+        areaCliente.right - 12,
+        areaCliente.top + margenVertical + altoBoton
+    };
+
+    auto dibujarBotonNav = [&](const RECT& rect, const wchar_t* texto, bool hover) {
+        COLORREF colorFondo = hover ? RGB(48, 54, 61) : RGB(33, 38, 45);
+        COLORREF colorBorde = hover ? RGB(110, 118, 129) : RGB(48, 54, 61);
+        HBRUSH brochaBtn = CreateSolidBrush(colorFondo);
+        HPEN lapizBtn = CreatePen(PS_SOLID, 1, colorBorde);
+        HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoDibujo, brochaBtn));
+        HPEN lapizPrev = static_cast<HPEN>(SelectObject(contextoDibujo, lapizBtn));
+        RoundRect(contextoDibujo, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+        SelectObject(contextoDibujo, lapizPrev);
+        SelectObject(contextoDibujo, brochaPrev);
+        DeleteObject(lapizBtn);
+        DeleteObject(brochaBtn);
+
+        SetBkMode(contextoDibujo, TRANSPARENT);
+        SetTextColor(contextoDibujo, hover ? RGB(255, 255, 255) : RGB(201, 209, 217));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
+        RECT rTexto = rect;
+        DrawTextW(contextoDibujo, texto, -1, &rTexto, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(contextoDibujo, fuentePrev);
+    };
+
+    dibujarBotonNav(estado.botonAnterior, L"◀ Anterior", estado.hoverBotonAnterior);
+    dibujarBotonNav(estado.botonSiguiente, L"Siguiente ▶", estado.hoverBotonSiguiente);
+
+    std::wstring textoCentro;
+    if (estado.archivosSeleccionados.size() > 1) {
+        textoCentro = estado.nombreArchivo + L"  \u2022  " +
+                      std::to_wstring(estado.indiceActual + 1) + L"/" +
+                      std::to_wstring(estado.archivosSeleccionados.size());
+    } else {
+        textoCentro = estado.nombreArchivo;
+    }
+    if (!textoCentro.empty()) {
+        RECT areaCentro = {
+            estado.botonAnterior.right + 8,
+            areaCliente.top,
+            estado.botonSiguiente.left - 8,
+            areaCliente.bottom
+        };
+        SetBkMode(contextoDibujo, TRANSPARENT);
+        SetTextColor(contextoDibujo, RGB(139, 148, 158));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
+        DrawTextW(contextoDibujo, textoCentro.c_str(), -1, &areaCentro,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(contextoDibujo, fuentePrev);
+    }
+}
+
+inline void dibujarLienzoPendienteImplementacion(HDC contextoDestino,
+                                                const RECT& areaDibujo,
+                                                TipoContenidoArchivo tipo) {
+    int anchoArea = areaDibujo.right - areaDibujo.left;
+    int altoArea = areaDibujo.bottom - areaDibujo.top;
+    if (anchoArea <= 0 || altoArea <= 0) return;
+
+    HBRUSH brochaFondo = CreateSolidBrush(RGB(13, 17, 23));
+    FillRect(contextoDestino, &areaDibujo, brochaFondo);
+    DeleteObject(brochaFondo);
+
+    HFONT fuenteTitulo = CreateFontW(-20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteSubtitulo = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteTextoNormal = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                          DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteBadge = CreateFontW(-11, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                    DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    SetBkMode(contextoDestino, TRANSPARENT);
+
+    int yActual = areaDibujo.top + 24;
+
+    SelectObject(contextoDestino, fuenteTitulo);
+    SetTextColor(contextoDestino, RGB(255, 255, 255));
+    RECT areaTitulo{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + 28};
+    DrawTextW(contextoDestino, L"Useful Sideview", -1, &areaTitulo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 32;
+
+    SelectObject(contextoDestino, fuenteSubtitulo);
+    SetTextColor(contextoDestino, RGB(88, 166, 255));
+    RECT areaSubtitulo{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + 22};
+    std::wstring etiquetaCategoria =
+        (tipo == TipoContenidoArchivo::Documento)
+            ? L"\U0001F4C4 Documentos (PDF / Word)"
+            : L"\U0001F4BB Códigos de Programación";
+    DrawTextW(contextoDestino, etiquetaCategoria.c_str(), -1, &areaSubtitulo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 34;
+
+    EstadoPendienteImplementacion& estado =
+        (tipo == TipoContenidoArchivo::Documento) ? estadoDocumentos : estadoCodigo;
+
+    int altoTarjeta = 146;
+    RECT areaTarjeta{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + altoTarjeta};
+    HBRUSH brochaTarjeta = CreateSolidBrush(RGB(22, 27, 34));
+    HPEN lapizTarjeta = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaTarjeta));
+    HPEN lapizPrev = static_cast<HPEN>(SelectObject(contextoDestino, lapizTarjeta));
+    RoundRect(contextoDestino, areaTarjeta.left, areaTarjeta.top,
+              areaTarjeta.right, areaTarjeta.bottom, 8, 8);
+    SelectObject(contextoDestino, lapizPrev);
+    SelectObject(contextoDestino, brochaPrev);
+    DeleteObject(lapizTarjeta);
+    DeleteObject(brochaTarjeta);
+
+    int yCard = areaTarjeta.top + 14;
+
+    // Nombre de archivo
+    SelectObject(contextoDestino, fuenteSubtitulo);
+    SetTextColor(contextoDestino, RGB(240, 246, 252));
+    RECT areaNombreArchivo{areaTarjeta.left + 16, yCard, areaTarjeta.right - 16, yCard + 20};
+    DrawTextW(contextoDestino, estado.nombreArchivo.c_str(), -1, &areaNombreArchivo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    yCard += 26;
+
+    // Badge "Pendiente de implementación"
+    RECT areaBadge{areaTarjeta.left + 16, yCard, areaTarjeta.left + 215, yCard + 22};
+    HBRUSH brochaBadge = CreateSolidBrush(RGB(56, 35, 12));
+    HPEN lapizBadge = CreatePen(PS_SOLID, 1, RGB(187, 128, 9));
+    HBRUSH brochaPrevB = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaBadge));
+    HPEN lapizPrevB = static_cast<HPEN>(SelectObject(contextoDestino, lapizBadge));
+    RoundRect(contextoDestino, areaBadge.left, areaBadge.top, areaBadge.right, areaBadge.bottom, 4, 4);
+    SelectObject(contextoDestino, lapizPrevB);
+    SelectObject(contextoDestino, brochaPrevB);
+    DeleteObject(lapizBadge);
+    DeleteObject(brochaBadge);
+
+    SelectObject(contextoDestino, fuenteBadge);
+    SetTextColor(contextoDestino, RGB(227, 179, 65));
+    DrawTextW(contextoDestino, L"\u23F3 Pendiente de implementación", -1, &areaBadge,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yCard += 28;
+
+    // Mensaje descriptivo
+    SelectObject(contextoDestino, fuenteTextoNormal);
+    SetTextColor(contextoDestino, RGB(139, 148, 158));
+    std::wstring mensaje =
+        (tipo == TipoContenidoArchivo::Documento)
+            ? L"El visor para documentos PDF y paquetería de Microsoft Word está en desarrollo y se integrará en una próxima versión."
+            : L"El visor con resaltado de sintaxis para lenguajes de programación está en desarrollo y se integrará en una próxima versión.";
+
+    RECT areaMensaje{areaTarjeta.left + 16, yCard, areaTarjeta.right - 16, areaTarjeta.bottom - 12};
+    DrawTextW(contextoDestino, mensaje.c_str(), -1, &areaMensaje,
+              DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+
+    DeleteObject(fuenteTitulo);
+    DeleteObject(fuenteSubtitulo);
+    DeleteObject(fuenteTextoNormal);
+    DeleteObject(fuenteBadge);
+}
+
+inline void dibujarBarraControlesDesconocido(HDC contextoDibujo,
+                                             const RECT& areaCliente) {
+    HBRUSH pincelFondo = CreateSolidBrush(RGB(18, 18, 18));
+    FillRect(contextoDibujo, &areaCliente, pincelFondo);
+    DeleteObject(pincelFondo);
+
+    HPEN lapizBorde = CreatePen(PS_SOLID, 1, RGB(45, 45, 45));
+    HPEN lapizPrevio = static_cast<HPEN>(SelectObject(contextoDibujo, lapizBorde));
+    MoveToEx(contextoDibujo, areaCliente.left, areaCliente.top, nullptr);
+    LineTo(contextoDibujo, areaCliente.right, areaCliente.top);
+    SelectObject(contextoDibujo, lapizPrevio);
+    DeleteObject(lapizBorde);
+
+    int anchoBoton = 84;
+    int altoBoton = 24;
+    int margenVertical = (areaCliente.bottom - areaCliente.top - altoBoton) / 2;
+
+    estadoDesconocido.botonAnterior = {
+        areaCliente.left + 12,
+        areaCliente.top + margenVertical,
+        areaCliente.left + 12 + anchoBoton,
+        areaCliente.top + margenVertical + altoBoton
+    };
+
+    estadoDesconocido.botonSiguiente = {
+        areaCliente.right - 12 - anchoBoton,
+        areaCliente.top + margenVertical,
+        areaCliente.right - 12,
+        areaCliente.top + margenVertical + altoBoton
+    };
+
+    auto dibujarBotonNav = [&](const RECT& rect, const wchar_t* texto, bool hover) {
+        COLORREF colorFondo = hover ? RGB(48, 54, 61) : RGB(33, 38, 45);
+        COLORREF colorBorde = hover ? RGB(110, 118, 129) : RGB(48, 54, 61);
+        HBRUSH brochaBtn = CreateSolidBrush(colorFondo);
+        HPEN lapizBtn = CreatePen(PS_SOLID, 1, colorBorde);
+        HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoDibujo, brochaBtn));
+        HPEN lapizPrev = static_cast<HPEN>(SelectObject(contextoDibujo, lapizBtn));
+        RoundRect(contextoDibujo, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+        SelectObject(contextoDibujo, lapizPrev);
+        SelectObject(contextoDibujo, brochaPrev);
+        DeleteObject(lapizBtn);
+        DeleteObject(brochaBtn);
+
+        SetBkMode(contextoDibujo, TRANSPARENT);
+        SetTextColor(contextoDibujo, hover ? RGB(255, 255, 255) : RGB(201, 209, 217));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
+        RECT rTexto = rect;
+        DrawTextW(contextoDibujo, texto, -1, &rTexto, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(contextoDibujo, fuentePrev);
+    };
+
+    dibujarBotonNav(estadoDesconocido.botonAnterior, L"◀ Anterior", estadoDesconocido.hoverBotonAnterior);
+    dibujarBotonNav(estadoDesconocido.botonSiguiente, L"Siguiente ▶", estadoDesconocido.hoverBotonSiguiente);
+
+    std::wstring textoCentro;
+    if (estadoDesconocido.archivosSeleccionados.size() > 1) {
+        textoCentro = estadoDesconocido.nombreArchivo + L"  \u2022  " +
+                      std::to_wstring(estadoDesconocido.indiceActual + 1) + L"/" +
+                      std::to_wstring(estadoDesconocido.archivosSeleccionados.size());
+    } else {
+        textoCentro = estadoDesconocido.nombreArchivo;
+    }
+    if (!textoCentro.empty()) {
+        RECT areaCentro = {
+            estadoDesconocido.botonAnterior.right + 8,
+            areaCliente.top,
+            estadoDesconocido.botonSiguiente.left - 8,
+            areaCliente.bottom
+        };
+        SetBkMode(contextoDibujo, TRANSPARENT);
+        SetTextColor(contextoDibujo, RGB(139, 148, 158));
+        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
+        DrawTextW(contextoDibujo, textoCentro.c_str(), -1, &areaCentro,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(contextoDibujo, fuentePrev);
+    }
+}
+
+inline void dibujarLienzoArchivoDesconocido(HDC contextoDestino,
+                                           const RECT& areaDibujo) {
+    int anchoArea = areaDibujo.right - areaDibujo.left;
+    int altoArea = areaDibujo.bottom - areaDibujo.top;
+    if (anchoArea <= 0 || altoArea <= 0) return;
+
+    HBRUSH brochaFondo = CreateSolidBrush(RGB(13, 17, 23));
+    FillRect(contextoDestino, &areaDibujo, brochaFondo);
+    DeleteObject(brochaFondo);
+
+    HFONT fuenteTitulo = CreateFontW(-20, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteSubtitulo = CreateFontW(-14, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteTextoNormal = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                          DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteBadge = CreateFontW(-11, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                    OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                    DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    SetBkMode(contextoDestino, TRANSPARENT);
+
+    int yActual = areaDibujo.top + 24;
+
+    SelectObject(contextoDestino, fuenteTitulo);
+    SetTextColor(contextoDestino, RGB(255, 255, 255));
+    RECT areaTitulo{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + 28};
+    DrawTextW(contextoDestino, L"Useful Sideview", -1, &areaTitulo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 32;
+
+    SelectObject(contextoDestino, fuenteSubtitulo);
+    SetTextColor(contextoDestino, RGB(139, 148, 158));
+    RECT areaSubtitulo{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + 22};
+    DrawTextW(contextoDestino, L"Archivo no compatible / desconocido", -1, &areaSubtitulo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 34;
+
+    int altoTarjeta = 146;
+    RECT areaTarjeta{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + altoTarjeta};
+    HBRUSH brochaTarjeta = CreateSolidBrush(RGB(22, 27, 34));
+    HPEN lapizTarjeta = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaTarjeta));
+    HPEN lapizPrev = static_cast<HPEN>(SelectObject(contextoDestino, lapizTarjeta));
+    RoundRect(contextoDestino, areaTarjeta.left, areaTarjeta.top,
+              areaTarjeta.right, areaTarjeta.bottom, 8, 8);
+    SelectObject(contextoDestino, lapizPrev);
+    SelectObject(contextoDestino, brochaPrev);
+    DeleteObject(lapizTarjeta);
+    DeleteObject(brochaTarjeta);
+
+    int yCard = areaTarjeta.top + 14;
+
+    SelectObject(contextoDestino, fuenteSubtitulo);
+    SetTextColor(contextoDestino, RGB(240, 246, 252));
+    RECT areaNombreArchivo{areaTarjeta.left + 16, yCard, areaTarjeta.right - 16, yCard + 20};
+    DrawTextW(contextoDestino, estadoDesconocido.nombreArchivo.c_str(), -1, &areaNombreArchivo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    yCard += 26;
+
+    // Badge "Archivo desconocido"
+    RECT areaBadge{areaTarjeta.left + 16, yCard, areaTarjeta.left + 190, yCard + 22};
+    HBRUSH brochaBadge = CreateSolidBrush(RGB(33, 38, 45));
+    HPEN lapizBadge = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HBRUSH brochaPrevB = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaBadge));
+    HPEN lapizPrevB = static_cast<HPEN>(SelectObject(contextoDestino, lapizBadge));
+    RoundRect(contextoDestino, areaBadge.left, areaBadge.top, areaBadge.right, areaBadge.bottom, 4, 4);
+    SelectObject(contextoDestino, lapizPrevB);
+    SelectObject(contextoDestino, brochaPrevB);
+    DeleteObject(lapizBadge);
+    DeleteObject(brochaBadge);
+
+    SelectObject(contextoDestino, fuenteBadge);
+    SetTextColor(contextoDestino, RGB(139, 148, 158));
+    DrawTextW(contextoDestino, L"Archivo desconocido", -1, &areaBadge,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yCard += 28;
+
+    SelectObject(contextoDestino, fuenteTextoNormal);
+    SetTextColor(contextoDestino, RGB(139, 148, 158));
+    std::wstring mensaje = L"No hay una previsualización disponible para este tipo de archivo";
+    if (!estadoDesconocido.tamanoFormateado.empty()) {
+        mensaje += L" (" + estadoDesconocido.tamanoFormateado + L")";
+    }
+    mensaje += L".";
+
+    RECT areaMensaje{areaTarjeta.left + 16, yCard, areaTarjeta.right - 16, areaTarjeta.bottom - 12};
+    DrawTextW(contextoDestino, mensaje.c_str(), -1, &areaMensaje,
+              DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+
+    DeleteObject(fuenteTitulo);
+    DeleteObject(fuenteSubtitulo);
+    DeleteObject(fuenteTextoNormal);
+    DeleteObject(fuenteBadge);
+}
+
 void dibujarInterfaz(HWND ventana) {
     PAINTSTRUCT pintura;
-    HDC contextoDibujo = BeginPaint(ventana, &pintura);
+    HDC contextoPantalla = BeginPaint(ventana, &pintura);
     DisenoBarraProgreso disenoBarraProgreso =
         calcularDisenoBarraProgreso(ventana);
 
+    RECT areaCliente = disenoBarraProgreso.barraControles;
+    int anchoCliente = areaCliente.right - areaCliente.left;
+    int altoCliente = areaCliente.bottom - areaCliente.top;
+
+    if (anchoCliente <= 0 || altoCliente <= 0) {
+        EndPaint(ventana, &pintura);
+        return;
+    }
+
+    HDC contextoMemoria = CreateCompatibleDC(contextoPantalla);
+    HBITMAP mapaBitsMemoria =
+        CreateCompatibleBitmap(contextoPantalla, anchoCliente, altoCliente);
+    HBITMAP mapaBitsAnterior = static_cast<HBITMAP>(
+        SelectObject(contextoMemoria, mapaBitsMemoria));
+
     HBRUSH pincelFondo = CreateSolidBrush(RGB(25, 25, 25));
-    FillRect(contextoDibujo, &disenoBarraProgreso.barraControles,
-             pincelFondo);
+    FillRect(contextoMemoria, &areaCliente, pincelFondo);
     DeleteObject(pincelFondo);
-    SetBkMode(contextoDibujo, TRANSPARENT);
-    SetTextColor(contextoDibujo, RGB(245, 245, 245));
+    SetBkMode(contextoMemoria, TRANSPARENT);
+    SetTextColor(contextoMemoria, RGB(245, 245, 245));
+
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Texto) {
+        dibujarVistaTexto(contextoMemoria, areaCliente);
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
+               contextoMemoria, 0, 0, SRCCOPY);
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+        EndPaint(ventana, &pintura);
+        return;
+    }
+
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Documento ||
+        tipoContenidoActivo.load() == TipoContenidoArchivo::Codigo) {
+        dibujarBarraControlesPendiente(contextoMemoria, areaCliente, tipoContenidoActivo.load());
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
+               contextoMemoria, 0, 0, SRCCOPY);
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+        EndPaint(ventana, &pintura);
+        return;
+    }
+
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Desconocido) {
+        dibujarBarraControlesDesconocido(contextoMemoria, areaCliente);
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
+               contextoMemoria, 0, 0, SRCCOPY);
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+        EndPaint(ventana, &pintura);
+        return;
+    }
+
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Comprimido) {
+        dibujarControlesComprimidos(contextoMemoria, ventana, areaCliente);
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
+               contextoMemoria, 0, 0, SRCCOPY);
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+        EndPaint(ventana, &pintura);
+        return;
+    }
+
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen) {
+        dibujarBarraControlesImagen(contextoMemoria, areaCliente);
+        BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
+               contextoMemoria, 0, 0, SRCCOPY);
+
+        SelectObject(contextoMemoria, mapaBitsAnterior);
+        DeleteObject(mapaBitsMemoria);
+        DeleteDC(contextoMemoria);
+        EndPaint(ventana, &pintura);
+        return;
+    }
 
     MFP_MEDIAPLAYER_STATE estadoReproduccion = MFP_MEDIAPLAYER_STATE_EMPTY;
     BOOL sonidoSilenciado = TRUE;
@@ -133,23 +1442,28 @@ void dibujarInterfaz(HWND ventana) {
         LONGLONG tiempoRestante =
             std::max(0LL, duracionTotal - posicionActual);
         std::wstring textoTranscurrido = formatearTiempo(posicionActual);
+        if (modoCursorPegadoBarraProgreso) {
+            textoTranscurrido += L" [Pegado]";
+        }
         std::wstring textoRestante =
             L"-" + formatearTiempo(tiempoRestante);
         RECT areaTranscurrido{disenoBarraProgreso.limiteIzquierdo, 5,
                               disenoBarraProgreso.limiteDerecho, 22};
         RECT areaRestante = areaTranscurrido;
         HFONT fuenteAnterior =
-            static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTexto));
-        SetTextColor(contextoDibujo, RGB(210, 210, 210));
-        DrawTextW(contextoDibujo, textoTranscurrido.c_str(), -1,
+            static_cast<HFONT>(SelectObject(contextoMemoria, fuenteTexto));
+        SetTextColor(contextoMemoria, modoCursorPegadoBarraProgreso
+                                          ? RGB(94, 181, 255)
+                                          : RGB(210, 210, 210));
+        DrawTextW(contextoMemoria, textoTranscurrido.c_str(), -1,
                   &areaTranscurrido,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        DrawTextW(contextoDibujo, textoRestante.c_str(), -1, &areaRestante,
+        DrawTextW(contextoMemoria, textoRestante.c_str(), -1, &areaRestante,
                   DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-        SelectObject(contextoDibujo, fuenteAnterior);
+        SelectObject(contextoMemoria, fuenteAnterior);
     }
 
-    dibujarLinea(contextoDibujo, disenoBarraProgreso.limiteIzquierdo,
+    dibujarLinea(contextoMemoria, disenoBarraProgreso.limiteIzquierdo,
                  disenoBarraProgreso.limiteDerecho,
                  disenoBarraProgreso.centroVertical, 3,
                  tiempoDisponible && posicionamientoDisponible.load()
@@ -157,43 +1471,75 @@ void dibujarInterfaz(HWND ventana) {
                      : RGB(58, 58, 58));
     int posicionPerilla =
         calcularPosicionProgreso(disenoBarraProgreso, progresoNormalizado);
-    dibujarLinea(contextoDibujo, disenoBarraProgreso.limiteIzquierdo,
+    dibujarLinea(contextoMemoria, disenoBarraProgreso.limiteIzquierdo,
                  posicionPerilla, disenoBarraProgreso.centroVertical, 4,
                  RGB(0, 120, 215));
 
-    HBRUSH pincelPerilla = CreateSolidBrush(RGB(245, 245, 245));
+    if (modoCursorPegadoBarraProgreso) {
+        HBRUSH brochaHalo = CreateSolidBrush(RGB(0, 120, 215));
+        HBRUSH brochaPreviaHalo = static_cast<HBRUSH>(
+            SelectObject(contextoMemoria, brochaHalo));
+        HPEN lapizHalo = CreatePen(PS_SOLID, 1, RGB(94, 181, 255));
+        HPEN lapizPrevioHalo = static_cast<HPEN>(
+            SelectObject(contextoMemoria, lapizHalo));
+        Ellipse(contextoMemoria, posicionPerilla - RADIO_PERILLA_PROGRESO - 3,
+                disenoBarraProgreso.centroVertical - RADIO_PERILLA_PROGRESO - 3,
+                posicionPerilla + RADIO_PERILLA_PROGRESO + 4,
+                disenoBarraProgreso.centroVertical + RADIO_PERILLA_PROGRESO + 4);
+        SelectObject(contextoMemoria, lapizPrevioHalo);
+        SelectObject(contextoMemoria, brochaPreviaHalo);
+        DeleteObject(lapizHalo);
+        DeleteObject(brochaHalo);
+    }
+
+    HBRUSH pincelPerilla = CreateSolidBrush(
+        modoCursorPegadoBarraProgreso ? RGB(94, 181, 255) : RGB(245, 245, 245));
     HBRUSH pincelPreviamenteSeleccionado =
-        static_cast<HBRUSH>(SelectObject(contextoDibujo, pincelPerilla));
+        static_cast<HBRUSH>(SelectObject(contextoMemoria, pincelPerilla));
     HPEN lapizBorde = CreatePen(PS_SOLID, 1, RGB(0, 120, 215));
     HPEN lapizPreviamenteSeleccionado =
-        static_cast<HPEN>(SelectObject(contextoDibujo, lapizBorde));
-    Ellipse(contextoDibujo, posicionPerilla - RADIO_PERILLA_PROGRESO,
+        static_cast<HPEN>(SelectObject(contextoMemoria, lapizBorde));
+    Ellipse(contextoMemoria, posicionPerilla - RADIO_PERILLA_PROGRESO,
             disenoBarraProgreso.centroVertical - RADIO_PERILLA_PROGRESO,
             posicionPerilla + RADIO_PERILLA_PROGRESO + 1,
             disenoBarraProgreso.centroVertical + RADIO_PERILLA_PROGRESO + 1);
-    SelectObject(contextoDibujo, lapizPreviamenteSeleccionado);
-    SelectObject(contextoDibujo, pincelPreviamenteSeleccionado);
+    SelectObject(contextoMemoria, lapizPreviamenteSeleccionado);
+    SelectObject(contextoMemoria, pincelPreviamenteSeleccionado);
     DeleteObject(lapizBorde);
     DeleteObject(pincelPerilla);
 
     bool reproduciendo =
         estadoReproduccion == MFP_MEDIAPLAYER_STATE_PLAYING;
-    dibujarBotonControl(contextoDibujo,
+    dibujarBotonControl(contextoMemoria,
+                         disenoBarraProgreso.botonAnterior,
+                         GLIFO_ANTERIOR, false, false);
+    dibujarBotonControl(contextoMemoria,
                          disenoBarraProgreso.botonReproduccion,
                          reproduciendo ? GLIFO_PAUSAR : GLIFO_REPRODUCIR,
                          reproduciendo, true);
-    dibujarBotonControl(contextoDibujo, disenoBarraProgreso.botonSonido,
+    dibujarBotonControl(contextoMemoria,
+                         disenoBarraProgreso.botonSiguiente,
+                         GLIFO_SIGUIENTE, false, false);
+    dibujarBotonControl(contextoMemoria, disenoBarraProgreso.botonSonido,
                          sonidoSilenciado ? GLIFO_SILENCIO : GLIFO_VOLUMEN,
                          !sonidoSilenciado, false);
-    dibujarBotonControl(contextoDibujo,
+    dibujarBotonControl(contextoMemoria,
                          disenoBarraProgreso.botonRepeticion,
                          GLIFO_REPETICION, repeticionHabilitada.load(),
                          false);
 
-    if (GetFocus() == ventana) {
-        RECT areaFoco = disenoBarraProgreso.areaInteractiva;
-        InflateRect(&areaFoco, -2, -1);
-        DrawFocusRect(contextoDibujo, &areaFoco);
-    }
+    std::wstring etiquetaVelocidad =
+        formatearEtiquetaVelocidad(velocidadReproduccionActual.load());
+    dibujarBotonTexto(contextoMemoria, disenoBarraProgreso.botonVelocidad,
+                      etiquetaVelocidad.c_str(), menuVelocidadDesplegado);
+
+    BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente, contextoMemoria,
+           0, 0, SRCCOPY);
+
+    SelectObject(contextoMemoria, mapaBitsAnterior);
+    DeleteObject(mapaBitsMemoria);
+    DeleteDC(contextoMemoria);
+
     EndPaint(ventana, &pintura);
 }
+

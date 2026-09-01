@@ -7,7 +7,7 @@ $ejecutable = Join-Path $env:TEMP 'useful-sideview-barra-progreso-test.exe'
 
 & $compilador -std=c++23 -target x86_64-w64-mingw32 `
     -DUNICODE -D_UNICODE -I (Join-Path $raiz 'src') `
-    $fuente -o $ejecutable -luser32
+    $fuente -o $ejecutable -static -luser32 -lgdi32 -lole32 -lshlwapi -lgdiplus -lwindowscodecs -lurlmon -lcabinet -lcomdlg32
 if ($LASTEXITCODE -ne 0) {
     throw 'No fue posible compilar la prueba de la barra de progreso.'
 }
@@ -34,6 +34,22 @@ function Obtener-SegmentoFuncion {
 
 $codigoControles = Get-Content -Raw -LiteralPath (
     Join-Path $raiz 'src\reproductor\controles.cpp')
+$codigoRenderizado = Get-Content -Raw -LiteralPath (
+    Join-Path $raiz 'src\interfaz\renderizado.cpp')
+$codigoVentanas = Get-Content -Raw -LiteralPath (
+    Join-Path $raiz 'src\interfaz\ventanas.cpp')
+
+# El foco lógico conserva los atajos del slider, pero su representación visual
+# pertenece al diseño del mod y no debe delegarse al rectángulo punteado Win32.
+if ($codigoRenderizado -match '\bDrawFocusRect\s*\(') {
+    throw 'La barra de progreso no debe dibujar un contorno de foco.'
+}
+if ($codigoControles -notmatch '\bSetFocus\s*\(' -or
+    $codigoVentanas -notmatch '\bWM_KEYDOWN\b' -or
+    $codigoVentanas -notmatch '\bWM_GETDLGCODE\b') {
+    throw 'La barra debe conservar el foco lógico y la entrada de teclado.'
+}
+
 $segmentoInicioArrastre = Obtener-SegmentoFuncion $codigoControles `
     'void iniciarArrastreBarraProgreso' `
     'void actualizarArrastreBarraProgreso'

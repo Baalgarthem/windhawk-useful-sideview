@@ -192,6 +192,65 @@ void alternarRepeticion() {
     invalidarInterfazControles();
 }
 
+bool reproducirVideoPorRuta(const std::wstring& rutaNuevoVideo) {
+    if (!reproductor || rutaNuevoVideo.empty()) return false;
+    navegacionManualEnCurso.store(true);
+    reproductor->Stop();
+    reiniciarCacheTiempoReproduccion();
+    rutaVideoActiva = rutaNuevoVideo;
+    HRESULT resultadoCarga = reproductor->CreateMediaItemFromURL(
+        rutaNuevoVideo.c_str(), FALSE, 0, nullptr);
+    if (FAILED(resultadoCarga)) {
+        navegacionManualEnCurso.store(false);
+        Wh_Log(L"No fue posible cargar el video: %s (HRESULT 0x%08X)",
+               rutaNuevoVideo.c_str(),
+               static_cast<unsigned int>(resultadoCarga));
+        return false;
+    }
+    return true;
+}
+
+void reproducirVideoAnterior() {
+    if (listaVideosSeleccionados.size() > 1) {
+        indiceVideoSeleccionado =
+            (indiceVideoSeleccionado == 0)
+                ? (listaVideosSeleccionados.size() - 1)
+                : (indiceVideoSeleccionado - 1);
+        reproducirVideoPorRuta(listaVideosSeleccionados[indiceVideoSeleccionado]);
+        return;
+    }
+    if (rutaVideoActiva.empty()) return;
+    std::wstring rutaAnterior =
+        obtenerVideoAnteriorEnCarpeta(rutaVideoActiva);
+    if (!rutaAnterior.empty()) {
+        reproducirVideoPorRuta(rutaAnterior);
+    }
+}
+
+void reproducirVideoSiguiente() {
+    if (listaVideosSeleccionados.size() > 1) {
+        indiceVideoSeleccionado =
+            (indiceVideoSeleccionado + 1) % listaVideosSeleccionados.size();
+        reproducirVideoPorRuta(listaVideosSeleccionados[indiceVideoSeleccionado]);
+        return;
+    }
+    if (rutaVideoActiva.empty()) return;
+    std::wstring rutaSiguiente =
+        obtenerVideoSiguienteEnCarpeta(rutaVideoActiva);
+    if (!rutaSiguiente.empty()) {
+        reproducirVideoPorRuta(rutaSiguiente);
+    }
+}
+
+void cambiarVelocidadReproduccion(float nuevaVelocidad) {
+    if (!reproductor) return;
+    if (SUCCEEDED(reproductor->SetRate(nuevaVelocidad))) {
+        velocidadReproduccionActual.store(nuevaVelocidad);
+    }
+    invalidarInterfazControles();
+}
+
+
 void iniciarArrastreBarraProgreso(HWND ventana, int posicionHorizontal) {
     if (!reproductor || !posicionamientoDisponible.load()) return;
 
@@ -223,8 +282,29 @@ void finalizarArrastreBarraProgreso(HWND ventana, bool aplicarCambio) {
         buscarEnReproduccion(proporcionProgreso);
     }
     arrastrandoBarraProgreso = false;
+    modoCursorPegadoBarraProgreso = false;
     if (GetCapture() == ventana) ReleaseCapture();
     invalidarInterfazControles();
+}
+
+void iniciarModoCursorPegadoBarraProgreso(HWND ventana, int posicionHorizontal) {
+    if (!reproductor || !posicionamientoDisponible.load()) return;
+
+    DisenoBarraProgreso disenoBarraProgreso =
+        calcularDisenoBarraProgreso(ventana);
+    proporcionProgreso = calcularProporcionProgreso(
+        disenoBarraProgreso, posicionHorizontal);
+    arrastrandoBarraProgreso = true;
+    modoCursorPegadoBarraProgreso = true;
+
+    SetFocus(ventana);
+    SetCapture(ventana);
+    invalidarInterfazControles();
+}
+
+void cancelarModoCursorPegadoBarraProgreso(HWND ventana, bool aplicarCambio) {
+    modoCursorPegadoBarraProgreso = false;
+    finalizarArrastreBarraProgreso(ventana, aplicarCambio);
 }
 
 void desplazarBarraProgresoConTeclado(double incrementoProporcion) {

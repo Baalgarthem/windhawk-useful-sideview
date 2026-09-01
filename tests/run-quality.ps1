@@ -119,7 +119,8 @@ try {
 
     $bibliotecas = @(
         '-lole32', '-loleaut32', '-lmfplay', '-lmfplat', '-lmfuuid',
-        '-lshlwapi', '-lgdi32', '-luuid'
+        '-lshlwapi', '-lgdi32', '-luuid', '-lgdiplus', '-lwindowscodecs',
+        '-lurlmon', '-lcabinet', '-lcomdlg32', '-lcomctl32'
     )
     & $compilador "@$banderasWindhawk" '-shared' $distribucion `
         '-o' $dllTemporal @bibliotecas
