@@ -24,21 +24,103 @@ BOOL CALLBACK encontrarVistaDeArchivos(HWND ventanaCandidata,
 }
 
 bool obtenerAreaPanel(RECT* areaPanel);
-bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada);
+bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada = nullptr);
+
+inline void bloquearYSuprimirPanelNativoWindows(HWND ventanaExplorador) {
+    if (!ventanaExplorador || !IsWindow(ventanaExplorador)) return;
+
+    EnumChildWindows(
+        ventanaExplorador,
+        [](HWND ventanaHija, LPARAM) -> BOOL {
+            if (ventanaHija == ventanaReproductor || ventanaHija == ventanaVideo ||
+                ventanaHija == ventanaControles || ventanaHija == ventanaMenuVelocidad) {
+                return TRUE;
+            }
+            wchar_t nombreClase[128]{};
+            if (GetClassNameW(ventanaHija, nombreClase, ARRAYSIZE(nombreClase))) {
+                if (wcsstr(nombreClase, L"ShellPreview") ||
+                    wcsstr(nombreClase, L"PreviewHandler") ||
+                    wcsstr(nombreClase, L"ATL:") ||
+                    wcsstr(nombreClase, L"UniversalSearchBand") ||
+                    wcsstr(nombreClase, L"ActiveX") ||
+                    wcsstr(nombreClase, L"RichEdit20W_Preview")) {
+                    if (IsWindowVisible(ventanaHija)) {
+                        ShowWindow(ventanaHija, SW_HIDE);
+                        SetWindowPos(ventanaHija, nullptr, 0, 0, 0, 0,
+                                     SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE |
+                                     SWP_NOZORDER | SWP_NOACTIVATE);
+                    }
+                }
+            }
+            return TRUE;
+        },
+        0);
+}
+
+LRESULT CALLBACK procesarSubclaseVentanaExplorador(HWND hwnd, UINT uMsg,
+                                                   WPARAM wParam, LPARAM lParam,
+                                                   UINT_PTR uIdSubclass,
+                                                   DWORD_PTR dwRefData) {
+    if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) {
+        if (wParam == 'P' || wParam == 'p') {
+            bool ctrlPresionado = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            bool altPresionado = (GetKeyState(VK_MENU) & 0x8000) != 0;
+            if (ctrlPresionado || altPresionado) {
+                SendMessageW(hwnd, WM_COMMAND, 41489, 0);
+                return 0;
+            }
+        }
+    }
+    LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
+    if (uMsg == WM_COMMAND) {
+        WORD idComando = LOWORD(wParam);
+        if (idComando == 41489 || idComando == 0xA211 ||
+            idComando == 41490 || idComando == 0xA212) {
+            RECT areaPanelCalculada{};
+            if (obtenerAreaPanel(&areaPanelCalculada)) {
+                ajustarReproductorAlPanel(&areaPanelCalculada);
+                invalidarInterfaz();
+            } else if (ventanaReproductor && IsWindow(ventanaReproductor)) {
+                ShowWindow(ventanaReproductor, SW_HIDE);
+            }
+        }
+    } else if (uMsg == WM_WINDOWPOSCHANGED || uMsg == WM_SIZE) {
+        if (ventanaReproductor && IsWindow(ventanaReproductor) && IsWindowVisible(ventanaReproductor)) {
+            RECT areaPanelCalculada{};
+            if (obtenerAreaPanel(&areaPanelCalculada)) {
+                ajustarReproductorAlPanel(&areaPanelCalculada);
+            }
+        }
+    } else if (uMsg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, procesarSubclaseVentanaExplorador, uIdSubclass);
+    }
+    return resultado;
+}
+
+inline void asegurarSubclaseVentanaExplorador(HWND ventanaExplorador) {
+    if (ventanaExplorador && IsWindow(ventanaExplorador)) {
+        SetWindowSubclass(ventanaExplorador, procesarSubclaseVentanaExplorador,
+                          ID_SUBCLASE_VENTANA_EXPLORADOR, 0);
+    }
+}
 
 LRESULT CALLBACK procesarSubclaseVistaArchivos(HWND hwnd, UINT uMsg,
                                               WPARAM wParam, LPARAM lParam,
                                               UINT_PTR uIdSubclass,
                                               DWORD_PTR dwRefData) {
     if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) {
+        if (wParam == VK_DELETE || wParam == VK_F2) {
+            if (reproductor) {
+                reproductor->Stop();
+            }
+        }
         if (wParam == 'P' || wParam == 'p') {
             bool ctrlPresionado = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             bool altPresionado = (GetKeyState(VK_MENU) & 0x8000) != 0;
             if (ctrlPresionado || altPresionado) {
-                HWND ventanaAnfitriona = ventanaExploradorAnfitriona ? ventanaExploradorAnfitriona : GetAncestor(hwnd, GA_ROOT);
-                if (ventanaAnfitriona && IsWindow(ventanaAnfitriona)) {
-                    // 41489 (0xA211) es el comando nativo de Explorer para alternar el panel de previsualización
-                    PostMessageW(ventanaAnfitriona, WM_COMMAND, 41489, 0);
+                HWND ventanaRaiz = normalizarVentanaExploradorAnfitriona(hwnd);
+                if (ventanaRaiz) {
+                    SendMessageW(ventanaRaiz, WM_COMMAND, 41489, 0);
                     return 0;
                 }
             }
@@ -47,9 +129,9 @@ LRESULT CALLBACK procesarSubclaseVistaArchivos(HWND hwnd, UINT uMsg,
     LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
     if (uMsg == WM_WINDOWPOSCHANGED || uMsg == WM_SIZE || uMsg == WM_SHOWWINDOW) {
         if (ventanaReproductor && IsWindow(ventanaReproductor)) {
-            RECT areaPanel{};
-            if (obtenerAreaPanel(&areaPanel)) {
-                ajustarReproductorAlPanel(&areaPanel);
+            RECT areaPanelCalculada{};
+            if (obtenerAreaPanel(&areaPanelCalculada)) {
+                ajustarReproductorAlPanel(&areaPanelCalculada);
             }
         }
     } else if (uMsg == WM_NCDESTROY) {
@@ -68,31 +150,30 @@ inline void asegurarSubclaseVistaArchivos(HWND vistaArchivos) {
 bool obtenerAreaPanel(RECT* areaPanel) {
     if (!areaPanel) return false;
 
-    if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona) ||
-        !IsWindowVisible(ventanaExploradorAnfitriona)) {
-        DWORD procesoActual = GetCurrentProcessId();
-        HWND ventanaFoco = GetForegroundWindow();
-        if (ventanaFoco) {
-            DWORD identificadorProcesoFoco = 0;
-            GetWindowThreadProcessId(ventanaFoco, &identificadorProcesoFoco);
-            if (identificadorProcesoFoco == procesoActual) {
-                HWND ventanaNormalizada = normalizarVentanaExploradorAnfitriona(ventanaFoco);
-                if (ventanaNormalizada && IsWindowVisible(ventanaNormalizada)) {
-                    ventanaExploradorAnfitriona = ventanaNormalizada;
-                }
+    DWORD procesoActual = GetCurrentProcessId();
+    HWND ventanaFoco = GetForegroundWindow();
+    if (ventanaFoco) {
+        DWORD identificadorProcesoFoco = 0;
+        GetWindowThreadProcessId(ventanaFoco, &identificadorProcesoFoco);
+        if (identificadorProcesoFoco == procesoActual) {
+            HWND ventanaNormalizada = normalizarVentanaExploradorAnfitriona(ventanaFoco);
+            if (ventanaNormalizada && IsWindowVisible(ventanaNormalizada)) {
+                ventanaExploradorAnfitriona = ventanaNormalizada;
             }
         }
-        if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona)) {
-            HWND ventanaCandidataExplorador = FindWindowExW(nullptr, nullptr, L"CabinetWClass", nullptr);
-            while (ventanaCandidataExplorador) {
-                DWORD identificadorProcesoCandidata = 0;
-                GetWindowThreadProcessId(ventanaCandidataExplorador, &identificadorProcesoCandidata);
-                if (identificadorProcesoCandidata == procesoActual && IsWindowVisible(ventanaCandidataExplorador)) {
-                    ventanaExploradorAnfitriona = normalizarVentanaExploradorAnfitriona(ventanaCandidataExplorador);
-                    break;
-                }
-                ventanaCandidataExplorador = FindWindowExW(nullptr, ventanaCandidataExplorador, L"CabinetWClass", nullptr);
+    }
+
+    if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona) ||
+        !IsWindowVisible(ventanaExploradorAnfitriona)) {
+        HWND ventanaCandidataExplorador = FindWindowExW(nullptr, nullptr, L"CabinetWClass", nullptr);
+        while (ventanaCandidataExplorador) {
+            DWORD identificadorProcesoCandidata = 0;
+            GetWindowThreadProcessId(ventanaCandidataExplorador, &identificadorProcesoCandidata);
+            if (identificadorProcesoCandidata == procesoActual && IsWindowVisible(ventanaCandidataExplorador)) {
+                ventanaExploradorAnfitriona = normalizarVentanaExploradorAnfitriona(ventanaCandidataExplorador);
+                break;
             }
+            ventanaCandidataExplorador = FindWindowExW(nullptr, ventanaCandidataExplorador, L"CabinetWClass", nullptr);
         }
     }
 
@@ -101,12 +182,18 @@ bool obtenerAreaPanel(RECT* areaPanel) {
         return false;
     }
 
+    asegurarSubclaseVentanaExplorador(ventanaExploradorAnfitriona);
+
     HWND vistaArchivos = ventanaVistaArchivosActiva;
-    if (!vistaArchivos || !IsWindow(vistaArchivos) || !IsWindowVisible(vistaArchivos)) {
+    if (!vistaArchivos || !IsWindow(vistaArchivos) || !IsWindowVisible(vistaArchivos) ||
+        !IsChild(ventanaExploradorAnfitriona, vistaArchivos)) {
         DatosBusquedaVistaArchivos datosBusqueda;
         EnumChildWindows(ventanaExploradorAnfitriona, encontrarVistaDeArchivos,
                          reinterpret_cast<LPARAM>(&datosBusqueda));
         vistaArchivos = datosBusqueda.mejorVistaArchivos;
+        if (vistaArchivos) {
+            ventanaVistaArchivosActiva = vistaArchivos;
+        }
     }
     if (!vistaArchivos) return false;
 
@@ -120,7 +207,10 @@ bool obtenerAreaPanel(RECT* areaPanel) {
     constexpr int ANCHO_MINIMO_PANEL = 100;
     constexpr int MARGEN_SEPARADOR_EXPLORER = 4;
     int anchoPanelDetectado = areaContenedorPantalla.right - (areaVistaPantalla.right + MARGEN_SEPARADOR_EXPLORER);
-    if (anchoPanelDetectado < ANCHO_MINIMO_PANEL) return false;
+
+    if (anchoPanelDetectado < ANCHO_MINIMO_PANEL) {
+        return false;
+    }
 
     RECT rectPanelPantalla = {
         areaVistaPantalla.right + MARGEN_SEPARADOR_EXPLORER,
@@ -161,7 +251,7 @@ inline bool debeBloquearTamanoParaTipo(TipoContenidoArchivo tipoContenido) {
     }
 }
 
-bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada = nullptr) {
+bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada) {
     if (!ventanaReproductor) return false;
     RECT areaPanel;
     if (areaPanelCalculada) {
@@ -169,6 +259,10 @@ bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada = nullptr) {
     } else if (!obtenerAreaPanel(&areaPanel)) {
         ShowWindow(ventanaReproductor, SW_HIDE);
         return false;
+    }
+
+    if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
+        bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
     }
 
     if (GetParent(ventanaReproductor) != ventanaExploradorAnfitriona) {
@@ -184,6 +278,15 @@ bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada = nullptr) {
     int nuevoAlto = areaPanel.bottom - areaPanel.top;
     int anchoActual = areaActual.right - areaActual.left;
     int altoActual = areaActual.bottom - areaActual.top;
+
+    bool dimensionesCambiaron = (areaActual.left != areaPanel.left ||
+                                 areaActual.top != areaPanel.top ||
+                                 anchoActual != nuevoAncho ||
+                                 altoActual != nuevoAlto);
+
+    if (!dimensionesCambiaron && IsWindowVisible(ventanaReproductor)) {
+        return true;
+    }
 
     bool bloqueoActivo = debeBloquearTamanoParaTipo(tipoContenidoActivo.load());
     if (bloqueoActivo && anchoActual > 0 && altoActual > 0) {
@@ -233,6 +336,11 @@ void liberarRecursosDelReproductor() {
     }
     ventanaVistaArchivosActiva = nullptr;
 
+    if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
+        RemoveWindowSubclass(ventanaExploradorAnfitriona, procesarSubclaseVentanaExplorador,
+                             ID_SUBCLASE_VENTANA_EXPLORADOR);
+    }
+
     if (ventanaReproductor) DestroyWindow(ventanaReproductor);
 
     ventanaReproductor = nullptr;
@@ -247,6 +355,10 @@ void liberarRecursosDelReproductor() {
 bool asegurarVentanasContenedoras() {
     RECT areaPanel;
     if (!obtenerAreaPanel(&areaPanel)) return false;
+
+    if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
+        bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
+    }
 
     if (ventanaReproductor && IsWindow(ventanaReproductor)) {
         if (GetParent(ventanaReproductor) != ventanaExploradorAnfitriona) {
@@ -339,6 +451,7 @@ inline void detenerYLiberarReproductorMfSiExiste() {
 
 inline void liberarRecursosDeTodasCategorias() {
     detenerYLiberarReproductorMfSiExiste();
+    liberarRecursosVideo();
     liberarRecursosImagen();
     liberarRecursosTexto();
     liberarRecursosComprimido();
@@ -351,13 +464,7 @@ inline void liberarRecursosDeTodasCategorias() {
 
 bool asegurarReproductor(const std::vector<std::wstring>& listaVideos) {
     if (listaVideos.empty()) return false;
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::Video);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -382,23 +489,22 @@ bool asegurarReproductor(const std::vector<std::wstring>& listaVideos) {
                   return StrCmpLogicalW(rutaPrimera.c_str(), rutaSegunda.c_str()) < 0;
               });
     indiceVideoSeleccionado = 0;
+    actualizarMetadatosVideo(listaVideosSeleccionados.front());
     reproductor->Stop();
     reproductor->SetMute(!configuracion.sonidoHabilitado.load());
     reiniciarCacheTiempoReproduccion();
     HRESULT resultadoCarga = reproductor->CreateMediaItemFromURL(
         listaVideosSeleccionados.front().c_str(), FALSE, 0, nullptr);
+    if (ventanaReproductor && IsWindow(ventanaReproductor)) {
+        InvalidateRect(ventanaReproductor, nullptr, TRUE);
+    }
     invalidarInterfaz();
     return SUCCEEDED(resultadoCarga);
 }
 
 bool asegurarVisorImagen(const std::vector<std::wstring>& listaImagenes) {
     if (listaImagenes.empty()) return false;
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::Imagen);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -417,12 +523,7 @@ bool asegurarVisorImagen(const std::vector<std::wstring>& listaImagenes) {
 
 bool asegurarVisorTexto(const std::vector<std::wstring>& listaTextos) {
     if (listaTextos.empty()) return false;
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::Texto);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -442,13 +543,7 @@ bool asegurarVisorTexto(const std::vector<std::wstring>& listaTextos) {
 bool asegurarVisorPendiente(const std::vector<std::wstring>& listaArchivos,
                             TipoContenidoArchivo tipo) {
     if (listaArchivos.empty()) return false;
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(tipo);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -472,12 +567,7 @@ bool asegurarVisorPendiente(const std::vector<std::wstring>& listaArchivos,
 
 bool asegurarVisorComprimidos(
     const std::vector<std::wstring>& listaArchivos) {
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::Comprimido);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -495,12 +585,7 @@ bool asegurarVisorComprimidos(
 
 bool asegurarVisorVistaCarpetas(
     const std::vector<std::wstring>& listaCarpetas) {
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::VistaCarpetas);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -517,13 +602,7 @@ bool asegurarVisorVistaCarpetas(
 }
 
 bool asegurarVisorVistaVacia(const std::wstring& rutaCarpeta) {
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::VistaVacia);
 
     if (!asegurarVentanasContenedoras()) return false;
@@ -536,14 +615,7 @@ bool asegurarVisorVistaVacia(const std::wstring& rutaCarpeta) {
 
 bool asegurarVisorDesconocido(const std::vector<std::wstring>& listaArchivos) {
     if (listaArchivos.empty()) return false;
-    detenerYLiberarReproductorMfSiExiste();
-    liberarRecursosImagen();
-    liberarRecursosTexto();
-    liberarRecursosComprimido();
-    liberarRecursosVistaCarpetas();
-    liberarRecursosDocumentos();
-    liberarRecursosCodigo();
-    liberarRecursosDesconocido();
+    liberarRecursosDeTodasCategorias();
     tipoContenidoActivo.store(TipoContenidoArchivo::Desconocido);
 
     if (!asegurarVentanasContenedoras()) return false;

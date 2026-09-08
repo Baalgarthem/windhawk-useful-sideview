@@ -179,7 +179,11 @@ struct DisenoComprimidos {
     RECT areaControles{};
     bool tieneComics{false};
 
-    // Fila Abrir con (exclusiva para cómics)
+    // Cabecera y separador de operaciones
+    RECT areaTituloOperaciones{};
+    RECT areaSeparadorOperaciones{};
+
+    // Fila Abrir con
     RECT areaEtiquetaAbrirCon{};
     RECT botonDesplegablePrograma{};
     RECT panelOpcionesPrograma{};
@@ -192,9 +196,6 @@ struct DisenoComprimidos {
     RECT panelOpcionesFormato{};
     RECT opcionesFormato[TOTAL_FORMATOS_DESTINO]{};
     RECT botonEjecutarConversion{};
-
-    // Recuadro Log
-    RECT areaRecuadroLog{};
 };
 
 inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
@@ -208,13 +209,26 @@ inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
     int anchoDisponible = std::max<int>(
         100, static_cast<int>(areaCliente.right) - margenLateral * 2);
 
-    int altoOpcion = 24;
-
-    int altoFila = 28;
+    int altoFila = 26;
     int anchoBotonAccion = 82;
 
+    // Sección de operaciones
+    int topeTitulo = 6;
+    diseno.areaTituloOperaciones = {
+        margenLateral, topeTitulo,
+        static_cast<LONG>(areaCliente.right) - margenLateral,
+        topeTitulo + 18
+    };
+
+    int topeSeparador = topeTitulo + 20;
+    diseno.areaSeparadorOperaciones = {
+        margenLateral, topeSeparador,
+        static_cast<LONG>(areaCliente.right) - margenLateral,
+        topeSeparador + 1
+    };
+
     // Fila 1: Abrir con
-    int topeFilaAbrir = 8;
+    int topeFilaAbrir = topeSeparador + 8;
     int anchoDesplegableProg = std::min<int>(
         170, std::max<int>(110, (anchoDisponible - anchoBotonAccion - 12) / 2 + 30));
     int anchoEtiquetaAbrir = std::max<int>(
@@ -234,28 +248,6 @@ inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
         diseno.botonDesplegablePrograma.right + 8, topeFilaAbrir,
         static_cast<LONG>(areaCliente.right) - margenLateral,
         topeFilaAbrir + altoFila};
-
-    // Menú desplegable de programas
-    size_t totalOpcionesPrograma =
-        obtenerListaProgramasActivaConst().size() + 1;
-    int altoPanelProg =
-        static_cast<int>(totalOpcionesPrograma) * altoOpcion + 6;
-    int topePanelProg = diseno.botonDesplegablePrograma.bottom + 2;
-    diseno.panelOpcionesPrograma = {
-        diseno.botonDesplegablePrograma.left, topePanelProg,
-        diseno.botonDesplegablePrograma.right + 40,
-        topePanelProg + altoPanelProg};
-
-    diseno.opcionesPrograma.resize(totalOpcionesPrograma);
-    for (size_t posicionOpcion = 0; posicionOpcion < totalOpcionesPrograma;
-         ++posicionOpcion) {
-        diseno.opcionesPrograma[posicionOpcion] = {
-            diseno.panelOpcionesPrograma.left + 2,
-            topePanelProg + 3 + static_cast<int>(posicionOpcion) * altoOpcion,
-            diseno.panelOpcionesPrograma.right - 2,
-            topePanelProg + 3 +
-                static_cast<int>(posicionOpcion + 1) * altoOpcion};
-    }
 
     // Fila 2: Convertir a
     int topeFilaConv = topeFilaAbrir + altoFila + 6;
@@ -279,31 +271,5 @@ inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
         static_cast<LONG>(areaCliente.right) - margenLateral,
         topeFilaConv + altoFila};
 
-    int altoPanelFormato = altoOpcion * TOTAL_FORMATOS_DESTINO + 6;
-    int topePanelFormato = diseno.botonDesplegableFormato.bottom + 2;
-    diseno.panelOpcionesFormato = {
-        diseno.botonDesplegableFormato.left, topePanelFormato,
-        diseno.botonDesplegableFormato.right,
-        topePanelFormato + altoPanelFormato};
-
-    for (int posicion = 0; posicion < TOTAL_FORMATOS_DESTINO; ++posicion) {
-        diseno.opcionesFormato[posicion] = {
-            diseno.panelOpcionesFormato.left + 2,
-            topePanelFormato + 3 + posicion * altoOpcion,
-            diseno.panelOpcionesFormato.right - 2,
-            topePanelFormato + 3 + (posicion + 1) * altoOpcion};
-    }
-
-    // Fila 3: Log
-    int topeSeccionLog = topeFilaConv + altoFila + 6;
-    int fondoSeccionLog = std::max<int>(
-        topeSeccionLog + 30, static_cast<int>(areaCliente.bottom) - 6);
-    diseno.areaRecuadroLog = {
-        margenLateral, topeSeccionLog,
-        static_cast<LONG>(areaCliente.right) - margenLateral,
-        fondoSeccionLog};
-
     return diseno;
 }
-
-

@@ -205,7 +205,7 @@ inline HWND normalizarVentanaExploradorAnfitriona(HWND ventanaCandidata) {
     return ventanaCandidata;
 }
 
-inline HWND encontrarContenedorPestanaOExplorador(HWND ventanaVistaDef, HWND ventanaExploradorFallback) {
+[[maybe_unused]] inline HWND encontrarContenedorPestanaOExplorador(HWND ventanaVistaDef, HWND ventanaExploradorFallback) {
     if (ventanaVistaDef && IsWindow(ventanaVistaDef)) {
         HWND ventanaRaiz = normalizarVentanaExploradorAnfitriona(ventanaVistaDef);
         if (ventanaRaiz) return ventanaRaiz;
@@ -213,35 +213,63 @@ inline HWND encontrarContenedorPestanaOExplorador(HWND ventanaVistaDef, HWND ven
     return normalizarVentanaExploradorAnfitriona(ventanaExploradorFallback);
 }
 
+inline HWND obtenerVistaArchivosVisible(HWND ventanaAnfitriona) {
+    if (!ventanaAnfitriona || !IsWindow(ventanaAnfitriona)) return nullptr;
+    struct DatosBusqueda {
+        HWND mejor{nullptr};
+        int mayorArea{0};
+    } datos;
+    EnumChildWindows(
+        ventanaAnfitriona,
+        [](HWND hwnd, LPARAM lParam) -> BOOL {
+            auto* d = reinterpret_cast<DatosBusqueda*>(lParam);
+            wchar_t clase[64];
+            if (GetClassNameW(hwnd, clase, ARRAYSIZE(clase)) &&
+                lstrcmpW(clase, L"SHELLDLL_DefView") == 0 &&
+                IsWindowVisible(hwnd)) {
+                RECT rc;
+                GetWindowRect(hwnd, &rc);
+                int w = rc.right - rc.left;
+                int h = rc.bottom - rc.top;
+                int area = w * h;
+                if (w > 50 && h > 50 && area > d->mayorArea) {
+                    d->mayorArea = area;
+                    d->mejor = hwnd;
+                }
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&datos));
+    return datos.mejor;
+}
+
 inline std::vector<std::wstring> obtenerArchivosSeleccionados(
     IShellWindows* ventanasShell,
     std::wstring* rutaCarpetaActualContenedora = nullptr) {
     DWORD procesoActual = GetCurrentProcessId();
 
-    // Descubrimiento inmediato de ventana anfitriona si aún no está enlazada o no es válida
-    if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona) || !IsWindowVisible(ventanaExploradorAnfitriona)) {
-        HWND ventanaFoco = GetForegroundWindow();
-        if (ventanaFoco) {
-            DWORD identificadorProcesoFoco = 0;
-            GetWindowThreadProcessId(ventanaFoco, &identificadorProcesoFoco);
-            if (identificadorProcesoFoco == procesoActual) {
-                HWND ventanaNormalizada = normalizarVentanaExploradorAnfitriona(ventanaFoco);
-                if (ventanaNormalizada && IsWindowVisible(ventanaNormalizada)) {
-                    ventanaExploradorAnfitriona = ventanaNormalizada;
-                }
+    HWND ventanaPrimerPlano = GetForegroundWindow();
+    if (ventanaPrimerPlano) {
+        DWORD identificadorProcesoFoco = 0;
+        GetWindowThreadProcessId(ventanaPrimerPlano, &identificadorProcesoFoco);
+        if (identificadorProcesoFoco == procesoActual) {
+            HWND ventanaNormalizada = normalizarVentanaExploradorAnfitriona(ventanaPrimerPlano);
+            if (ventanaNormalizada && IsWindowVisible(ventanaNormalizada)) {
+                ventanaExploradorAnfitriona = ventanaNormalizada;
             }
         }
-        if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona)) {
-            HWND ventanaCandidataExplorador = FindWindowExW(nullptr, nullptr, L"CabinetWClass", nullptr);
-            while (ventanaCandidataExplorador) {
-                DWORD identificadorProcesoCandidata = 0;
-                GetWindowThreadProcessId(ventanaCandidataExplorador, &identificadorProcesoCandidata);
-                if (identificadorProcesoCandidata == procesoActual && IsWindowVisible(ventanaCandidataExplorador)) {
-                    ventanaExploradorAnfitriona = normalizarVentanaExploradorAnfitriona(ventanaCandidataExplorador);
-                    break;
-                }
-                ventanaCandidataExplorador = FindWindowExW(nullptr, ventanaCandidataExplorador, L"CabinetWClass", nullptr);
+    }
+
+    if (!ventanaExploradorAnfitriona || !IsWindow(ventanaExploradorAnfitriona) || !IsWindowVisible(ventanaExploradorAnfitriona)) {
+        HWND ventanaCandidataExplorador = FindWindowExW(nullptr, nullptr, L"CabinetWClass", nullptr);
+        while (ventanaCandidataExplorador) {
+            DWORD identificadorProcesoCandidata = 0;
+            GetWindowThreadProcessId(ventanaCandidataExplorador, &identificadorProcesoCandidata);
+            if (identificadorProcesoCandidata == procesoActual && IsWindowVisible(ventanaCandidataExplorador)) {
+                ventanaExploradorAnfitriona = normalizarVentanaExploradorAnfitriona(ventanaCandidataExplorador);
+                break;
             }
+            ventanaCandidataExplorador = FindWindowExW(nullptr, ventanaCandidataExplorador, L"CabinetWClass", nullptr);
         }
     }
 
@@ -250,72 +278,70 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
     long cantidadVentanasShell = 0;
     if (FAILED(ventanasShell->get_Count(&cantidadVentanasShell))) return {};
 
-    std::wstring carpetaCandidata;
-    HWND ventanaCandidata = nullptr;
+    HWND vistaArchivosVisibleEnPantalla = obtenerVistaArchivosVisible(ventanaExploradorAnfitriona);
 
-    for (long posicionVentanaShell = 0;
-         posicionVentanaShell < cantidadVentanasShell;
-         ++posicionVentanaShell) {
+    auto extraerDatosElementoShell = [&](long indiceItem, std::vector<std::wstring>* rutasOut, std::wstring* rutaDirOut, HWND* hwndDefViewOut) -> bool {
+        rutasOut->clear();
+        rutaDirOut->clear();
+        if (hwndDefViewOut) *hwndDefViewOut = nullptr;
+
         VARIANT identificadorVentanaShell;
         VariantInit(&identificadorVentanaShell);
         identificadorVentanaShell.vt = VT_I4;
-        identificadorVentanaShell.lVal = posicionVentanaShell;
+        identificadorVentanaShell.lVal = indiceItem;
 
         PunteroCom<IDispatch> despachoVentana;
         HRESULT resultadoElemento = ventanasShell->Item(
             identificadorVentanaShell, despachoVentana.recibir());
         VariantClear(&identificadorVentanaShell);
-        if (FAILED(resultadoElemento) || !despachoVentana) continue;
+        if (FAILED(resultadoElemento) || !despachoVentana) return false;
 
         PunteroCom<IWebBrowserApp> explorador;
         if (FAILED(despachoVentana->QueryInterface(
                 IID_PPV_ARGS(explorador.recibir()))) || !explorador) {
-            continue;
+            return false;
         }
 
         SHANDLE_PTR identificadorVentana = 0;
-        if (FAILED(explorador->get_HWND(&identificadorVentana))) continue;
+        if (FAILED(explorador->get_HWND(&identificadorVentana))) return false;
 
         HWND ventanaExplorador = reinterpret_cast<HWND>(identificadorVentana);
         DWORD identificadorProceso = 0;
         GetWindowThreadProcessId(ventanaExplorador, &identificadorProceso);
-
-        if (identificadorProceso != procesoActual || !IsWindowVisible(ventanaExplorador)) {
-            continue;
-        }
+        if (identificadorProceso != procesoActual) return false;
 
         PunteroCom<IServiceProvider> proveedorServicios;
         if (FAILED(explorador->QueryInterface(
                 IID_PPV_ARGS(proveedorServicios.recibir())))) {
-            continue;
+            return false;
         }
 
         PunteroCom<IShellBrowser> navegadorCarpetas;
         if (FAILED(proveedorServicios->QueryService(
                 SID_STopLevelBrowser,
                 IID_PPV_ARGS(navegadorCarpetas.recibir())))) {
-            continue;
+            return false;
         }
 
         PunteroCom<IShellView> vistaActiva;
         if (FAILED(navegadorCarpetas->QueryActiveShellView(
                 vistaActiva.recibir())) || !vistaActiva) {
-            continue;
+            return false;
         }
 
         PunteroCom<IFolderView2> vistaCarpeta;
         if (FAILED(vistaActiva->QueryInterface(
                 IID_PPV_ARGS(vistaCarpeta.recibir()))) || !vistaCarpeta) {
-            continue;
+            return false;
         }
 
         HWND ventanaVistaDef = nullptr;
         if (FAILED(vistaActiva->GetWindow(&ventanaVistaDef)) ||
-            !ventanaVistaDef || !IsWindow(ventanaVistaDef) ||
-            !IsWindowVisible(ventanaVistaDef)) {
-            continue;
+            !ventanaVistaDef || !IsWindow(ventanaVistaDef)) {
+            return false;
         }
-        ventanaVistaArchivosActiva = ventanaVistaDef;
+
+        if (hwndDefViewOut) *hwndDefViewOut = ventanaVistaDef;
 
         std::wstring rutaDirectorioActual;
         PunteroCom<IShellItem> elementoDirectorio;
@@ -365,11 +391,7 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
             }
         }
 
-        HWND ventanaPrimerPlano = GetForegroundWindow();
-        bool esVentanaPrimerPlano = (ventanaPrimerPlano &&
-                                     (ventanaExplorador == ventanaPrimerPlano ||
-                                      IsChild(ventanaExplorador, ventanaPrimerPlano) ||
-                                      (ventanaReproductor && (ventanaPrimerPlano == ventanaReproductor || IsChild(ventanaReproductor, ventanaPrimerPlano)))));
+        *rutaDirOut = rutaDirectorioActual;
 
         PunteroCom<IShellItemArray> elementosSeleccionados;
         HRESULT resultadoSeleccion =
@@ -379,67 +401,94 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
             DWORD cantidadSeleccionados = 0;
             elementosSeleccionados->GetCount(&cantidadSeleccionados);
 
-            std::vector<std::wstring> listaRutasSeleccionadas;
             for (DWORD posicionElemento = 0;
                  posicionElemento < cantidadSeleccionados;
                  ++posicionElemento) {
-                PunteroCom<IShellItem> elementoSeleccionado;
-                if (SUCCEEDED(elementosSeleccionados->GetItemAt(
-                        posicionElemento, elementoSeleccionado.recibir())) &&
-                    elementoSeleccionado) {
-                    PWSTR rutaElemento = nullptr;
-                    HRESULT hrElemento = elementoSeleccionado->GetDisplayName(
-                        SIGDN_FILESYSPATH, &rutaElemento);
-                    if (FAILED(hrElemento) || !rutaElemento) {
-                        hrElemento = elementoSeleccionado->GetDisplayName(
-                            SIGDN_DESKTOPABSOLUTEPARSING, &rutaElemento);
-                    }
-                    if (SUCCEEDED(hrElemento) && rutaElemento) {
-                        if (rutaDirectorioActual.empty() ||
-                            lstrcmpiW(rutaElemento, rutaDirectorioActual.c_str()) != 0) {
-                            if (esArchivoCompatible(rutaElemento)) {
-                                listaRutasSeleccionadas.push_back(rutaElemento);
-                            }
-                        }
-                        CoTaskMemFree(rutaElemento);
-                    }
-                }
-            }
-
-            if (!listaRutasSeleccionadas.empty()) {
-                std::sort(listaRutasSeleccionadas.begin(), listaRutasSeleccionadas.end(),
-                          [](const std::wstring& rutaPrimera, const std::wstring& rutaSegunda) {
-                              return StrCmpLogicalW(rutaPrimera.c_str(), rutaSegunda.c_str()) < 0;
-                          });
-                ventanaExploradorAnfitriona = encontrarContenedorPestanaOExplorador(
-                    ventanaVistaDef, ventanaExplorador);
-                if (rutaCarpetaActualContenedora) {
-                    *rutaCarpetaActualContenedora = rutaDirectorioActual;
-                }
-                return listaRutasSeleccionadas;
+                 PunteroCom<IShellItem> elementoSeleccionado;
+                 if (SUCCEEDED(elementosSeleccionados->GetItemAt(
+                         posicionElemento, elementoSeleccionado.recibir())) &&
+                     elementoSeleccionado) {
+                     PWSTR rutaElemento = nullptr;
+                     HRESULT hrElemento = elementoSeleccionado->GetDisplayName(
+                         SIGDN_FILESYSPATH, &rutaElemento);
+                     if (FAILED(hrElemento) || !rutaElemento) {
+                         hrElemento = elementoSeleccionado->GetDisplayName(
+                             SIGDN_DESKTOPABSOLUTEPARSING, &rutaElemento);
+                     }
+                     if (SUCCEEDED(hrElemento) && rutaElemento) {
+                         if (rutaDirectorioActual.empty() ||
+                             lstrcmpiW(rutaElemento, rutaDirectorioActual.c_str()) != 0) {
+                             if (esArchivoCompatible(rutaElemento)) {
+                                 rutasOut->push_back(rutaElemento);
+                             }
+                         }
+                         CoTaskMemFree(rutaElemento);
+                     }
+                 }
             }
         }
 
-        if (!rutaDirectorioActual.empty()) {
-            if (esVentanaPrimerPlano) {
-                carpetaCandidata = rutaDirectorioActual;
-                ventanaCandidata = encontrarContenedorPestanaOExplorador(
-                    ventanaVistaDef, ventanaExplorador);
-                // Si la ventana activa en primer plano tiene selección vacía, no buscar en ventanas secundarias
-                break;
-            } else if (carpetaCandidata.empty()) {
-                carpetaCandidata = rutaDirectorioActual;
-                ventanaCandidata = encontrarContenedorPestanaOExplorador(
-                    ventanaVistaDef, ventanaExplorador);
+        return true;
+    };
+
+    // FASE 1: Búsqueda exacta por correspondencia con la vista SHELLDLL_DefView activa visible en pantalla
+    if (vistaArchivosVisibleEnPantalla) {
+        for (long posicionShell = 0; posicionShell < cantidadVentanasShell; ++posicionShell) {
+            std::vector<std::wstring> rutasSeleccionadas;
+            std::wstring rutaDirectorio;
+            HWND hwndDefView = nullptr;
+            if (extraerDatosElementoShell(posicionShell, &rutasSeleccionadas, &rutaDirectorio, &hwndDefView)) {
+                if (hwndDefView == vistaArchivosVisibleEnPantalla) {
+                    ventanaVistaArchivosActiva = hwndDefView;
+                    if (rutaCarpetaActualContenedora) {
+                        *rutaCarpetaActualContenedora = rutaDirectorio;
+                    }
+                    if (!rutasSeleccionadas.empty()) {
+                        std::sort(rutasSeleccionadas.begin(), rutasSeleccionadas.end(),
+                                  [](const std::wstring& a, const std::wstring& b) {
+                                      return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
+                                  });
+                        return rutasSeleccionadas;
+                    }
+                    return {};
+                }
             }
         }
     }
 
-    if (ventanaCandidata) {
-        ventanaExploradorAnfitriona = ventanaCandidata;
+    // FASE 2: Si no hubo coincidencia directa por HWND, evaluar ventanas que pertenezcan a la anfitriona
+    std::wstring rutaDirectorioFallback;
+    for (long posicionShell = 0; posicionShell < cantidadVentanasShell; ++posicionShell) {
+        std::vector<std::wstring> rutasSeleccionadas;
+        std::wstring rutaDirectorio;
+        HWND hwndDefView = nullptr;
+        if (extraerDatosElementoShell(posicionShell, &rutasSeleccionadas, &rutaDirectorio, &hwndDefView)) {
+            if (hwndDefView && IsWindowVisible(hwndDefView)) {
+                if (!rutasSeleccionadas.empty()) {
+                    ventanaVistaArchivosActiva = hwndDefView;
+                    if (rutaCarpetaActualContenedora) {
+                        *rutaCarpetaActualContenedora = rutaDirectorio;
+                    }
+                    std::sort(rutasSeleccionadas.begin(), rutasSeleccionadas.end(),
+                              [](const std::wstring& a, const std::wstring& b) {
+                                  return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
+                              });
+                    return rutasSeleccionadas;
+                }
+                if (rutaDirectorioFallback.empty()) {
+                    rutaDirectorioFallback = rutaDirectorio;
+                    ventanaVistaArchivosActiva = hwndDefView;
+                }
+            }
+        }
     }
-    if (rutaCarpetaActualContenedora) {
-        *rutaCarpetaActualContenedora = carpetaCandidata;
+
+    if (!rutaDirectorioFallback.empty()) {
+        if (rutaCarpetaActualContenedora) {
+            *rutaCarpetaActualContenedora = rutaDirectorioFallback;
+        }
+        return {};
     }
+
     return {};
 }

@@ -28,7 +28,7 @@ struct Configuracion {
     std::wstring programaCarpetasPorDefecto;
     std::vector<std::wstring> programasCarpetasRecordados;
     std::atomic_bool interaccionArchivosVistaCarpetas{false};
-    std::atomic_bool arbolCarpetasExpandidoPorDefecto{true};
+    std::atomic_bool arbolCarpetasExpandidoPorDefecto{false};
     std::atomic<int> umbralPorcentajeBajoMedioVistaVacia{40};
     std::atomic<int> umbralPorcentajeMedioAltoVistaVacia{70};
     std::atomic<COLORREF> colorRangoBajoVistaVacia{RGB(63, 185, 80)};

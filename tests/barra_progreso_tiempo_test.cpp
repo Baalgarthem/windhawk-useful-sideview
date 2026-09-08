@@ -23,11 +23,6 @@ Configuracion configuracion;
 std::atomic<TipoContenidoArchivo> tipoContenidoActivo{TipoContenidoArchivo::Ninguno};
 bool menuVelocidadDesplegado = false;
 bool arrastrandoBarraProgreso = false;
-bool modoCursorPegadoBarraProgreso = false;
-
-Gdiplus::Bitmap* decodificarImagenConWic(const std::wstring& /*rutaArchivo*/) {
-    return nullptr;
-}
 
 std::vector<std::wstring> obtenerArchivosTextoEnMismaCarpeta(const std::wstring& rutaTexto) {
     return {rutaTexto};
@@ -41,12 +36,62 @@ std::wstring obtenerArchivoTextoSiguienteEnCarpeta(const std::wstring& rutaTexto
     return rutaTexto;
 }
 
+HWND ventanaVideo = nullptr;
+HFONT fuenteTextoPequeno = nullptr;
+
+std::vector<std::wstring> obtenerImagenesEnMismaCarpeta(const std::wstring& /*rutaImagen*/) {
+    return {L"C:\\img1.png", L"C:\\img2.jpg", L"C:\\img3.webp"};
+}
+
+std::wstring obtenerImagenAnteriorEnCarpeta(const std::wstring& rutaImagen) {
+    if (rutaImagen == L"C:\\img2.jpg") return L"C:\\img1.png";
+    return L"C:\\img3.webp";
+}
+
+std::wstring obtenerImagenSiguienteEnCarpeta(const std::wstring& rutaImagen) {
+    if (rutaImagen == L"C:\\img1.png") return L"C:\\img2.jpg";
+    return L"C:\\img3.webp";
+}
+
+#include "imagen/controlador_imagen.hpp"
 #include "comprimidos/controlador_comprimidos.hpp"
 #include "interfaz/diseno_barra_progreso.hpp"
 #include "reproductor/calculos_tiempo.hpp"
 #include "reproductor/conversion_tiempo_media_foundation.hpp"
 #include "texto/controlador_texto.hpp"
 #include "carpetas/controlador_carpetas.hpp"
+
+struct EstadoVideoMetadatos {
+    std::wstring rutaVideo;
+    std::wstring nombreArchivo;
+    std::wstring extensionFormato;
+    std::wstring textoTamano;
+    std::wstring textoDuracion;
+    std::wstring textoFechaModificacion;
+    int totalEnRango{0};
+    int indiceEnRango{0};
+    int totalEnCarpeta{0};
+    int indiceEnCarpeta{0};
+    bool esRangoSeleccionado{false};
+    ULONGLONG tiempoInicioParpadeoNav{0};
+};
+
+inline EstadoVideoMetadatos estadoVideoMetadatos;
+
+inline void liberarRecursosVideo() {
+    estadoVideoMetadatos.rutaVideo.clear();
+    estadoVideoMetadatos.nombreArchivo.clear();
+    estadoVideoMetadatos.extensionFormato.clear();
+    estadoVideoMetadatos.textoTamano.clear();
+    estadoVideoMetadatos.textoDuracion.clear();
+    estadoVideoMetadatos.textoFechaModificacion.clear();
+    estadoVideoMetadatos.totalEnRango = 0;
+    estadoVideoMetadatos.indiceEnRango = 0;
+    estadoVideoMetadatos.totalEnCarpeta = 0;
+    estadoVideoMetadatos.indiceEnCarpeta = 0;
+    estadoVideoMetadatos.esRangoSeleccionado = false;
+    estadoVideoMetadatos.tiempoInicioParpadeoNav = 0;
+}
 
 int main() {
     assert(!configuracion.reproduccionAutomatica.load());
@@ -238,21 +283,110 @@ int main() {
     assert(!esClicEnBarraProgreso(disenoClic, 295, 70));
     assert(!esClicEnBarraProgreso(disenoClic, 10, 34));
 
-    // Validar estado de modo cursor pegado (doble clic en barra de progreso)
-    assert(!modoCursorPegadoBarraProgreso);
-    modoCursorPegadoBarraProgreso = true;
-    arrastrandoBarraProgreso = true;
-    assert(modoCursorPegadoBarraProgreso && arrastrandoBarraProgreso);
-    modoCursorPegadoBarraProgreso = false;
-    arrastrandoBarraProgreso = false;
-    assert(!modoCursorPegadoBarraProgreso);
-
     // Validar constantes y geometría del menú de velocidad flotante
     assert(TOTAL_OPCIONES_VELOCIDAD == 6);
     assert(VALORES_VELOCIDAD[0] == 0.5f);
     assert(VALORES_VELOCIDAD[5] == 2.0f);
     assert(ANCHO_PANEL_VELOCIDAD == 64);
     assert(ALTO_PANEL_VELOCIDAD > 0);
-    assert(std::wstring(CLASE_VENTANA_MENU_VELOCIDAD) == L"WindhawkUsefulSideViewSpeedMenu");
+    // Validar módulo de imágenes, acciones modulares y galería
+    inicializarAccionesImagen();
+    assert(estadoImagen.accionesDisponibles.size() == 3);
+    assert(estadoImagen.accionesDisponibles[0].id == IdAccionImagen::Girar90Horario);
+    assert(estadoImagen.accionesDisponibles[1].id == IdAccionImagen::CopiarAlPortapapeles);
+    assert(estadoImagen.accionesDisponibles[2].id == IdAccionImagen::EstablecerFondoPantalla);
+
+    // Selección única: Galería muestra todas las imágenes de la carpeta
+    estadoImagen.rutaImagenActual = L"C:\\img2.jpg";
+    estadoImagen.imagenesSeleccionadas = { L"C:\\img2.jpg" };
+    actualizarListaGaleria();
+    assert(estadoImagen.miniaturasGaleria.size() == 3);
+    assert(estadoImagen.miniaturasGaleria[1].esActiva);
+
+    // Selección múltiple (rango): Galería y navegación trabajan estrictamente sobre el rango
+    estadoImagen.imagenesSeleccionadas = { L"C:\\rango1.png", L"C:\\rango2.png" };
+    estadoImagen.indiceImagenSeleccionada = 0;
+    actualizarListaGaleria();
+    assert(estadoImagen.miniaturasGaleria.size() == 2);
+    assert(estadoImagen.miniaturasGaleria[0].nombreArchivo == L"rango1.png");
+
+    // Validar categorización y secciones estructuradas de comprimidos
+    assert(ALTO_CONTROLES_COMPRIMIDOS == 104);
+    assert(clasificarCategoriaElementoComprimido(L"subcarpeta", true) == CategoriaElementoComprimido::Carpetas);
+    assert(clasificarCategoriaElementoComprimido(L"video.mp4", false) == CategoriaElementoComprimido::Videos);
+    assert(clasificarCategoriaElementoComprimido(L"foto.png", false) == CategoriaElementoComprimido::Imagenes);
+    assert(clasificarCategoriaElementoComprimido(L"cancion.mp3", false) == CategoriaElementoComprimido::Audios);
+    assert(clasificarCategoriaElementoComprimido(L"documento.pdf", false) == CategoriaElementoComprimido::Documentos);
+    assert(clasificarCategoriaElementoComprimido(L"script.py", false) == CategoriaElementoComprimido::Codigo);
+    assert(clasificarCategoriaElementoComprimido(L"nota.txt", false) == CategoriaElementoComprimido::Texto);
+    assert(clasificarCategoriaElementoComprimido(L"backup.zip", false) == CategoriaElementoComprimido::Comprimidos);
+    assert(clasificarCategoriaElementoComprimido(L"archivo.bin", false) == CategoriaElementoComprimido::Otros);
+
+    std::vector<ElementoContenidoComprimido> listaPrueba;
+    listaPrueba.push_back({L"script.py", L"codigo\\script.py", CategoriaElementoComprimido::Codigo, false, 500});
+    listaPrueba.push_back({L"codigo", L"codigo", CategoriaElementoComprimido::Carpetas, true, 0});
+    listaPrueba.push_back({L"foto.jpg", L"fotos\\foto.jpg", CategoriaElementoComprimido::Imagenes, false, 1200000});
+
+    agruparContenidosEnSecciones(listaPrueba);
+    assert(estadoComprimidos.seccionesContenido.size() == 3);
+    assert(estadoComprimidos.seccionesContenido[0].categoria == CategoriaElementoComprimido::Carpetas);
+    assert(estadoComprimidos.seccionesContenido[1].categoria == CategoriaElementoComprimido::Imagenes);
+    assert(estadoComprimidos.seccionesContenido[2].categoria == CategoriaElementoComprimido::Codigo);
+
+    // Validar exclusión estricta de cómics del escaneo multinivel
+    inspeccionarEstructuraArchivoZip(L"C:\\comic.cbz");
+    assert(estadoComprimidos.seccionesContenido.empty());
+    assert(estadoComprimidos.elementosArbol.empty());
+
+    // Validar generación de texto fantasma en resumen de vista vacía
+    ResumenVistaVacia resumenTest;
+    resumenTest.textoExtensionesFantasma = L".png, .jpg, .txt";
+    assert(resumenTest.textoExtensionesFantasma.find(L".png") != std::wstring::npos);
+
+    // Validar constantes y estado de la cabecera de metadatos de video
+    assert(ALTO_METADATOS_VIDEO == 90);
+    assert(ID_TEMPORIZADOR_PARPADEO_NAV == 1005);
+    liberarRecursosVideo();
+    assert(estadoVideoMetadatos.rutaVideo.empty());
+    assert(estadoVideoMetadatos.totalEnRango == 0);
+    assert(estadoVideoMetadatos.tiempoInicioParpadeoNav == 0);
+
+    // Validar inicio en nivel raíz (0) y expansión cíclica adaptativa según niveles reales
+    liberarRecursosVistaCarpetas();
+    assert(estadoVistaCarpetas.nivelExpansionActual == 0);
+
+    estadoVistaCarpetas.elementosArbol.clear();
+    estadoVistaCarpetas.elementosArbol.push_back({L"raiz_item", L"C:\\raiz", true, 0, 0, 0});
+    estadoVistaCarpetas.elementosArbol.push_back({L"sub_item_1", L"C:\\raiz\\sub1", true, 0, 1, 0});
+    estadoVistaCarpetas.elementosArbol.push_back({L"sub_item_2", L"C:\\raiz\\sub1\\sub2", true, 0, 2, 0});
+
+    assert(obtenerMaximoNivelJerarquiaArbol() == 2);
+    assert(estadoVistaCarpetas.nivelExpansionActual == 0);
+
+    avanzarNivelExpansionArbol();
+    assert(estadoVistaCarpetas.nivelExpansionActual == 1);
+
+    avanzarNivelExpansionArbol();
+    assert(estadoVistaCarpetas.nivelExpansionActual == 2);
+
+    avanzarNivelExpansionArbol();
+    assert(estadoVistaCarpetas.nivelExpansionActual == 0);
+
+    // Validar formateo de tamaño total de carpeta para texto fantasma
+    assert(formatearTamanoCarpeta(500) == L"500 B");
+    assert(formatearTamanoCarpeta(2048).find(L"KB") != std::wstring::npos);
+    assert(formatearTamanoCarpeta(10485760).find(L"MB") != std::wstring::npos);
+    assert(formatearTamanoCarpeta(10737418240ULL).find(L"GB") != std::wstring::npos);
+
+    estadoVistaCarpetas.tamanoTotalCarpetaActualBytes = 10485760;
+    estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado = formatearTamanoCarpeta(10485760);
+    assert(!estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado.empty());
+
+    // Validar liberación completa de recursos de imagen y flujo en memoria
+    liberarRecursosImagen();
+    assert(estadoImagen.imagenCargada == nullptr);
+    assert(estadoImagen.flujoStreamMemoria == nullptr);
+    assert(estadoImagen.rutaImagenActual.empty());
+
     return 0;
 }

@@ -192,12 +192,74 @@ void alternarRepeticion() {
     invalidarInterfazControles();
 }
 
+inline void actualizarMetadatosVideo(const std::wstring& rutaVideo) {
+    if (rutaVideo.empty()) {
+        liberarRecursosVideo();
+        return;
+    }
+
+    estadoVideoMetadatos.rutaVideo = rutaVideo;
+    estadoVideoMetadatos.nombreArchivo = PathFindFileNameW(rutaVideo.c_str());
+    const wchar_t* extension = PathFindExtensionW(rutaVideo.c_str());
+    estadoVideoMetadatos.extensionFormato = extension ? extension : L"";
+
+    WIN32_FILE_ATTRIBUTE_DATA datosArchivo{};
+    if (GetFileAttributesExW(rutaVideo.c_str(), GetFileExInfoStandard, &datosArchivo)) {
+        ULARGE_INTEGER tamanoGrande{};
+        tamanoGrande.LowPart = datosArchivo.nFileSizeLow;
+        tamanoGrande.HighPart = datosArchivo.nFileSizeHigh;
+        wchar_t buferTamano[64]{};
+        StrFormatByteSizeW(static_cast<LONGLONG>(tamanoGrande.QuadPart), buferTamano, ARRAYSIZE(buferTamano));
+        estadoVideoMetadatos.textoTamano = buferTamano;
+
+        FILETIME ftLocal{};
+        FileTimeToLocalFileTime(&datosArchivo.ftLastWriteTime, &ftLocal);
+        SYSTEMTIME st{};
+        FileTimeToSystemTime(&ftLocal, &st);
+        wchar_t buferFecha[64]{};
+        swprintf_s(buferFecha, L"%02u/%02u/%04u %02u:%02u",
+                   st.wDay, st.wMonth, st.wYear, st.wHour, st.wMinute);
+        estadoVideoMetadatos.textoFechaModificacion = buferFecha;
+    } else {
+        estadoVideoMetadatos.textoTamano = L"";
+        estadoVideoMetadatos.textoFechaModificacion = L"";
+    }
+
+    std::vector<std::wstring> videosCarpeta = obtenerVideosEnMismaCarpeta(rutaVideo);
+    estadoVideoMetadatos.totalEnCarpeta = static_cast<int>(videosCarpeta.size());
+    auto iteradorEnCarpeta = std::find(videosCarpeta.begin(), videosCarpeta.end(), rutaVideo);
+    if (iteradorEnCarpeta != videosCarpeta.end()) {
+        estadoVideoMetadatos.indiceEnCarpeta = static_cast<int>(std::distance(videosCarpeta.begin(), iteradorEnCarpeta));
+    } else {
+        estadoVideoMetadatos.indiceEnCarpeta = 0;
+    }
+
+    if (listaVideosSeleccionados.size() > 1) {
+        estadoVideoMetadatos.esRangoSeleccionado = true;
+        estadoVideoMetadatos.totalEnRango = static_cast<int>(listaVideosSeleccionados.size());
+        estadoVideoMetadatos.indiceEnRango = static_cast<int>(indiceVideoSeleccionado);
+    } else {
+        estadoVideoMetadatos.esRangoSeleccionado = false;
+        estadoVideoMetadatos.totalEnRango = 1;
+        estadoVideoMetadatos.indiceEnRango = 0;
+    }
+}
+
+inline void activarParpadeoBotonesNavVideo() {
+    estadoVideoMetadatos.tiempoInicioParpadeoNav = GetTickCount64();
+    if (ventanaControles && IsWindow(ventanaControles)) {
+        SetTimer(ventanaControles, ID_TEMPORIZADOR_PARPADEO_NAV, 420, nullptr);
+        InvalidateRect(ventanaControles, nullptr, FALSE);
+    }
+}
+
 bool reproducirVideoPorRuta(const std::wstring& rutaNuevoVideo) {
     if (!reproductor || rutaNuevoVideo.empty()) return false;
     navegacionManualEnCurso.store(true);
     reproductor->Stop();
     reiniciarCacheTiempoReproduccion();
     rutaVideoActiva = rutaNuevoVideo;
+    actualizarMetadatosVideo(rutaNuevoVideo);
     HRESULT resultadoCarga = reproductor->CreateMediaItemFromURL(
         rutaNuevoVideo.c_str(), FALSE, 0, nullptr);
     if (FAILED(resultadoCarga)) {
@@ -207,6 +269,10 @@ bool reproducirVideoPorRuta(const std::wstring& rutaNuevoVideo) {
                static_cast<unsigned int>(resultadoCarga));
         return false;
     }
+    if (ventanaReproductor && IsWindow(ventanaReproductor)) {
+        InvalidateRect(ventanaReproductor, nullptr, FALSE);
+    }
+    invalidarInterfazControles();
     return true;
 }
 
@@ -220,10 +286,17 @@ void reproducirVideoAnterior() {
         return;
     }
     if (rutaVideoActiva.empty()) return;
+    std::vector<std::wstring> videosCarpeta = obtenerVideosEnMismaCarpeta(rutaVideoActiva);
+    if (videosCarpeta.size() <= 1) {
+        activarParpadeoBotonesNavVideo();
+        return;
+    }
     std::wstring rutaAnterior =
         obtenerVideoAnteriorEnCarpeta(rutaVideoActiva);
-    if (!rutaAnterior.empty()) {
+    if (!rutaAnterior.empty() && rutaAnterior != rutaVideoActiva) {
         reproducirVideoPorRuta(rutaAnterior);
+    } else {
+        activarParpadeoBotonesNavVideo();
     }
 }
 
@@ -235,10 +308,17 @@ void reproducirVideoSiguiente() {
         return;
     }
     if (rutaVideoActiva.empty()) return;
+    std::vector<std::wstring> videosCarpeta = obtenerVideosEnMismaCarpeta(rutaVideoActiva);
+    if (videosCarpeta.size() <= 1) {
+        activarParpadeoBotonesNavVideo();
+        return;
+    }
     std::wstring rutaSiguiente =
         obtenerVideoSiguienteEnCarpeta(rutaVideoActiva);
-    if (!rutaSiguiente.empty()) {
+    if (!rutaSiguiente.empty() && rutaSiguiente != rutaVideoActiva) {
         reproducirVideoPorRuta(rutaSiguiente);
+    } else {
+        activarParpadeoBotonesNavVideo();
     }
 }
 
@@ -267,6 +347,11 @@ void iniciarArrastreBarraProgreso(HWND ventana, int posicionHorizontal) {
 
 void actualizarArrastreBarraProgreso(HWND ventana, int posicionHorizontal) {
     if (!arrastrandoBarraProgreso) return;
+    if (GetCapture() != ventana) {
+        arrastrandoBarraProgreso = false;
+        invalidarInterfazControles();
+        return;
+    }
 
     DisenoBarraProgreso disenoBarraProgreso =
         calcularDisenoBarraProgreso(ventana);
@@ -282,29 +367,8 @@ void finalizarArrastreBarraProgreso(HWND ventana, bool aplicarCambio) {
         buscarEnReproduccion(proporcionProgreso);
     }
     arrastrandoBarraProgreso = false;
-    modoCursorPegadoBarraProgreso = false;
     if (GetCapture() == ventana) ReleaseCapture();
     invalidarInterfazControles();
-}
-
-void iniciarModoCursorPegadoBarraProgreso(HWND ventana, int posicionHorizontal) {
-    if (!reproductor || !posicionamientoDisponible.load()) return;
-
-    DisenoBarraProgreso disenoBarraProgreso =
-        calcularDisenoBarraProgreso(ventana);
-    proporcionProgreso = calcularProporcionProgreso(
-        disenoBarraProgreso, posicionHorizontal);
-    arrastrandoBarraProgreso = true;
-    modoCursorPegadoBarraProgreso = true;
-
-    SetFocus(ventana);
-    SetCapture(ventana);
-    invalidarInterfazControles();
-}
-
-void cancelarModoCursorPegadoBarraProgreso(HWND ventana, bool aplicarCambio) {
-    modoCursorPegadoBarraProgreso = false;
-    finalizarArrastreBarraProgreso(ventana, aplicarCambio);
 }
 
 void desplazarBarraProgresoConTeclado(double incrementoProporcion) {

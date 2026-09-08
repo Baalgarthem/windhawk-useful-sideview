@@ -216,19 +216,7 @@ inline Gdiplus::Bitmap* obtenerBitmapParaMarkdown(
                 return nullptr;
             }
 
-            Gdiplus::Bitmap* mapaBitsTemp =
-                Gdiplus::Bitmap::FromFile(rutaArchivoTemporal.c_str());
-            if (mapaBitsTemp && mapaBitsTemp->GetLastStatus() == Gdiplus::Ok) {
-                mapaBitsCargado = mapaBitsTemp->Clone(
-                    0, 0, static_cast<INT>(mapaBitsTemp->GetWidth()),
-                    static_cast<INT>(mapaBitsTemp->GetHeight()),
-                    PixelFormat32bppARGB);
-                delete mapaBitsTemp;
-            } else {
-                if (mapaBitsTemp) delete mapaBitsTemp;
-                mapaBitsCargado =
-                    decodificarImagenConWic(rutaArchivoTemporal.c_str());
-            }
+            mapaBitsCargado = decodificarImagenConWic(rutaArchivoTemporal.c_str());
         }
     } else {
         std::wstring rutaFinalLocal = rutaUbicacion;
@@ -245,18 +233,7 @@ inline Gdiplus::Bitmap* obtenerBitmapParaMarkdown(
             }
         }
 
-        Gdiplus::Bitmap* mapaBitsTemp =
-            Gdiplus::Bitmap::FromFile(rutaFinalLocal.c_str());
-        if (mapaBitsTemp && mapaBitsTemp->GetLastStatus() == Gdiplus::Ok) {
-            mapaBitsCargado = mapaBitsTemp->Clone(
-                0, 0, static_cast<INT>(mapaBitsTemp->GetWidth()),
-                static_cast<INT>(mapaBitsTemp->GetHeight()),
-                PixelFormat32bppARGB);
-            delete mapaBitsTemp;
-        } else {
-            if (mapaBitsTemp) delete mapaBitsTemp;
-            mapaBitsCargado = decodificarImagenConWic(rutaFinalLocal.c_str());
-        }
+        mapaBitsCargado = decodificarImagenConWic(rutaFinalLocal.c_str());
     }
 
     if (mapaBitsCargado &&

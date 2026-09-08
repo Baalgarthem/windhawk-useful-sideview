@@ -3,9 +3,34 @@
 #include <windows.h>
 #include <gdiplus.h>
 #include <wincodec.h>
+#include <shlobj.h>
 #include <algorithm>
 #include <string>
 #include <vector>
+#include "nucleo/puntero_com.hpp"
+
+enum class IdAccionImagen {
+    Girar90Horario,
+    Girar90Antihorario,
+    CopiarAlPortapapeles,
+    EstablecerFondoPantalla,
+};
+
+struct ElementoAccionImagen {
+    IdAccionImagen id;
+    std::wstring etiqueta;
+    std::wstring glifo;
+    RECT areaBoton{};
+    bool hover{false};
+};
+
+struct ElementoMiniaturaGaleria {
+    std::wstring rutaArchivo;
+    std::wstring nombreArchivo;
+    RECT areaTarjeta{};
+    bool esActiva{false};
+    bool hover{false};
+};
 
 struct EstadoVisorImagen {
     std::wstring rutaImagenActual;
@@ -20,13 +45,46 @@ struct EstadoVisorImagen {
     UINT totalCuadros{1};
     UINT indiceCuadroActual{0};
     std::vector<UINT> retardosCuadros;
+    IStream* flujoStreamMemoria{nullptr};
+
+    // Navegación
     RECT botonAnterior{};
     RECT botonSiguiente{};
+    RECT botonGaleria{};
     bool hoverBotonAnterior{false};
     bool hoverBotonSiguiente{false};
+    bool hoverBotonGaleria{false};
+
+    // Modo Galería
+    bool modoGaleria{false};
+    int desplazamientoScrollGaleria{0};
+    int altoTotalGaleria{0};
+    std::vector<ElementoMiniaturaGaleria> miniaturasGaleria;
+
+    // Acciones modulares con imágenes
+    std::vector<ElementoAccionImagen> accionesDisponibles;
 };
 
 inline EstadoVisorImagen estadoImagen;
+
+inline void inicializarAccionesImagen() {
+    estadoImagen.accionesDisponibles.clear();
+    estadoImagen.accionesDisponibles.push_back({
+        IdAccionImagen::Girar90Horario,
+        L"Girar 90°",
+        L"🔄"
+    });
+    estadoImagen.accionesDisponibles.push_back({
+        IdAccionImagen::CopiarAlPortapapeles,
+        L"Copiar",
+        L"📋"
+    });
+    estadoImagen.accionesDisponibles.push_back({
+        IdAccionImagen::EstablecerFondoPantalla,
+        L"Fondo",
+        L"🖼️"
+    });
+}
 
 inline void liberarRecursosImagen() {
     if (ventanaVideo) {
@@ -35,6 +93,10 @@ inline void liberarRecursosImagen() {
     if (estadoImagen.imagenCargada) {
         delete estadoImagen.imagenCargada;
         estadoImagen.imagenCargada = nullptr;
+    }
+    if (estadoImagen.flujoStreamMemoria) {
+        estadoImagen.flujoStreamMemoria->Release();
+        estadoImagen.flujoStreamMemoria = nullptr;
     }
     estadoImagen.rutaImagenActual.clear();
     estadoImagen.imagenesSeleccionadas.clear();
@@ -49,10 +111,66 @@ inline void liberarRecursosImagen() {
     estadoImagen.retardosCuadros.clear();
     estadoImagen.hoverBotonAnterior = false;
     estadoImagen.hoverBotonSiguiente = false;
+    estadoImagen.hoverBotonGaleria = false;
+    estadoImagen.modoGaleria = false;
+    estadoImagen.desplazamientoScrollGaleria = 0;
+    estadoImagen.altoTotalGaleria = 0;
+    estadoImagen.miniaturasGaleria.clear();
+    estadoImagen.accionesDisponibles.clear();
+}
+
+inline IStream* crearFlujoEnMemoriaDesdeArchivo(const std::wstring& rutaArchivo) {
+    HANDLE manejadorArchivo = CreateFileW(
+        rutaArchivo.c_str(), GENERIC_READ,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (manejadorArchivo == INVALID_HANDLE_VALUE) return nullptr;
+
+    LARGE_INTEGER tamanoArchivo{};
+    if (!GetFileSizeEx(manejadorArchivo, &tamanoArchivo) ||
+        tamanoArchivo.QuadPart == 0 ||
+        tamanoArchivo.QuadPart > 128 * 1024 * 1024) {
+        CloseHandle(manejadorArchivo);
+        return nullptr;
+    }
+
+    HGLOBAL memoriaGlobal = GlobalAlloc(GMEM_MOVEABLE, static_cast<SIZE_T>(tamanoArchivo.QuadPart));
+    if (!memoriaGlobal) {
+        CloseHandle(manejadorArchivo);
+        return nullptr;
+    }
+
+    void* punteroMemoria = GlobalLock(memoriaGlobal);
+    if (!punteroMemoria) {
+        GlobalFree(memoriaGlobal);
+        CloseHandle(manejadorArchivo);
+        return nullptr;
+    }
+
+    DWORD bytesLeidos = 0;
+    if (!ReadFile(manejadorArchivo, punteroMemoria, static_cast<DWORD>(tamanoArchivo.QuadPart), &bytesLeidos, nullptr) ||
+        bytesLeidos != static_cast<DWORD>(tamanoArchivo.QuadPart)) {
+        GlobalUnlock(memoriaGlobal);
+        GlobalFree(memoriaGlobal);
+        CloseHandle(manejadorArchivo);
+        return nullptr;
+    }
+    GlobalUnlock(memoriaGlobal);
+    CloseHandle(manejadorArchivo);
+
+    IStream* flujoStream = nullptr;
+    if (FAILED(CreateStreamOnHGlobal(memoriaGlobal, TRUE, &flujoStream))) {
+        GlobalFree(memoriaGlobal);
+        return nullptr;
+    }
+    return flujoStream;
 }
 
 inline Gdiplus::Bitmap* decodificarImagenConWic(
     const std::wstring& rutaArchivo) {
+    IStream* flujoStream = crearFlujoEnMemoriaDesdeArchivo(rutaArchivo);
+    if (!flujoStream) return nullptr;
+
     PunteroCom<IWICImagingFactory> fabricaWic;
     HRESULT resultadoFabrica = CoCreateInstance(
         CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
@@ -61,13 +179,17 @@ inline Gdiplus::Bitmap* decodificarImagenConWic(
         resultadoFabrica = CoCreateInstance(
             CLSID_WICImagingFactory1, nullptr, CLSCTX_INPROC_SERVER,
             IID_PPV_ARGS(fabricaWic.recibir()));
-        if (FAILED(resultadoFabrica) || !fabricaWic.obtener()) return nullptr;
+        if (FAILED(resultadoFabrica) || !fabricaWic.obtener()) {
+            flujoStream->Release();
+            return nullptr;
+        }
     }
 
     PunteroCom<IWICBitmapDecoder> decodificador;
-    HRESULT resultadoDecodificador = fabricaWic->CreateDecoderFromFilename(
-        rutaArchivo.c_str(), nullptr, GENERIC_READ,
-        WICDecodeMetadataCacheOnDemand, decodificador.recibir());
+    HRESULT resultadoDecodificador = fabricaWic->CreateDecoderFromStream(
+        flujoStream, nullptr, WICDecodeMetadataCacheOnDemand,
+        decodificador.recibir());
+    flujoStream->Release();
     if (FAILED(resultadoDecodificador) || !decodificador.obtener())
         return nullptr;
 
@@ -83,7 +205,7 @@ inline Gdiplus::Bitmap* decodificarImagenConWic(
         return nullptr;
 
     HRESULT resultadoInicio = convertidorFormato->Initialize(
-        cuadroDecodificado.obtener(), GUID_WICPixelFormat32bppPBGRA,
+        cuadroDecodificado.obtener(), GUID_WICPixelFormat32bppBGRA,
         WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
     if (FAILED(resultadoInicio)) return nullptr;
 
@@ -102,23 +224,29 @@ inline Gdiplus::Bitmap* decodificarImagenConWic(
         nullptr, pasoBytesFila, tamanoTotalBufer, buferPixeles.data());
     if (FAILED(resultadoCopia)) return nullptr;
 
-    Gdiplus::Bitmap* mapaBitsTemporal = new Gdiplus::Bitmap(
+    Gdiplus::Bitmap* mapaBitsDestino = new Gdiplus::Bitmap(
         static_cast<INT>(anchoImagen), static_cast<INT>(altoImagen),
-        static_cast<INT>(pasoBytesFila), PixelFormat32bppPARGB,
-        buferPixeles.data());
-
-    if (!mapaBitsTemporal ||
-        mapaBitsTemporal->GetLastStatus() != Gdiplus::Ok) {
-        if (mapaBitsTemporal) delete mapaBitsTemporal;
+        PixelFormat32bppARGB);
+    if (!mapaBitsDestino || mapaBitsDestino->GetLastStatus() != Gdiplus::Ok) {
+        if (mapaBitsDestino) delete mapaBitsDestino;
         return nullptr;
     }
 
-    Gdiplus::Bitmap* mapaBitsFinal = mapaBitsTemporal->Clone(
-        0, 0, static_cast<INT>(anchoImagen), static_cast<INT>(altoImagen),
-        PixelFormat32bppPARGB);
-    delete mapaBitsTemporal;
+    Gdiplus::BitmapData datosMapaBits{};
+    Gdiplus::Rect rectanguloArea(0, 0, static_cast<INT>(anchoImagen), static_cast<INT>(altoImagen));
+    if (mapaBitsDestino->LockBits(&rectanguloArea, Gdiplus::ImageLockModeWrite,
+                                  PixelFormat32bppARGB, &datosMapaBits) == Gdiplus::Ok) {
+        BYTE* punteroDestino = static_cast<BYTE*>(datosMapaBits.Scan0);
+        const BYTE* punteroOrigen = buferPixeles.data();
+        for (UINT fila = 0; fila < altoImagen; ++fila) {
+            memcpy(punteroDestino + fila * static_cast<UINT>(datosMapaBits.Stride),
+                   punteroOrigen + fila * pasoBytesFila,
+                   pasoBytesFila);
+        }
+        mapaBitsDestino->UnlockBits(&datosMapaBits);
+    }
 
-    return mapaBitsFinal;
+    return mapaBitsDestino;
 }
 
 inline void inicializarAnimacionGifSiAplica() {
@@ -220,23 +348,73 @@ inline void avanzarCuadroAnimacionGif(HWND ventanaObjetivo) {
     InvalidateRect(ventanaObjetivo, nullptr, FALSE);
 }
 
+inline void actualizarListaGaleria() {
+    estadoImagen.miniaturasGaleria.clear();
+    std::vector<std::wstring> listaRutas;
+    if (estadoImagen.imagenesSeleccionadas.size() > 1) {
+        listaRutas = estadoImagen.imagenesSeleccionadas;
+    } else if (!estadoImagen.rutaImagenActual.empty()) {
+        listaRutas = obtenerImagenesEnMismaCarpeta(estadoImagen.rutaImagenActual);
+    }
+    for (size_t posicionElemento = 0; posicionElemento < listaRutas.size(); ++posicionElemento) {
+        ElementoMiniaturaGaleria elemento;
+        elemento.rutaArchivo = listaRutas[posicionElemento];
+        elemento.nombreArchivo = PathFindFileNameW(listaRutas[posicionElemento].c_str());
+        elemento.esActiva = (lstrcmpiW(listaRutas[posicionElemento].c_str(), estadoImagen.rutaImagenActual.c_str()) == 0);
+        elemento.hover = false;
+        estadoImagen.miniaturasGaleria.push_back(elemento);
+    }
+}
+
 inline bool cargarImagenPorRuta(const std::wstring& rutaNuevaImagen) {
     if (rutaNuevaImagen.empty()) {
         liberarRecursosImagen();
         return false;
     }
 
+    std::vector<std::wstring> seleccionPrevia = estadoImagen.imagenesSeleccionadas;
+    size_t indicePrevio = estadoImagen.indiceImagenSeleccionada;
+    bool modoGaleriaPrevio = estadoImagen.modoGaleria;
+
     liberarRecursosImagen();
 
-    estadoImagen.imagenCargada =
-        Gdiplus::Image::FromFile(rutaNuevaImagen.c_str());
+    estadoImagen.imagenesSeleccionadas = seleccionPrevia;
+    estadoImagen.indiceImagenSeleccionada = indicePrevio;
+    estadoImagen.modoGaleria = modoGaleriaPrevio;
+
+    // 1. Decodificación WIC en memoria (rápida, segura y 0 descriptores de archivo abiertos)
+    estadoImagen.imagenCargada = decodificarImagenConWic(rutaNuevaImagen);
+
+    // 2. Si WIC no lo decodificó (ej. GIF animado o formato especial), decodificar vía stream en memoria
+    if (!estadoImagen.imagenCargada || estadoImagen.imagenCargada->GetLastStatus() != Gdiplus::Ok) {
+        if (estadoImagen.imagenCargada) {
+            delete estadoImagen.imagenCargada;
+            estadoImagen.imagenCargada = nullptr;
+        }
+        estadoImagen.flujoStreamMemoria = crearFlujoEnMemoriaDesdeArchivo(rutaNuevaImagen);
+        if (estadoImagen.flujoStreamMemoria) {
+            LARGE_INTEGER liInicio{};
+            estadoImagen.flujoStreamMemoria->Seek(liInicio, STREAM_SEEK_SET, nullptr);
+            estadoImagen.imagenCargada = Gdiplus::Bitmap::FromStream(estadoImagen.flujoStreamMemoria);
+            if (!estadoImagen.imagenCargada || estadoImagen.imagenCargada->GetLastStatus() != Gdiplus::Ok) {
+                if (estadoImagen.imagenCargada) {
+                    delete estadoImagen.imagenCargada;
+                    estadoImagen.imagenCargada = nullptr;
+                }
+                estadoImagen.flujoStreamMemoria->Release();
+                estadoImagen.flujoStreamMemoria = nullptr;
+            }
+        }
+    }
+
+    // 3. Fallback de emergencia
     if (!estadoImagen.imagenCargada ||
         estadoImagen.imagenCargada->GetLastStatus() != Gdiplus::Ok) {
         if (estadoImagen.imagenCargada) {
             delete estadoImagen.imagenCargada;
             estadoImagen.imagenCargada = nullptr;
         }
-        estadoImagen.imagenCargada = decodificarImagenConWic(rutaNuevaImagen);
+        estadoImagen.imagenCargada = Gdiplus::Image::FromFile(rutaNuevaImagen.c_str());
     }
 
     if (!estadoImagen.imagenCargada ||
@@ -250,6 +428,7 @@ inline bool cargarImagenPorRuta(const std::wstring& rutaNuevaImagen) {
     estadoImagen.altoOriginal = estadoImagen.imagenCargada->GetHeight();
 
     inicializarAnimacionGifSiAplica();
+    inicializarAccionesImagen();
 
     std::vector<std::wstring> listaImagenes =
         obtenerImagenesEnMismaCarpeta(rutaNuevaImagen);
@@ -265,15 +444,163 @@ inline bool cargarImagenPorRuta(const std::wstring& rutaNuevaImagen) {
         estadoImagen.posicionEnCarpeta = 1;
     }
 
+    actualizarListaGaleria();
+
     return true;
 }
 
-inline void dibujarLienzoImagen(HDC contextoDestino, const RECT& areaDibujo) {
+inline bool girarImagenActual(bool sentidoHorario = true) {
+    if (!estadoImagen.imagenCargada) return false;
+    Gdiplus::RotateFlipType tipoRotacion = sentidoHorario
+        ? Gdiplus::Rotate90FlipNone
+        : Gdiplus::Rotate270FlipNone;
+    if (estadoImagen.imagenCargada->RotateFlip(tipoRotacion) == Gdiplus::Ok) {
+        std::swap(estadoImagen.anchoOriginal, estadoImagen.altoOriginal);
+        return true;
+    }
+    return false;
+}
+
+inline bool copiarImagenActualAlPortapapeles(HWND ventana) {
+    if (estadoImagen.rutaImagenActual.empty()) return false;
+    if (!OpenClipboard(ventana)) return false;
+    EmptyClipboard();
+
+    std::wstring ruta = estadoImagen.rutaImagenActual;
+    size_t bytes = sizeof(DROPFILES) + (ruta.size() + 2) * sizeof(wchar_t);
+    HGLOBAL hGlobal = GlobalAlloc(GHND, bytes);
+    if (hGlobal) {
+        DROPFILES* estructuraDropFiles = reinterpret_cast<DROPFILES*>(GlobalLock(hGlobal));
+        if (estructuraDropFiles) {
+            estructuraDropFiles->pFiles = sizeof(DROPFILES);
+            estructuraDropFiles->fWide = TRUE;
+            wchar_t* buffer = reinterpret_cast<wchar_t*>(reinterpret_cast<BYTE*>(estructuraDropFiles) + sizeof(DROPFILES));
+            wcscpy_s(buffer, ruta.size() + 1, ruta.c_str());
+            buffer[ruta.size() + 1] = L'\0';
+            GlobalUnlock(hGlobal);
+            SetClipboardData(CF_HDROP, hGlobal);
+        }
+    }
+    CloseClipboard();
+    return true;
+}
+
+inline bool establecerComoFondoDePantalla() {
+    if (estadoImagen.rutaImagenActual.empty()) return false;
+    return SystemParametersInfoW(SPI_SETDESKWALLPAPER, 0,
+        const_cast<wchar_t*>(estadoImagen.rutaImagenActual.c_str()),
+        SPIF_UPDATEINIFILE | SPIF_SENDCHANGE) != FALSE;
+}
+
+inline bool ejecutarAccionImagen(IdAccionImagen id, HWND ventanaPadre) {
+    switch (id) {
+        case IdAccionImagen::Girar90Horario:
+            return girarImagenActual(true);
+        case IdAccionImagen::Girar90Antihorario:
+            return girarImagenActual(false);
+        case IdAccionImagen::CopiarAlPortapapeles:
+            return copiarImagenActualAlPortapapeles(ventanaPadre);
+        case IdAccionImagen::EstablecerFondoPantalla:
+            return establecerComoFondoDePantalla();
+        default:
+            return false;
+    }
+}
+
+inline void dibujarLienzoGaleriaImagenes(HDC contextoDestino, const RECT& areaDibujo) {
     int anchoArea = areaDibujo.right - areaDibujo.left;
     int altoArea = areaDibujo.bottom - areaDibujo.top;
     if (anchoArea <= 0 || altoArea <= 0) return;
 
-    HBRUSH brochaFondo = CreateSolidBrush(RGB(0, 0, 0));
+    HBRUSH brochaFondo = CreateSolidBrush(RGB(13, 17, 23));
+    FillRect(contextoDestino, &areaDibujo, brochaFondo);
+    DeleteObject(brochaFondo);
+
+    HFONT fuenteTitulo = CreateFontW(-15, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT fuenteSub = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                                  OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                                  DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    RECT areaCabecera{areaDibujo.left + 12, areaDibujo.top + 8, areaDibujo.right - 12, areaDibujo.top + 28};
+    SetBkMode(contextoDestino, TRANSPARENT);
+    SetTextColor(contextoDestino, RGB(240, 246, 252));
+    HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDestino, fuenteTitulo));
+    std::wstring tituloGaleria = L"Galería de imágenes (" +
+        std::to_wstring(estadoImagen.miniaturasGaleria.size()) + L")";
+    DrawTextW(contextoDestino, tituloGaleria.c_str(), -1, &areaCabecera, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    SelectObject(contextoDestino, fuenteSub);
+
+    int margenLateral = 12;
+    int espacioEntreTarjetas = 8;
+    int anchoDisponible = std::max(100, anchoArea - margenLateral * 2);
+    size_t cantidadColumnas = static_cast<size_t>(std::max(2, std::min(4, anchoDisponible / 110)));
+    int anchoTarjeta = (anchoDisponible - (static_cast<int>(cantidadColumnas) - 1) * espacioEntreTarjetas) / static_cast<int>(cantidadColumnas);
+    int altoTarjeta = 95;
+
+    int yInicio = areaDibujo.top + 34 - estadoImagen.desplazamientoScrollGaleria;
+
+    for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
+        int columnaActual = static_cast<int>(posicionMiniatura % cantidadColumnas);
+        int filaActual = static_cast<int>(posicionMiniatura / cantidadColumnas);
+        int posicionTarjetaX = areaDibujo.left + margenLateral + columnaActual * (anchoTarjeta + espacioEntreTarjetas);
+        int posicionTarjetaY = yInicio + filaActual * (altoTarjeta + espacioEntreTarjetas);
+
+        RECT areaTarjeta{posicionTarjetaX, posicionTarjetaY, posicionTarjetaX + anchoTarjeta, posicionTarjetaY + altoTarjeta};
+        estadoImagen.miniaturasGaleria[posicionMiniatura].areaTarjeta = areaTarjeta;
+
+        if (areaTarjeta.bottom < areaDibujo.top || areaTarjeta.top > areaDibujo.bottom) {
+            continue;
+        }
+
+        bool esActiva = estadoImagen.miniaturasGaleria[posicionMiniatura].esActiva;
+        bool hover = estadoImagen.miniaturasGaleria[posicionMiniatura].hover;
+
+        COLORREF colorFondo = esActiva ? RGB(30, 41, 59) : (hover ? RGB(26, 32, 44) : RGB(22, 27, 34));
+        COLORREF colorBorde = esActiva ? RGB(0, 120, 215) : (hover ? RGB(88, 166, 255) : RGB(48, 54, 61));
+
+        HBRUSH brochaCard = CreateSolidBrush(colorFondo);
+        HPEN lapizCard = CreatePen(PS_SOLID, esActiva ? 2 : 1, colorBorde);
+        HBRUSH brochaPreviaCard = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaCard));
+        HPEN lapizPrevioCard = static_cast<HPEN>(SelectObject(contextoDestino, lapizCard));
+        RoundRect(contextoDestino, areaTarjeta.left, areaTarjeta.top, areaTarjeta.right, areaTarjeta.bottom, 6, 6);
+        SelectObject(contextoDestino, lapizPrevioCard);
+        SelectObject(contextoDestino, brochaPreviaCard);
+        DeleteObject(lapizCard);
+        DeleteObject(brochaCard);
+
+        RECT areaIcono{areaTarjeta.left + 4, areaTarjeta.top + 6, areaTarjeta.right - 4, areaTarjeta.top + 48};
+        SelectObject(contextoDestino, fuenteTitulo);
+        SetTextColor(contextoDestino, esActiva ? RGB(88, 166, 255) : RGB(139, 148, 158));
+        DrawTextW(contextoDestino, L"🖼️", -1, &areaIcono, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        RECT areaNombre{areaTarjeta.left + 6, areaTarjeta.top + 52, areaTarjeta.right - 6, areaTarjeta.bottom - 4};
+        SelectObject(contextoDestino, fuenteSub);
+        SetTextColor(contextoDestino, esActiva ? RGB(255, 255, 255) : (hover ? RGB(240, 246, 252) : RGB(201, 209, 217)));
+        DrawTextW(contextoDestino, estadoImagen.miniaturasGaleria[posicionMiniatura].nombreArchivo.c_str(), -1,
+                  &areaNombre, DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    size_t totalFilas = (estadoImagen.miniaturasGaleria.size() + cantidadColumnas - 1) / cantidadColumnas;
+    estadoImagen.altoTotalGaleria = static_cast<int>(totalFilas) * (altoTarjeta + espacioEntreTarjetas) + 40;
+
+    SelectObject(contextoDestino, fuentePrev);
+    DeleteObject(fuenteSub);
+    DeleteObject(fuenteTitulo);
+}
+
+inline void dibujarLienzoImagen(HDC contextoDestino, const RECT& areaDibujo) {
+    if (estadoImagen.modoGaleria) {
+        dibujarLienzoGaleriaImagenes(contextoDestino, areaDibujo);
+        return;
+    }
+
+    int anchoArea = areaDibujo.right - areaDibujo.left;
+    int altoArea = areaDibujo.bottom - areaDibujo.top;
+    if (anchoArea <= 0 || altoArea <= 0) return;
+
+    HBRUSH brochaFondo = CreateSolidBrush(RGB(15, 15, 15));
     FillRect(contextoDestino, &areaDibujo, brochaFondo);
     DeleteObject(brochaFondo);
 
@@ -363,27 +690,37 @@ inline void dibujarBarraControlesImagen(HDC contextoDibujo, const RECT& areaClie
     SelectObject(contextoDibujo, lapizPrevio);
     DeleteObject(lapizBorde);
 
-    int anchoBoton = 84;
-    int altoBoton = 24;
-    int margenVertical = (areaCliente.bottom - areaCliente.top - altoBoton) / 2;
+    // Fila 1: Botones de navegación (◀ Anterior, 🖼️ Galería, Siguiente ▶)
+    int anchoBotonNav = 80;
+    int altoBotonNav = 24;
+    int yFilaNav = areaCliente.top + 6;
 
     estadoImagen.botonAnterior = {
         areaCliente.left + 12,
-        areaCliente.top + margenVertical,
-        areaCliente.left + 12 + anchoBoton,
-        areaCliente.top + margenVertical + altoBoton
+        yFilaNav,
+        areaCliente.left + 12 + anchoBotonNav,
+        yFilaNav + altoBotonNav
     };
 
     estadoImagen.botonSiguiente = {
-        areaCliente.right - 12 - anchoBoton,
-        areaCliente.top + margenVertical,
+        areaCliente.right - 12 - anchoBotonNav,
+        yFilaNav,
         areaCliente.right - 12,
-        areaCliente.top + margenVertical + altoBoton
+        yFilaNav + altoBotonNav
     };
 
-    auto dibujarBotonNav = [&](const RECT& rect, const wchar_t* texto, bool hover) {
-        COLORREF colorFondo = hover ? RGB(48, 54, 61) : RGB(33, 38, 45);
-        COLORREF colorBorde = hover ? RGB(110, 118, 129) : RGB(48, 54, 61);
+    int anchoBotonGaleria = 90;
+    int xCentro = (areaCliente.left + areaCliente.right) / 2;
+    estadoImagen.botonGaleria = {
+        xCentro - anchoBotonGaleria / 2,
+        yFilaNav,
+        xCentro + anchoBotonGaleria / 2,
+        yFilaNav + altoBotonNav
+    };
+
+    auto dibujarBoton = [&](const RECT& rect, const wchar_t* texto, bool hover, bool activo = false) {
+        COLORREF colorFondo = activo ? RGB(0, 120, 215) : (hover ? RGB(48, 54, 61) : RGB(33, 38, 45));
+        COLORREF colorBorde = activo ? RGB(0, 140, 240) : (hover ? RGB(110, 118, 129) : RGB(48, 54, 61));
         HBRUSH brochaBtn = CreateSolidBrush(colorFondo);
         HPEN lapizBtn = CreatePen(PS_SOLID, 1, colorBorde);
         HBRUSH brochaPrev = static_cast<HBRUSH>(SelectObject(contextoDibujo, brochaBtn));
@@ -395,41 +732,49 @@ inline void dibujarBarraControlesImagen(HDC contextoDibujo, const RECT& areaClie
         DeleteObject(brochaBtn);
 
         SetBkMode(contextoDibujo, TRANSPARENT);
-        SetTextColor(contextoDibujo, hover ? RGB(255, 255, 255) : RGB(201, 209, 217));
+        SetTextColor(contextoDibujo, (activo || hover) ? RGB(255, 255, 255) : RGB(201, 209, 217));
         HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
         RECT rTexto = rect;
         DrawTextW(contextoDibujo, texto, -1, &rTexto, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
         SelectObject(contextoDibujo, fuentePrev);
     };
 
-    dibujarBotonNav(estadoImagen.botonAnterior, L"◀ Anterior", estadoImagen.hoverBotonAnterior);
-    dibujarBotonNav(estadoImagen.botonSiguiente, L"Siguiente ▶", estadoImagen.hoverBotonSiguiente);
+    dibujarBoton(estadoImagen.botonAnterior, L"◀ Anterior", estadoImagen.hoverBotonAnterior);
+    dibujarBoton(estadoImagen.botonGaleria, estadoImagen.modoGaleria ? L"🖼️ Cerrar" : L"🖼️ Galería",
+                 estadoImagen.hoverBotonGaleria, estadoImagen.modoGaleria);
+    dibujarBoton(estadoImagen.botonSiguiente, L"Siguiente ▶", estadoImagen.hoverBotonSiguiente);
 
-    std::wstring textoCentro;
-    if (estadoImagen.anchoOriginal > 0 && estadoImagen.altoOriginal > 0) {
-        if (estadoImagen.imagenesSeleccionadas.size() > 1) {
-            textoCentro = std::to_wstring(estadoImagen.anchoOriginal) + L" \u00D7 " +
-                          std::to_wstring(estadoImagen.altoOriginal) + L" px  \u2022  " +
-                          std::to_wstring(estadoImagen.indiceImagenSeleccionada + 1) + L"/" +
-                          std::to_wstring(estadoImagen.imagenesSeleccionadas.size());
-        } else {
-            textoCentro = std::to_wstring(estadoImagen.anchoOriginal) + L" \u00D7 " +
-                          std::to_wstring(estadoImagen.altoOriginal) + L" px";
-        }
+    // Fila 2: Separador y Sección "ACCIONES CON IMÁGENES"
+    int yFilaAcciones = yFilaNav + altoBotonNav + 6;
+    if (estadoImagen.accionesDisponibles.empty()) {
+        inicializarAccionesImagen();
     }
-    if (!textoCentro.empty()) {
-        RECT areaCentro = {
-            estadoImagen.botonAnterior.right + 8,
-            areaCliente.top,
-            estadoImagen.botonSiguiente.left - 8,
-            areaCliente.bottom
+
+    HPEN lapizSep = CreatePen(PS_SOLID, 1, RGB(38, 44, 52));
+    HPEN lapizPrevioSep = static_cast<HPEN>(SelectObject(contextoDibujo, lapizSep));
+    MoveToEx(contextoDibujo, areaCliente.left + 12, yFilaAcciones, nullptr);
+    LineTo(contextoDibujo, areaCliente.right - 12, yFilaAcciones);
+    SelectObject(contextoDibujo, lapizPrevioSep);
+    DeleteObject(lapizSep);
+
+    yFilaAcciones += 4;
+    int anchoBotonAccion = 96;
+    int altoBotonAccion = 22;
+    int espacioAcciones = 8;
+    int totalAnchoAcciones = static_cast<int>(estadoImagen.accionesDisponibles.size()) * (anchoBotonAccion + espacioAcciones) - espacioAcciones;
+    int xInicioAcciones = std::max<int>(areaCliente.left + 12, (areaCliente.left + areaCliente.right - totalAnchoAcciones) / 2);
+
+    for (size_t posicionAccion = 0; posicionAccion < estadoImagen.accionesDisponibles.size(); ++posicionAccion) {
+        RECT areaBotonAccion = {
+            xInicioAcciones + static_cast<int>(posicionAccion) * (anchoBotonAccion + espacioAcciones),
+            yFilaAcciones,
+            xInicioAcciones + static_cast<int>(posicionAccion) * (anchoBotonAccion + espacioAcciones) + anchoBotonAccion,
+            yFilaAcciones + altoBotonAccion
         };
-        SetBkMode(contextoDibujo, TRANSPARENT);
-        SetTextColor(contextoDibujo, RGB(139, 148, 158));
-        HFONT fuentePrev = static_cast<HFONT>(SelectObject(contextoDibujo, fuenteTextoPequeno));
-        DrawTextW(contextoDibujo, textoCentro.c_str(), -1, &areaCentro,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        SelectObject(contextoDibujo, fuentePrev);
+        estadoImagen.accionesDisponibles[posicionAccion].areaBoton = areaBotonAccion;
+        std::wstring etiquetaCompleta = estadoImagen.accionesDisponibles[posicionAccion].glifo + L" " + estadoImagen.accionesDisponibles[posicionAccion].etiqueta;
+        dibujarBoton(areaBotonAccion, etiquetaCompleta.c_str(), estadoImagen.accionesDisponibles[posicionAccion].hover);
     }
 }
+
 

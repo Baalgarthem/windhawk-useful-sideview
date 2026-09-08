@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el panel de vista previa de Windows 11 en una potente suite multimedia: reproductor de video con barra interactiva, visor de imágenes con soporte WebP/GIF en loop, lector nativo de Markdown estilo GitHub y suite para cómics/comprimidos con extracción de portadas, conversor y 'Abrir con' inteligente.
-// @version         1.11.3
+// @version         2.0.1
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -23,7 +23,7 @@
 ### 1. 🎬 Reproductor de Video Completo y Fluido
 - **Compatibilidad Extensa**: Soporta `.mp4`, `.mkv`, `.avi`, `.mov`, `.wmv`, `.webm`, `.flv`, `.m4v`, `.ts`, `.mts` y formatos Media Foundation.
 - **Controles Fluent Design**: Play/Pausa al hacer clic en el video o en los controles, silenciado/audio, repetición en bucle (*loop*) y selector de velocidad (0.5x, 0.75x, 1.0x, 1.25x, 1.5x, 2.0x).
-- **Línea de Tiempo Interactiva y Modo Cursor Pegado**: Búsqueda precisa por clic y arrastre, y modo de **cursor pegado** mediante doble clic en la barra de tiempo (el deslizador sigue el ratón libremente hasta hacer clic de nuevo).
+- **Línea de Tiempo Interactiva**: Búsqueda precisa por clic y arrastre fluido con cálculo temporal exacto.
 - **Navegación de Carpeta**: Botones para saltar al video anterior o siguiente de forma inmediata.
 
 ### 2. 🖼️ Visor de Imágenes de Alta Compatibilidad y GIFs en Loop
@@ -130,9 +130,9 @@
 - lock_preview_size_folder: false
   $name: "[Vista de Carpetas] Bloquear tamaño de vista previa de carpetas"
   $description: "Bloquea el redimensionamiento del panel en la vista de carpetas seleccionadas. Desactivado permite redimensionar libremente."
-- folder_tree_expanded_by_default: true
-  $name: "[Vista de Carpetas] Mostrar todas las carpetas expandidas por defecto"
-  $description: "Si está activo, muestra todo el árbol de subcarpetas expandido por defecto. Se puede alternar y contraer/expandir por niveles con el botón interactivo del visor."
+- folder_tree_expanded_by_default: false
+  $name: "[Vista de Carpetas] Iniciar en nivel raíz por defecto"
+  $description: "Por defecto la vista de carpetas inicia en nivel raíz. Si se activa, iniciará con todos los niveles expandidos."
 - folder_tree_interactive_files: false
   $name: "[Vista de Carpetas] Permitir interacción con archivos en la estructura"
   $description: "Habilita la interacción directa con los archivos y subcarpetas mostrados en el árbol de la carpeta seleccionada (doble clic para abrir el archivo, y clic derecho para mostrar opciones de renombrar y eliminar)."

@@ -49,14 +49,18 @@ void ajustarLayoutVentanasReproductor(HWND ventanaContenedora) {
     GetClientRect(ventanaContenedora, &areaCliente);
     int altoControlesEfectivo = ALTO_CONTROLES;
     bool controlesArriba = false;
+    int altoMetadatosVideo = 0;
 
-    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Comprimido) {
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Video) {
+        altoMetadatosVideo = ALTO_METADATOS_VIDEO;
+    } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::Comprimido) {
         altoControlesEfectivo = ALTO_CONTROLES_COMPRIMIDOS;
     } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::Texto) {
         altoControlesEfectivo = 34;
         controlesArriba = true;
-    } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen ||
-               tipoContenidoActivo.load() == TipoContenidoArchivo::Documento ||
+    } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen) {
+        altoControlesEfectivo = 66;
+    } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::Documento ||
                tipoContenidoActivo.load() == TipoContenidoArchivo::Codigo ||
                tipoContenidoActivo.load() == TipoContenidoArchivo::Desconocido) {
         altoControlesEfectivo = 34;
@@ -65,11 +69,14 @@ void ajustarLayoutVentanasReproductor(HWND ventanaContenedora) {
         altoControlesEfectivo = 0;
     }
     int altoAreaVideo =
-        std::max<LONG>(0, areaCliente.bottom - altoControlesEfectivo);
+        std::max<LONG>(0, areaCliente.bottom - altoMetadatosVideo - altoControlesEfectivo);
 
     int yControles = 0;
     int yVideo = 0;
-    if (controlesArriba && altoControlesEfectivo > 0) {
+    if (tipoContenidoActivo.load() == TipoContenidoArchivo::Video) {
+        yVideo = altoMetadatosVideo;
+        yControles = areaCliente.bottom - altoControlesEfectivo;
+    } else if (controlesArriba && altoControlesEfectivo > 0) {
         yControles = 0;
         yVideo = altoControlesEfectivo;
     } else {
@@ -279,8 +286,14 @@ LRESULT CALLBACK procesarVentanaDelegadoReproductor(HWND ventana, UINT mensaje,
 }
 
 inline void invalidarInterfaz() {
-    if (ventanaControles) InvalidateRect(ventanaControles, nullptr, FALSE);
-    if (ventanaVideo) InvalidateRect(ventanaVideo, nullptr, FALSE);
+    if (ventanaControles && IsWindow(ventanaControles)) {
+        InvalidateRect(ventanaControles, nullptr, FALSE);
+        UpdateWindow(ventanaControles);
+    }
+    if (ventanaVideo && IsWindow(ventanaVideo)) {
+        InvalidateRect(ventanaVideo, nullptr, FALSE);
+        UpdateWindow(ventanaVideo);
+    }
 }
 
 LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
@@ -291,103 +304,16 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
             int posicionHorizontal = GET_X_LPARAM(datosMensaje);
             int posicionVertical = GET_Y_LPARAM(datosMensaje);
 
-            if (modoCursorPegadoBarraProgreso) {
-                cancelarModoCursorPegadoBarraProgreso(ventana, true);
-                return 0;
-            }
-
             if (tipoContenidoActivo.load() ==
                 TipoContenidoArchivo::Comprimido) {
                 DisenoComprimidos disenoComprimidos =
                     calcularDisenoComprimidos(ventana);
 
-                if (estadoComprimidos.menuProgramasAbierto) {
-                    if (contienePunto(
-                            disenoComprimidos.panelOpcionesPrograma,
-                            posicionHorizontal, posicionVertical)) {
-                        const std::vector<std::wstring>& listaProgramas =
-                            obtenerListaProgramasActivaConst();
-                        for (size_t posicion = 0;
-                             posicion <
-                             disenoComprimidos.opcionesPrograma.size();
-                             ++posicion) {
-                            if (contienePunto(
-                                    disenoComprimidos
-                                        .opcionesPrograma[posicion],
-                                    posicionHorizontal,
-                                    posicionVertical)) {
-                                if (posicion < listaProgramas.size()) {
-                                    estadoComprimidos
-                                        .indiceProgramaSeleccionado =
-                                        static_cast<int>(posicion);
-                                    estadoComprimidos.programaTemporal.clear();
-                                } else {
-                                    estadoComprimidos
-                                        .menuProgramasAbierto = false;
-                                    estadoComprimidos
-                                        .opcionProgramaHover = -1;
-                                    invalidarInterfaz();
-                                    seleccionarYAgregarPrograma(ventana);
-                                    invalidarInterfaz();
-                                    return 0;
-                                }
-                                estadoComprimidos.menuProgramasAbierto =
-                                    false;
-                                estadoComprimidos.opcionProgramaHover = -1;
-                                invalidarInterfaz();
-                                return 0;
-                            }
-                        }
-                    }
-                    estadoComprimidos.menuProgramasAbierto = false;
-                    estadoComprimidos.opcionProgramaHover = -1;
-                    invalidarInterfaz();
-                    return 0;
-                }
-
-                if (estadoComprimidos.menuDesplegableAbierto) {
-                    if (contienePunto(
-                            disenoComprimidos.panelOpcionesFormato,
-                            posicionHorizontal, posicionVertical)) {
-                        for (int posicion = 0;
-                             posicion < TOTAL_FORMATOS_DESTINO; ++posicion) {
-                            if (contienePunto(
-                                    disenoComprimidos
-                                        .opcionesFormato[posicion],
-                                    posicionHorizontal,
-                                    posicionVertical)) {
-                                estadoComprimidos
-                                    .indiceFormatoDestino = posicion;
-                                estadoComprimidos
-                                    .menuDesplegableAbierto = false;
-                                estadoComprimidos.opcionFormatoHover = -1;
-                                invalidarInterfaz();
-                                return 0;
-                            }
-                        }
-                    }
-                    estadoComprimidos.menuDesplegableAbierto = false;
-                    estadoComprimidos.opcionFormatoHover = -1;
-                    invalidarInterfaz();
-                    return 0;
-                }
-
                 if (contienePunto(
                         disenoComprimidos.botonDesplegablePrograma,
                         posicionHorizontal, posicionVertical)) {
-                    const std::vector<std::wstring>& listaProgramas =
-                        obtenerListaProgramasActivaConst();
-                    if (listaProgramas.empty() &&
-                        estadoComprimidos.programaTemporal.empty()) {
-                        seleccionarYAgregarPrograma(ventana);
-                        invalidarInterfaz();
-                        return 0;
-                    }
-                    estadoComprimidos.menuProgramasAbierto =
-                        !estadoComprimidos.menuProgramasAbierto;
-                    estadoComprimidos.menuDesplegableAbierto = false;
-                    estadoComprimidos.opcionProgramaHover = -1;
-                    invalidarInterfaz();
+                    mostrarMenuDesplegableProgramasComprimidos(
+                        ventana, disenoComprimidos.botonDesplegablePrograma);
                     return 0;
                 }
 
@@ -402,11 +328,8 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
                 if (contienePunto(
                         disenoComprimidos.botonDesplegableFormato,
                         posicionHorizontal, posicionVertical)) {
-                    estadoComprimidos.menuDesplegableAbierto =
-                        !estadoComprimidos.menuDesplegableAbierto;
-                    estadoComprimidos.menuProgramasAbierto = false;
-                    estadoComprimidos.opcionFormatoHover = -1;
-                    invalidarInterfaz();
+                    mostrarMenuDesplegableFormatosComprimidos(
+                        ventana, disenoComprimidos.botonDesplegableFormato);
                     return 0;
                 }
 
@@ -514,6 +437,22 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
                     }
                     return 0;
                 }
+                if (PtInRect(&estadoImagen.botonGaleria, puntoRaton)) {
+                    estadoImagen.modoGaleria = !estadoImagen.modoGaleria;
+                    if (estadoImagen.modoGaleria) {
+                        actualizarListaGaleria();
+                    }
+                    invalidarInterfaz();
+                    return 0;
+                }
+                for (size_t posicionAccion = 0; posicionAccion < estadoImagen.accionesDisponibles.size(); ++posicionAccion) {
+                    if (PtInRect(&estadoImagen.accionesDisponibles[posicionAccion].areaBoton, puntoRaton)) {
+                        if (ejecutarAccionImagen(estadoImagen.accionesDisponibles[posicionAccion].id, ventana)) {
+                            invalidarInterfaz();
+                        }
+                        return 0;
+                    }
+                }
                 return 0;
             }
 
@@ -568,75 +507,35 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
         case WM_LBUTTONDBLCLK: {
             int posicionHorizontal = GET_X_LPARAM(datosMensaje);
             int posicionVertical = GET_Y_LPARAM(datosMensaje);
+
             if (tipoContenidoActivo.load() == TipoContenidoArchivo::Video) {
                 DisenoBarraProgreso disenoBarraProgreso =
                     calcularDisenoBarraProgreso(ventana);
-                if (esClicEnBarraProgreso(disenoBarraProgreso,
-                                          posicionHorizontal,
+                if (esClicEnBarraProgreso(disenoBarraProgreso, posicionHorizontal,
                                           posicionVertical)) {
-                    iniciarModoCursorPegadoBarraProgreso(
-                        ventana, posicionHorizontal);
+                    proporcionProgreso = calcularProporcionProgreso(
+                        disenoBarraProgreso, posicionHorizontal);
+                    buscarEnReproduccion(proporcionProgreso);
+                    arrastrandoBarraProgreso = false;
+                    if (GetCapture() == ventana) ReleaseCapture();
+                    invalidarInterfazControles();
                     return 0;
                 }
             }
-            // Tratar el doble clic sobre los botones con la misma respuesta que WM_LBUTTONDOWN
+
             return procesarVentanaControles(ventana, WM_LBUTTONDOWN, parametroMensaje, datosMensaje);
         }
         case WM_MOUSEMOVE: {
             int posicionHorizontal = GET_X_LPARAM(datosMensaje);
             int posicionVertical = GET_Y_LPARAM(datosMensaje);
 
-            if (tipoContenidoActivo.load() ==
-                TipoContenidoArchivo::Comprimido) {
-                DisenoComprimidos disenoComprimidos =
-                    calcularDisenoComprimidos(ventana);
-
-                if (estadoComprimidos.menuProgramasAbierto) {
-                    int nuevoHoverProg = -1;
-                    for (size_t posicionPrograma = 0;
-                         posicionPrograma <
-                         disenoComprimidos.opcionesPrograma.size();
-                         ++posicionPrograma) {
-                        if (contienePunto(
-                                disenoComprimidos
-                                    .opcionesPrograma[posicionPrograma],
-                                posicionHorizontal, posicionVertical)) {
-                            nuevoHoverProg =
-                                static_cast<int>(posicionPrograma);
-                            break;
-                        }
-                    }
-                    if (nuevoHoverProg !=
-                        estadoComprimidos.opcionProgramaHover) {
-                        estadoComprimidos.opcionProgramaHover = nuevoHoverProg;
-                        InvalidateRect(ventana, nullptr, FALSE);
-                    }
+            if (arrastrandoBarraProgreso) {
+                if (!(parametroMensaje & MK_LBUTTON) || GetCapture() != ventana) {
+                    finalizarArrastreBarraProgreso(ventana, true);
+                } else {
+                    actualizarArrastreBarraProgreso(ventana, posicionHorizontal);
+                    return 0;
                 }
-
-                if (estadoComprimidos.menuDesplegableAbierto) {
-                    int nuevoHover = -1;
-                    for (int posicion = 0; posicion < TOTAL_FORMATOS_DESTINO;
-                         ++posicion) {
-                        if (contienePunto(
-                                disenoComprimidos.opcionesFormato[posicion],
-                                posicionHorizontal, posicionVertical)) {
-                            nuevoHover = posicion;
-                            break;
-                        }
-                    }
-                    if (nuevoHover !=
-                        estadoComprimidos.opcionFormatoHover) {
-                        estadoComprimidos.opcionFormatoHover = nuevoHover;
-                        InvalidateRect(ventana, nullptr, FALSE);
-                    }
-                }
-                return 0;
-            }
-
-            if (modoCursorPegadoBarraProgreso ||
-                (GetCapture() == ventana && arrastrandoBarraProgreso)) {
-                actualizarArrastreBarraProgreso(ventana, posicionHorizontal);
-                return 0;
             }
 
             if (tipoContenidoActivo.load() == TipoContenidoArchivo::Texto) {
@@ -690,11 +589,24 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
                 TRACKMOUSEEVENT eventoSeguimiento{sizeof(TRACKMOUSEEVENT), TME_LEAVE, ventana, 0};
                 TrackMouseEvent(&eventoSeguimiento);
                 POINT puntoRaton{posicionHorizontal, posicionVertical};
-                bool ant = PtInRect(&estadoImagen.botonAnterior, puntoRaton) != FALSE;
-                bool sig = PtInRect(&estadoImagen.botonSiguiente, puntoRaton) != FALSE;
-                if (ant != estadoImagen.hoverBotonAnterior || sig != estadoImagen.hoverBotonSiguiente) {
-                    estadoImagen.hoverBotonAnterior = ant;
-                    estadoImagen.hoverBotonSiguiente = sig;
+                bool hoverBotonAnteriorDetectado = PtInRect(&estadoImagen.botonAnterior, puntoRaton) != FALSE;
+                bool hoverBotonSiguienteDetectado = PtInRect(&estadoImagen.botonSiguiente, puntoRaton) != FALSE;
+                bool hoverBotonGaleriaDetectado = PtInRect(&estadoImagen.botonGaleria, puntoRaton) != FALSE;
+                bool cambioHover = (hoverBotonAnteriorDetectado != estadoImagen.hoverBotonAnterior ||
+                                    hoverBotonSiguienteDetectado != estadoImagen.hoverBotonSiguiente ||
+                                    hoverBotonGaleriaDetectado != estadoImagen.hoverBotonGaleria);
+                estadoImagen.hoverBotonAnterior = hoverBotonAnteriorDetectado;
+                estadoImagen.hoverBotonSiguiente = hoverBotonSiguienteDetectado;
+                estadoImagen.hoverBotonGaleria = hoverBotonGaleriaDetectado;
+
+                for (size_t posicionAccion = 0; posicionAccion < estadoImagen.accionesDisponibles.size(); ++posicionAccion) {
+                    bool estaSobreBotonAccion = PtInRect(&estadoImagen.accionesDisponibles[posicionAccion].areaBoton, puntoRaton) != FALSE;
+                    if (estaSobreBotonAccion != estadoImagen.accionesDisponibles[posicionAccion].hover) {
+                        estadoImagen.accionesDisponibles[posicionAccion].hover = estaSobreBotonAccion;
+                        cambioHover = true;
+                    }
+                }
+                if (cambioHover) {
                     InvalidateRect(ventana, nullptr, FALSE);
                 }
                 return 0;
@@ -749,10 +661,19 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
                 return 0;
             }
             if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen) {
-                if (estadoImagen.hoverBotonAnterior ||
-                    estadoImagen.hoverBotonSiguiente) {
-                    estadoImagen.hoverBotonAnterior = false;
-                    estadoImagen.hoverBotonSiguiente = false;
+                bool cambioHover = estadoImagen.hoverBotonAnterior ||
+                                   estadoImagen.hoverBotonSiguiente ||
+                                   estadoImagen.hoverBotonGaleria;
+                estadoImagen.hoverBotonAnterior = false;
+                estadoImagen.hoverBotonSiguiente = false;
+                estadoImagen.hoverBotonGaleria = false;
+                for (size_t posicionAccion = 0; posicionAccion < estadoImagen.accionesDisponibles.size(); ++posicionAccion) {
+                    if (estadoImagen.accionesDisponibles[posicionAccion].hover) {
+                        estadoImagen.accionesDisponibles[posicionAccion].hover = false;
+                        cambioHover = true;
+                    }
+                }
+                if (cambioHover) {
                     InvalidateRect(ventana, nullptr, FALSE);
                 }
                 return 0;
@@ -827,7 +748,27 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
                 GetCursorPos(&puntoRaton);
                 ScreenToClient(ventana, &puntoRaton);
                 if (PtInRect(&estadoImagen.botonAnterior, puntoRaton) ||
-                    PtInRect(&estadoImagen.botonSiguiente, puntoRaton)) {
+                    PtInRect(&estadoImagen.botonSiguiente, puntoRaton) ||
+                    PtInRect(&estadoImagen.botonGaleria, puntoRaton)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+                for (size_t posicionAccion = 0; posicionAccion < estadoImagen.accionesDisponibles.size(); ++posicionAccion) {
+                    if (PtInRect(&estadoImagen.accionesDisponibles[posicionAccion].areaBoton, puntoRaton)) {
+                        SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                        return TRUE;
+                    }
+                }
+            }
+            if (tipoContenidoActivo.load() == TipoContenidoArchivo::Comprimido) {
+                POINT puntoRaton;
+                GetCursorPos(&puntoRaton);
+                ScreenToClient(ventana, &puntoRaton);
+                DisenoComprimidos diseno = calcularDisenoComprimidos(ventana);
+                if (contienePunto(diseno.botonDesplegablePrograma, puntoRaton.x, puntoRaton.y) ||
+                    contienePunto(diseno.botonEjecutarAbrir, puntoRaton.x, puntoRaton.y) ||
+                    contienePunto(diseno.botonDesplegableFormato, puntoRaton.x, puntoRaton.y) ||
+                    contienePunto(diseno.botonEjecutarConversion, puntoRaton.x, puntoRaton.y)) {
                     SetCursor(LoadCursorW(nullptr, IDC_HAND));
                     return TRUE;
                 }
@@ -845,40 +786,22 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
             break;
         }
         case WM_LBUTTONUP:
-            if (modoCursorPegadoBarraProgreso) {
-                return 0;
-            }
             if (arrastrandoBarraProgreso) {
                 finalizarArrastreBarraProgreso(ventana, true);
             }
             return 0;
         case WM_CAPTURECHANGED:
         case WM_CANCELMODE:
-            if (modoCursorPegadoBarraProgreso) {
-                cancelarModoCursorPegadoBarraProgreso(ventana, false);
-                return 0;
-            }
+        case WM_KILLFOCUS:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN:
             if (arrastrandoBarraProgreso) {
                 finalizarArrastreBarraProgreso(ventana, false);
             }
             return 0;
-        case WM_MOUSEWHEEL: {
-            if (tipoContenidoActivo.load() ==
-                TipoContenidoArchivo::Comprimido) {
-                short deltaRueda =
-                    GET_WHEEL_DELTA_WPARAM(parametroMensaje);
-                desplazarScrollLog(deltaRueda > 0 ? -1 : 1);
-                InvalidateRect(ventana, nullptr, FALSE);
-                return 0;
-            }
+        case WM_MOUSEWHEEL:
             break;
-        }
         case WM_KEYDOWN:
-            if (parametroMensaje == VK_ESCAPE &&
-                modoCursorPegadoBarraProgreso) {
-                cancelarModoCursorPegadoBarraProgreso(ventana, false);
-                return 0;
-            }
             if (tipoContenidoActivo.load() == TipoContenidoArchivo::Texto) {
                 if (parametroMensaje == VK_LEFT || parametroMensaje == L'P') {
                     if (mostrarTextoAnterior()) invalidarInterfaz();
@@ -1023,9 +946,15 @@ LRESULT CALLBACK procesarVentanaControles(HWND ventana, UINT mensaje,
         case WM_GETDLGCODE:
             return DLGC_WANTARROWS | DLGC_WANTCHARS;
         case WM_TIMER:
+            if (parametroMensaje == ID_TEMPORIZADOR_PARPADEO_NAV) {
+                KillTimer(ventana, ID_TEMPORIZADOR_PARPADEO_NAV);
+            }
             InvalidateRect(ventana, nullptr, FALSE);
             return 0;
         case WM_SIZE:
+            InvalidateRect(ventana, nullptr, FALSE);
+            return 0;
+        case MENSAJE_ACTUALIZAR_INTERFAZ:
             InvalidateRect(ventana, nullptr, FALSE);
             return 0;
         case WM_ERASEBKGND:
@@ -1055,6 +984,35 @@ LRESULT CALLBACK procesarVentanaReproductor(HWND ventana, UINT mensaje,
     }
     if (mensaje == WM_SIZE) {
         ajustarLayoutVentanasReproductor(ventana);
+        return 0;
+    }
+    if (mensaje == WM_PAINT) {
+        PAINTSTRUCT pintura;
+        HDC contextoPantalla = BeginPaint(ventana, &pintura);
+        RECT areaCliente;
+        GetClientRect(ventana, &areaCliente);
+        int anchoCliente = areaCliente.right - areaCliente.left;
+        int altoCliente = areaCliente.bottom - areaCliente.top;
+        if (anchoCliente > 0 && altoCliente > 0) {
+            HDC contextoMemoria = CreateCompatibleDC(contextoPantalla);
+            HBITMAP mapaBitsMemoria = CreateCompatibleBitmap(contextoPantalla, anchoCliente, altoCliente);
+            HBITMAP mapaBitsAnterior = static_cast<HBITMAP>(SelectObject(contextoMemoria, mapaBitsMemoria));
+
+            HBRUSH brochaFondo = CreateSolidBrush(COLOR_FONDO_REPRODUCTOR);
+            FillRect(contextoMemoria, &areaCliente, brochaFondo);
+            DeleteObject(brochaFondo);
+
+            if (tipoContenidoActivo.load() == TipoContenidoArchivo::Video) {
+                RECT areaMetadatos{0, 0, anchoCliente, std::min<int>(altoCliente, ALTO_METADATOS_VIDEO)};
+                dibujarCabeceraMetadatosVideo(contextoMemoria, areaMetadatos);
+            }
+
+            BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente, contextoMemoria, 0, 0, SRCCOPY);
+            SelectObject(contextoMemoria, mapaBitsAnterior);
+            DeleteObject(mapaBitsMemoria);
+            DeleteDC(contextoMemoria);
+        }
+        EndPaint(ventana, &pintura);
         return 0;
     }
     return DefWindowProcW(ventana, mensaje, parametroMensaje, datosMensaje);
@@ -1093,6 +1051,16 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             int maxScroll = std::max(0, estadoVistaCarpetas.altoTotalArbol - 100);
             estadoVistaCarpetas.desplazamientoScrollY = std::max(
                 0, std::min(estadoVistaCarpetas.desplazamientoScrollY + incremento, maxScroll));
+            InvalidateRect(ventana, nullptr, FALSE);
+            return 0;
+        }
+        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen && estadoImagen.modoGaleria) {
+            short deltaRueda = GET_WHEEL_DELTA_WPARAM(parametroMensaje);
+            RECT rc;
+            GetClientRect(ventana, &rc);
+            int altoMax = std::max(0, estadoImagen.altoTotalGaleria - static_cast<int>(rc.bottom - rc.top));
+            estadoImagen.desplazamientoScrollGaleria =
+                std::max(0, std::min(estadoImagen.desplazamientoScrollGaleria - (deltaRueda > 0 ? 50 : -50), altoMax));
             InvalidateRect(ventana, nullptr, FALSE);
             return 0;
         }
@@ -1179,6 +1147,21 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             }
             return 0;
         }
+        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen && estadoImagen.modoGaleria) {
+            TRACKMOUSEEVENT eventoSeguimiento{sizeof(TRACKMOUSEEVENT), TME_LEAVE, ventana, 0};
+            TrackMouseEvent(&eventoSeguimiento);
+            POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
+            bool cambioHover = false;
+            for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
+                bool estaSobreTarjeta = PtInRect(&estadoImagen.miniaturasGaleria[posicionMiniatura].areaTarjeta, puntoRaton) != FALSE;
+                if (estaSobreTarjeta != estadoImagen.miniaturasGaleria[posicionMiniatura].hover) {
+                    estadoImagen.miniaturasGaleria[posicionMiniatura].hover = estaSobreTarjeta;
+                    cambioHover = true;
+                }
+            }
+            if (cambioHover) InvalidateRect(ventana, nullptr, FALSE);
+            return 0;
+        }
     }
     if (mensaje == WM_MOUSELEAVE || mensaje == WM_KILLFOCUS) {
         if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaCarpetas) {
@@ -1214,6 +1197,17 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
                 estadoTexto.posicionBarraHover = -1;
                 InvalidateRect(ventana, nullptr, FALSE);
             }
+            return 0;
+        }
+        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen && estadoImagen.modoGaleria) {
+            bool cambioHover = false;
+            for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
+                if (estadoImagen.miniaturasGaleria[posicionMiniatura].hover) {
+                    estadoImagen.miniaturasGaleria[posicionMiniatura].hover = false;
+                    cambioHover = true;
+                }
+            }
+            if (cambioHover) InvalidateRect(ventana, nullptr, FALSE);
             return 0;
         }
     }
@@ -1290,8 +1284,25 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
                 }
             }
         }
+        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen && estadoImagen.modoGaleria) {
+            POINT puntoRaton;
+            GetCursorPos(&puntoRaton);
+            ScreenToClient(ventana, &puntoRaton);
+            for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
+                if (PtInRect(&estadoImagen.miniaturasGaleria[posicionMiniatura].areaTarjeta, puntoRaton)) {
+                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                    return TRUE;
+                }
+            }
+        }
     }
     if (mensaje == WM_LBUTTONDOWN) {
+        if (arrastrandoBarraProgreso) {
+            arrastrandoBarraProgreso = false;
+            if (ventanaControles && GetCapture() == ventanaControles) {
+                ReleaseCapture();
+            }
+        }
         if (menuVelocidadDesplegado) {
             ocultarMenuVelocidadInmediato();
         }
@@ -1306,14 +1317,13 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
                 return 0;
             }
             if (PtInRect(&estadoVistaCarpetas.botonAlternarExpansion, pt)) {
-                estadoVistaCarpetas.nivelExpansionActual =
-                    (estadoVistaCarpetas.nivelExpansionActual + 1) % 4;
+                avanzarNivelExpansionArbol();
+                estadoVistaCarpetas.desplazamientoScrollY = 0;
                 invalidarInterfaz();
                 return 0;
             }
             if (PtInRect(&estadoVistaCarpetas.botonSelectorPrograma, pt)) {
-                seleccionarYAgregarProgramaCarpeta(ventana);
-                invalidarInterfaz();
+                mostrarMenuDesplegableProgramasCarpetas(ventana, estadoVistaCarpetas.botonSelectorPrograma);
                 return 0;
             }
             if (PtInRect(&estadoVistaCarpetas.botonEjecutarAbrir, pt)) {
@@ -1376,10 +1386,22 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             return 0;
         }
         if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen) {
-            POINT pt{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
-            RECT rc;
-            GetClientRect(ventana, &rc);
-            if (pt.x < (rc.right - rc.left) / 2) {
+            POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
+            if (estadoImagen.modoGaleria) {
+                for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
+                    if (PtInRect(&estadoImagen.miniaturasGaleria[posicionMiniatura].areaTarjeta, puntoRaton)) {
+                        cargarImagenPorRuta(estadoImagen.miniaturasGaleria[posicionMiniatura].rutaArchivo);
+                        estadoImagen.indiceImagenSeleccionada = posicionMiniatura;
+                        estadoImagen.modoGaleria = false;
+                        invalidarInterfaz();
+                        return 0;
+                    }
+                }
+                return 0;
+            }
+            RECT rectanguloCliente;
+            GetClientRect(ventana, &rectanguloCliente);
+            if (puntoRaton.x < (rectanguloCliente.right - rectanguloCliente.left) / 2) {
                 if (mostrarImagenAnterior()) invalidarInterfaz();
             } else {
                 if (mostrarImagenSiguiente()) invalidarInterfaz();
@@ -1417,80 +1439,7 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
         if (menuVelocidadDesplegado) {
             ocultarMenuVelocidadInmediato();
         }
-        if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaCarpetas) {
-            POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
-            if (PtInRect(&estadoVistaCarpetas.botonAnteriorCarpeta, puntoRaton)) {
-                if (mostrarCarpetaAnterior()) invalidarInterfaz();
-                return 0;
-            }
-            if (PtInRect(&estadoVistaCarpetas.botonSiguienteCarpeta, puntoRaton)) {
-                if (mostrarCarpetaSiguiente()) invalidarInterfaz();
-                return 0;
-            }
-            if (PtInRect(&estadoVistaCarpetas.botonSelectorPrograma, puntoRaton)) {
-                seleccionarYAgregarProgramaCarpeta(ventana);
-                invalidarInterfaz();
-                return 0;
-            }
-            if (PtInRect(&estadoVistaCarpetas.botonEjecutarAbrir, puntoRaton)) {
-                ejecutarAbrirCarpetasConPrograma(ventana);
-                return 0;
-            }
-            if (PtInRect(&estadoVistaCarpetas.botonFusionCarpetas, puntoRaton)) {
-                if (ejecutarFusionCarpetas(ventana)) {
-                    invalidarInterfaz();
-                }
-                return 0;
-            }
-            if (configuracion.interaccionArchivosVistaCarpetas.load()) {
-                const ElementoArbolVistaCarpetas* elementoArbol = obtenerElementoArbolEnPunto(puntoRaton);
-                if (elementoArbol) {
-                    ejecutarAbrirElementoArbol(*elementoArbol);
-                    return 0;
-                }
-            }
-            return 0;
-        }
-        if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaVacia) {
-            POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
-            if (PtInRect(&estadoVistaCarpetas.resumenVistaVacia.botonEliminarCarpetasVacias, puntoRaton)) {
-                if (eliminarCarpetasVacias()) {
-                    invalidarInterfaz();
-                }
-                return 0;
-            }
-            return 0;
-        }
-        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Imagen) {
-            POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
-            RECT rectanguloCliente;
-            GetClientRect(ventana, &rectanguloCliente);
-            if (puntoRaton.x < (rectanguloCliente.right - rectanguloCliente.left) / 2) {
-                if (mostrarImagenAnterior()) invalidarInterfaz();
-            } else {
-                if (mostrarImagenSiguiente()) invalidarInterfaz();
-            }
-            return 0;
-        }
-        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Comprimido) {
-            if (!estadoComprimidos.esModoComic && estadoComprimidos.archivosSeleccionados.size() > 1) {
-                POINT puntoRaton{GET_X_LPARAM(datosMensaje), GET_Y_LPARAM(datosMensaje)};
-                if (PtInRect(&estadoComprimidos.botonAnteriorComprimido, puntoRaton)) {
-                    if (mostrarComprimidoAnterior()) invalidarInterfaz();
-                    return 0;
-                }
-                if (PtInRect(&estadoComprimidos.botonSiguienteComprimido, puntoRaton)) {
-                    if (mostrarComprimidoSiguiente()) invalidarInterfaz();
-                    return 0;
-                }
-            }
-            return 0;
-        }
-        if (tipoContenidoActivo.load() == TipoContenidoArchivo::Video) {
-            alternarReproduccion();
-            return 0;
-        }
-        return 0;
+        return procesarVentanaVideo(ventana, WM_LBUTTONDOWN, parametroMensaje, datosMensaje);
     }
     if (mensaje == WM_RBUTTONUP) {
         if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaCarpetas) {
@@ -1561,6 +1510,8 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
                 BitBlt(contextoPantalla, 0, 0, anchoCliente, altoCliente,
                        contextoMemoria, 0, 0, SRCCOPY);
             } else if (tipoContenidoActivo.load() ==
+                       TipoContenidoArchivo::Video ||
+                       tipoContenidoActivo.load() ==
                        TipoContenidoArchivo::Ninguno) {
                 HBRUSH brochaFondo = CreateSolidBrush(COLOR_FONDO_REPRODUCTOR);
                 FillRect(contextoMemoria, &areaCliente, brochaFondo);

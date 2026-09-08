@@ -3,6 +3,7 @@
 #include <commctrl.h>
 
 constexpr UINT_PTR ID_SUBCLASE_VISTA_ARCHIVOS = 1001;
+constexpr UINT_PTR ID_SUBCLASE_VENTANA_EXPLORADOR = 1002;
 
 Configuracion configuracion;
 std::wstring rutaVideoActiva;
@@ -33,7 +34,6 @@ ReceptorEventosMediaFoundation* receptorEventos = nullptr;
 // La barra pertenece al mismo hilo que su ventana, por lo que estas variables
 // no necesitan atómicos ni sincronización adicional.
 bool arrastrandoBarraProgreso = false;
-bool modoCursorPegadoBarraProgreso = false;
 double proporcionProgreso = 0.0;
 std::atomic_bool cambioPosicionPendiente{false};
 std::atomic_bool reproducirTrasCambioPosicion{false};
@@ -51,6 +51,38 @@ bool menuVelocidadDesplegado = false;
 int opcionVelocidadResaltada = -1;
 BYTE opacidadMenuVelocidad = 255;
 bool animandoCierreMenuVelocidad = false;
+
+struct EstadoVideoMetadatos {
+    std::wstring rutaVideo;
+    std::wstring nombreArchivo;
+    std::wstring extensionFormato;
+    std::wstring textoTamano;
+    std::wstring textoDuracion;
+    std::wstring textoFechaModificacion;
+    int totalEnRango{0};
+    int indiceEnRango{0};
+    int totalEnCarpeta{0};
+    int indiceEnCarpeta{0};
+    bool esRangoSeleccionado{false};
+    ULONGLONG tiempoInicioParpadeoNav{0};
+};
+
+inline EstadoVideoMetadatos estadoVideoMetadatos;
+
+inline void liberarRecursosVideo() {
+    estadoVideoMetadatos.rutaVideo.clear();
+    estadoVideoMetadatos.nombreArchivo.clear();
+    estadoVideoMetadatos.extensionFormato.clear();
+    estadoVideoMetadatos.textoTamano.clear();
+    estadoVideoMetadatos.textoDuracion.clear();
+    estadoVideoMetadatos.textoFechaModificacion.clear();
+    estadoVideoMetadatos.totalEnRango = 0;
+    estadoVideoMetadatos.indiceEnRango = 0;
+    estadoVideoMetadatos.totalEnCarpeta = 0;
+    estadoVideoMetadatos.indiceEnCarpeta = 0;
+    estadoVideoMetadatos.esRangoSeleccionado = false;
+    estadoVideoMetadatos.tiempoInicioParpadeoNav = 0;
+}
 
 struct EstadoPendienteImplementacion {
     std::wstring rutaActual;

@@ -40,14 +40,22 @@
 
 ## 🚀 Instalación y Compilación
 
-1. Compila el mod empaquetado ejecutando:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 build
-   ```
-2. Ejecuta la puerta de calidad estricta:
-   ```powershell
-   powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 quality
-   ```
-3. Carga el archivo generado en `dist/useful-sideview.wh.cpp` como mod local en Windhawk.
-4. Abre el Explorador de Archivos de Windows y activa el panel lateral con `Alt + P`.
+1. **Compilación en 1 solo clic (Recomendado)**:
+   - Haz doble clic en el archivo [`build.bat`](file:///D:/Development/windhawk-development/windhawk-useful-sideview/build.bat) en la raíz del proyecto (o ejecuta `.\build.ps1` en PowerShell).
+   - Esto generará de forma automática el archivo compilado único en `dist/useful-sideview.wh.cpp`.
+
+2. **Herramientas de despliegue y calidad (Avanzado)**:
+   - Compilación manual vía Deployment Manager:
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 build
+     ```
+   - Puerta de calidad completa (Clang-Tidy + Linker estricto):
+     ```powershell
+     powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 quality
+     ```
+
+3. **Carga en Windhawk**:
+   - Carga el archivo generado en [`dist/useful-sideview.wh.cpp`](file:///D:/Development/windhawk-development/windhawk-useful-sideview/dist/useful-sideview.wh.cpp) como mod local en Windhawk.
+   - Abre el Explorador de Archivos de Windows y activa el panel lateral con `Alt + P`.
+
 

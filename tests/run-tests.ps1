@@ -7,7 +7,7 @@ $ejecutable = Join-Path $env:TEMP 'useful-sideview-barra-progreso-test.exe'
 
 & $compilador -std=c++23 -target x86_64-w64-mingw32 `
     -DUNICODE -D_UNICODE -I (Join-Path $raiz 'src') `
-    $fuente -o $ejecutable -static -luser32 -lgdi32 -lole32 -lshlwapi -lgdiplus -lwindowscodecs -lurlmon -lcabinet -lcomdlg32
+    $fuente -o $ejecutable -static -luser32 -lgdi32 -lole32 -loleaut32 -luuid -lshlwapi -lgdiplus -lwindowscodecs -lurlmon -lcabinet -lcomdlg32
 if ($LASTEXITCODE -ne 0) {
     throw 'No fue posible compilar la prueba de la barra de progreso.'
 }

@@ -45,7 +45,7 @@ constexpr const wchar_t* ETIQUETAS_VELOCIDAD[TOTAL_OPCIONES_VELOCIDAD] = {
     L"0.5x", L"0.75x", L"1.0x", L"1.25x", L"1.5x", L"2.0x"};
 
 
-constexpr int ALTO_CONTROLES_COMPRIMIDOS = 210;
+constexpr int ALTO_CONTROLES_COMPRIMIDOS = 104;
 constexpr int TOTAL_FORMATOS_DESTINO = 5;
 constexpr const wchar_t* FORMATOS_DESTINO[TOTAL_FORMATOS_DESTINO] = {
     L"CBZ (.cbz)", L"ZIP (.zip)", L"CBR (.cbr)", L"7Z (.7z)", L"TAR (.tar)"};
@@ -54,7 +54,10 @@ constexpr const wchar_t* EXTENSIONES_DESTINO[TOTAL_FORMATOS_DESTINO] = {
 
 constexpr COLORREF COLOR_FONDO_REPRODUCTOR = RGB(15, 15, 15);
 
+constexpr int ALTO_METADATOS_VIDEO = 90;
+constexpr UINT_PTR ID_TEMPORIZADOR_PARPADEO_NAV = 1005;
+
 constexpr wchar_t GLIFO_COMPRIMIDO[] = L"\uE8B7";
-constexpr wchar_t GLIFO_CHEVRON_ABAJO[] = L"\uE70D";
+constexpr wchar_t GLIFO_CHEVRON_ARRIBA[] = L"\uE70E";
 
 

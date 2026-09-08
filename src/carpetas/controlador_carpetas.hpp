@@ -24,6 +24,7 @@ struct ResumenVistaVacia {
     int totalSubcarpetas{0};
     int totalArchivos{0};
     int cantidadTiposArchivos{0};
+    std::wstring textoExtensionesFantasma;
     std::wstring fechaUltimoAcceso;
     FILETIME ftUltimaModificacion{};
     std::vector<SubcarpetaPesada> top4CarpetasMasPesadas;
@@ -46,9 +47,13 @@ struct EstadoControladorVistaCarpetas {
     FILETIME ftUltimaModificacionArbol{};
     int desplazamientoScrollY{0};
     int altoTotalArbol{0};
-    int nivelExpansionActual{3}; // 0 = Raíz, 1 = Nivel 1, 2 = Nivel 2, 3 = Todo expandido
+    int nivelExpansionActual{0}; // 0 = Raíz, 1 = Nivel 1, 2 = Nivel 2, ...
     RECT botonAlternarExpansion{};
     bool hoverBotonAlternarExpansion{false};
+
+    // Metadatos de tamano total de carpeta
+    std::wstring tamanoTotalCarpetaActualFormateado;
+    uintmax_t tamanoTotalCarpetaActualBytes{0};
 
     // Navegacion entre carpetas seleccionadas
     RECT botonAnteriorCarpeta{};
@@ -94,12 +99,17 @@ inline std::wstring formatearTamanoCarpeta(uintmax_t tamanoEnBytes) {
         swprintf_s(bufer, L"%.1f MB", static_cast<double>(tamanoEnBytes) / (1024.0 * 1024.0));
         return bufer;
     }
+    if (tamanoEnBytes < 1024ULL * 1024 * 1024 * 1024) {
+        wchar_t bufer[32];
+        swprintf_s(bufer, L"%.2f GB", static_cast<double>(tamanoEnBytes) / (1024.0 * 1024.0 * 1024.0));
+        return bufer;
+    }
     wchar_t bufer[32];
-    swprintf_s(bufer, L"%.2f GB", static_cast<double>(tamanoEnBytes) / (1024.0 * 1024.0 * 1024.0));
+    swprintf_s(bufer, L"%.2f TB", static_cast<double>(tamanoEnBytes) / (1024.0 * 1024.0 * 1024.0 * 1024.0));
     return bufer;
 }
 
-inline uintmax_t calcularTamanoDirectorio(const std::wstring& rutaDirectorio, int limiteProfundidad = 16, int* contadorArchivosEscaneados = nullptr) {
+inline uintmax_t calcularTamanoDirectorio(const std::wstring& rutaDirectorio, int limiteProfundidad = 64, int* contadorArchivosEscaneados = nullptr) {
     if (limiteProfundidad <= 0) return 0;
 
     std::wstring patron = rutaDirectorio + L"\\*";
@@ -138,14 +148,41 @@ inline void liberarRecursosVistaCarpetas() {
     estadoVistaCarpetas.elementosArbol.clear();
     estadoVistaCarpetas.rutaCarpetaArbolCargada.clear();
     estadoVistaCarpetas.ftUltimaModificacionArbol = {};
+    estadoVistaCarpetas.tamanoTotalCarpetaActualBytes = 0;
+    estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado.clear();
     estadoVistaCarpetas.desplazamientoScrollY = 0;
     estadoVistaCarpetas.altoTotalArbol = 0;
+    estadoVistaCarpetas.nivelExpansionActual = 0;
     estadoVistaCarpetas.hoverBotonAnterior = false;
     estadoVistaCarpetas.hoverBotonSiguiente = false;
+    estadoVistaCarpetas.hoverBotonAlternarExpansion = false;
     estadoVistaCarpetas.menuProgramasAbierto = false;
     estadoVistaCarpetas.opcionProgramaHover = -1;
     estadoVistaCarpetas.programaTemporal.clear();
     estadoVistaCarpetas.resumenVistaVacia = {};
+}
+
+inline int obtenerMaximoNivelJerarquiaArbol() {
+    int maxNivel = 0;
+    for (const auto& elementoArbol : estadoVistaCarpetas.elementosArbol) {
+        if (elementoArbol.nivelJerarquia > maxNivel) {
+            maxNivel = elementoArbol.nivelJerarquia;
+        }
+    }
+    return maxNivel;
+}
+
+inline void avanzarNivelExpansionArbol() {
+    int maxNivel = obtenerMaximoNivelJerarquiaArbol();
+    if (maxNivel <= 0) {
+        estadoVistaCarpetas.nivelExpansionActual = 0;
+        return;
+    }
+    if (estadoVistaCarpetas.nivelExpansionActual >= maxNivel) {
+        estadoVistaCarpetas.nivelExpansionActual = 0;
+    } else {
+        estadoVistaCarpetas.nivelExpansionActual++;
+    }
 }
 
 inline void inspeccionarEstructuraCarpeta(const std::wstring& rutaCarpeta, int nivel = 0, int maxNivel = 3) {
@@ -178,7 +215,7 @@ inline void inspeccionarEstructuraCarpeta(const std::wstring& rutaCarpeta, int n
         elemento.nivelJerarquia = nivel;
 
         if (esDir) {
-            elemento.tamanoBytes = calcularTamanoDirectorio(rutaCompleta, 8);
+            elemento.tamanoBytes = calcularTamanoDirectorio(rutaCompleta, 1);
             subcarpetas.push_back(elemento);
         } else {
             elemento.tamanoBytes = (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
@@ -194,15 +231,15 @@ inline void inspeccionarEstructuraCarpeta(const std::wstring& rutaCarpeta, int n
         return StrCmpLogicalW(a.nombre.c_str(), b.nombre.c_str()) < 0;
     });
 
-    for (const auto& dir : subcarpetas) {
-        estadoVistaCarpetas.elementosArbol.push_back(dir);
+    for (const auto& directorioHijo : subcarpetas) {
+        estadoVistaCarpetas.elementosArbol.push_back(directorioHijo);
         if (nivel < maxNivel && estadoVistaCarpetas.elementosArbol.size() < 500) {
-            inspeccionarEstructuraCarpeta(dir.rutaCompleta, nivel + 1, maxNivel);
+            inspeccionarEstructuraCarpeta(directorioHijo.rutaCompleta, nivel + 1, maxNivel);
         }
     }
-    for (const auto& arch : archivos) {
+    for (const auto& archivoHijo : archivos) {
         if (estadoVistaCarpetas.elementosArbol.size() < 500) {
-            estadoVistaCarpetas.elementosArbol.push_back(arch);
+            estadoVistaCarpetas.elementosArbol.push_back(archivoHijo);
         }
     }
 }
@@ -223,12 +260,15 @@ inline bool cargarCarpetaPorIndice(size_t indiceCarpeta) {
 
     estadoVistaCarpetas.elementosArbol.clear();
     estadoVistaCarpetas.desplazamientoScrollY = 0;
-    estadoVistaCarpetas.nivelExpansionActual =
-        configuracion.arbolCarpetasExpandidoPorDefecto.load() ? 3 : 0;
+    estadoVistaCarpetas.nivelExpansionActual = 0;
     estadoVistaCarpetas.rutaCarpetaArbolCargada = ruta;
     if (tieneAttr) {
         estadoVistaCarpetas.ftUltimaModificacionArbol = datosAttr.ftLastWriteTime;
     }
+
+    estadoVistaCarpetas.tamanoTotalCarpetaActualBytes = calcularTamanoDirectorio(ruta, 4);
+    estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado =
+        formatearTamanoCarpeta(estadoVistaCarpetas.tamanoTotalCarpetaActualBytes);
 
     inspeccionarEstructuraCarpeta(ruta, 0, 3);
     return true;
@@ -461,21 +501,43 @@ inline void calcularResumenVistaVacia(const std::wstring& rutaCarpeta) {
     } while (FindNextFileW(busqueda, &datos));
     FindClose(busqueda);
 
-    std::sort(subcarpetas.begin(), subcarpetas.end(), [](const SubcarpetaPesada& a, const SubcarpetaPesada& b) {
-        return a.tamanoBytes > b.tamanoBytes;
+    std::vector<SubcarpetaPesada> subcarpetasOrdenadas = subcarpetas;
+    std::sort(subcarpetasOrdenadas.begin(), subcarpetasOrdenadas.end(), [](const SubcarpetaPesada& primera, const SubcarpetaPesada& segunda) {
+        return primera.tamanoBytes > segunda.tamanoBytes;
     });
 
     std::vector<SubcarpetaPesada> top4;
-    for (size_t posicionSubcarpeta = 0; posicionSubcarpeta < std::min<size_t>(4, subcarpetas.size()); ++posicionSubcarpeta) {
-        SubcarpetaPesada sp = subcarpetas[posicionSubcarpeta];
-        sp.porcentaje = (tamanoTotal > 0) ? (static_cast<double>(sp.tamanoBytes) / static_cast<double>(tamanoTotal)) : 0.0;
-        top4.push_back(sp);
+    for (size_t posicionSubcarpeta = 0; posicionSubcarpeta < std::min<size_t>(4, subcarpetasOrdenadas.size()); ++posicionSubcarpeta) {
+        SubcarpetaPesada subcarpetaItem = subcarpetasOrdenadas[posicionSubcarpeta];
+        subcarpetaItem.porcentaje = (tamanoTotal > 0) ? (static_cast<double>(subcarpetaItem.tamanoBytes) / static_cast<double>(tamanoTotal)) : 0.0;
+        top4.push_back(subcarpetaItem);
+    }
+
+    std::vector<std::pair<int, std::wstring>> listaOrdenadaExtensiones;
+    for (const auto& [extensionClave, cantidadArchivos] : extensiones) {
+        listaOrdenadaExtensiones.push_back({cantidadArchivos, extensionClave});
+    }
+    std::sort(listaOrdenadaExtensiones.begin(), listaOrdenadaExtensiones.end(),
+              [](const std::pair<int, std::wstring>& primera, const std::pair<int, std::wstring>& segunda) {
+                  if (primera.first != segunda.first) {
+                      return primera.first > segunda.first;
+                  }
+                  return StrCmpLogicalW(primera.second.c_str(), segunda.second.c_str()) < 0;
+              });
+
+    std::wstring textoExtensionesAcumulado;
+    for (size_t posicionExtension = 0; posicionExtension < listaOrdenadaExtensiones.size(); ++posicionExtension) {
+        if (posicionExtension > 0) {
+            textoExtensionesAcumulado += L", ";
+        }
+        textoExtensionesAcumulado += listaOrdenadaExtensiones[posicionExtension].second;
     }
 
     estadoVistaCarpetas.resumenVistaVacia.tamanoTotalBytes = tamanoTotal;
     estadoVistaCarpetas.resumenVistaVacia.totalSubcarpetas = totalCarpetas;
     estadoVistaCarpetas.resumenVistaVacia.totalArchivos = totalArchivos;
     estadoVistaCarpetas.resumenVistaVacia.cantidadTiposArchivos = static_cast<int>(extensiones.size());
+    estadoVistaCarpetas.resumenVistaVacia.textoExtensionesFantasma = textoExtensionesAcumulado;
     estadoVistaCarpetas.resumenVistaVacia.top4CarpetasMasPesadas = top4;
     estadoVistaCarpetas.resumenVistaVacia.carpetasVacias = carpetasVaciasDetectadas;
     estadoVistaCarpetas.resumenVistaVacia.calculando = false;
@@ -567,6 +629,49 @@ inline std::wstring resolverProgramaParaCarpetas() {
         return estadoVistaCarpetas.programasCarpetasRecordados.front();
     }
     return {};
+}
+
+inline void mostrarMenuDesplegableProgramasCarpetas(HWND ventana, const RECT& botonRect) {
+    if (estadoVistaCarpetas.programasCarpetasRecordados.empty() && estadoVistaCarpetas.programaTemporal.empty()) {
+        seleccionarYAgregarProgramaCarpeta(ventana);
+        InvalidateRect(ventana, nullptr, FALSE);
+        return;
+    }
+
+    HMENU menu = CreatePopupMenu();
+    if (!menu) return;
+
+    for (size_t posicionPrograma = 0; posicionPrograma < estadoVistaCarpetas.programasCarpetasRecordados.size(); ++posicionPrograma) {
+        UINT banderasMenu = MF_STRING;
+        if (static_cast<int>(posicionPrograma) == estadoVistaCarpetas.indiceProgramaSeleccionado) {
+            banderasMenu |= MF_CHECKED;
+        }
+        std::wstring nombreProg = PathFindFileNameW(estadoVistaCarpetas.programasCarpetasRecordados[posicionPrograma].c_str());
+        AppendMenuW(menu, banderasMenu, static_cast<UINT_PTR>(3000 + posicionPrograma), nombreProg.c_str());
+    }
+
+    if (!estadoVistaCarpetas.programasCarpetasRecordados.empty()) {
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+    }
+    AppendMenuW(menu, MF_STRING, 3999, L"+ Añadir programa...");
+
+    POINT puntoBoton{botonRect.left, botonRect.top};
+    ClientToScreen(ventana, &puntoBoton);
+
+    SetForegroundWindow(ventana);
+    UINT comandoSeleccionado = static_cast<UINT>(TrackPopupMenuEx(
+        menu, TPM_LEFTALIGN | TPM_BOTTOMALIGN | TPM_RETURNCMD | TPM_VERTICAL,
+        puntoBoton.x, puntoBoton.y, ventana, nullptr));
+    DestroyMenu(menu);
+
+    if (comandoSeleccionado >= 3000 && comandoSeleccionado < 3000 + estadoVistaCarpetas.programasCarpetasRecordados.size()) {
+        estadoVistaCarpetas.indiceProgramaSeleccionado = static_cast<int>(comandoSeleccionado - 3000);
+        estadoVistaCarpetas.programaTemporal.clear();
+        InvalidateRect(ventana, nullptr, FALSE);
+    } else if (comandoSeleccionado == 3999) {
+        seleccionarYAgregarProgramaCarpeta(ventana);
+        InvalidateRect(ventana, nullptr, FALSE);
+    }
 }
 
 inline void ejecutarAbrirCarpetasConPrograma(HWND ventanaPadre) {
@@ -1069,8 +1174,24 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
         tituloVisual += L" (" + std::to_wstring(estadoVistaCarpetas.indiceCarpetaActual + 1) +
                         L"/" + std::to_wstring(estadoVistaCarpetas.carpetasSeleccionadas.size()) + L")";
     }
-    DrawTextW(contextoDestino, tituloVisual.c_str(), -1, &areaTitulo,
-              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+    SIZE tamanoTextoTitulo{};
+    GetTextExtentPoint32W(contextoDestino, tituloVisual.c_str(), static_cast<int>(tituloVisual.size()), &tamanoTextoTitulo);
+
+    RECT areaTextoTitulo = areaTitulo;
+    areaTextoTitulo.right = std::min<LONG>(areaTitulo.right, areaTitulo.left + tamanoTextoTitulo.cx);
+    DrawTextW(contextoDestino, tituloVisual.c_str(), -1, &areaTextoTitulo,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    if (!estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado.empty()) {
+        SelectObject(contextoDestino, fuenteItemArbol);
+        SetTextColor(contextoDestino, RGB(110, 118, 129));
+        RECT areaTextoFantasma{areaTextoTitulo.right + 10, yActual + 2, areaDibujo.right - 100, yActual + 22};
+        if (areaTextoFantasma.left < areaTextoFantasma.right) {
+            DrawTextW(contextoDestino, estadoVistaCarpetas.tamanoTotalCarpetaActualFormateado.c_str(), -1,
+                      &areaTextoFantasma, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+    }
 
     yActual += 24;
 
@@ -1088,13 +1209,18 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
     DrawTextW(contextoDestino, L"ESTRUCTURA DE ARCHIVOS (VISTA DE CARPETAS)", -1, &areaSub,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
-    const wchar_t* textoBtnExpansion = L"🔽 Todo";
-    if (estadoVistaCarpetas.nivelExpansionActual == 0) textoBtnExpansion = L"▶ Raíz";
-    else if (estadoVistaCarpetas.nivelExpansionActual == 1) textoBtnExpansion = L"▶ Nivel 1";
-    else if (estadoVistaCarpetas.nivelExpansionActual == 2) textoBtnExpansion = L"▶ Nivel 2";
+    int maxNivelJerarquia = obtenerMaximoNivelJerarquiaArbol();
+    std::wstring textoBtnExpansion;
+    if (estadoVistaCarpetas.nivelExpansionActual == 0) {
+        textoBtnExpansion = L"▶ Raíz";
+    } else if (estadoVistaCarpetas.nivelExpansionActual >= maxNivelJerarquia && maxNivelJerarquia > 0) {
+        textoBtnExpansion = L"🔽 Todo";
+    } else {
+        textoBtnExpansion = L"▶ Nivel " + std::to_wstring(estadoVistaCarpetas.nivelExpansionActual);
+    }
 
     estadoVistaCarpetas.botonAlternarExpansion = {areaDibujo.right - 120, yActual - 2, areaDibujo.right - 24, yActual + 18};
-    dibujarBotonNav(estadoVistaCarpetas.botonAlternarExpansion, textoBtnExpansion, estadoVistaCarpetas.hoverBotonAlternarExpansion, true);
+    dibujarBotonNav(estadoVistaCarpetas.botonAlternarExpansion, textoBtnExpansion.c_str(), estadoVistaCarpetas.hoverBotonAlternarExpansion, true);
 
     yActual += 22;
 
@@ -1394,29 +1520,39 @@ inline void dibujarLienzoVistaVacia(HDC contextoDestino, const RECT& areaDibujo)
     yActual += 24;
 
     int anchoTarjeta = (areaDibujo.right - areaDibujo.left - 48 - 12) / 2;
-    int altoTarjeta = 54;
+    int altoTarjeta = 66;
 
-    auto dibujarTarjetaMetrica = [&](int posicionX, int posicionY, const wchar_t* tituloMetrica, const std::wstring& textoValor, COLORREF colorValor) {
-        RECT rTarjeta{posicionX, posicionY, posicionX + anchoTarjeta, posicionY + altoTarjeta};
-        HBRUSH bT = CreateSolidBrush(RGB(22, 27, 34));
-        HPEN lT = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
-        HBRUSH bPrev = static_cast<HBRUSH>(SelectObject(contextoDestino, bT));
-        HPEN lPrev = static_cast<HPEN>(SelectObject(contextoDestino, lT));
-        RoundRect(contextoDestino, rTarjeta.left, rTarjeta.top, rTarjeta.right, rTarjeta.bottom, 6, 6);
-        SelectObject(contextoDestino, lPrev);
-        SelectObject(contextoDestino, bPrev);
-        DeleteObject(lT);
-        DeleteObject(bT);
+    auto dibujarTarjetaMetrica = [&](int posicionHorizontal, int posicionVertical, const wchar_t* tituloMetrica,
+                                     const std::wstring& textoValor, COLORREF colorValor,
+                                     const std::wstring& textoFantasma = L"") {
+        RECT rectanguloTarjeta{posicionHorizontal, posicionVertical, posicionHorizontal + anchoTarjeta, posicionVertical + altoTarjeta};
+        HBRUSH brochaTarjeta = CreateSolidBrush(RGB(22, 27, 34));
+        HPEN lapizTarjeta = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+        HBRUSH brochaPrevia = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaTarjeta));
+        HPEN lapizPrevio = static_cast<HPEN>(SelectObject(contextoDestino, lapizTarjeta));
+        RoundRect(contextoDestino, rectanguloTarjeta.left, rectanguloTarjeta.top, rectanguloTarjeta.right, rectanguloTarjeta.bottom, 6, 6);
+        SelectObject(contextoDestino, lapizPrevio);
+        SelectObject(contextoDestino, brochaPrevia);
+        DeleteObject(lapizTarjeta);
+        DeleteObject(brochaTarjeta);
 
         SelectObject(contextoDestino, fuentePequena);
         SetTextColor(contextoDestino, RGB(139, 148, 158));
-        RECT rTit{posicionX + 10, posicionY + 6, posicionX + anchoTarjeta - 10, posicionY + 20};
-        DrawTextW(contextoDestino, tituloMetrica, -1, &rTit, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        RECT rectanguloTitulo{posicionHorizontal + 10, posicionVertical + 6, posicionHorizontal + anchoTarjeta - 10, posicionVertical + 19};
+        DrawTextW(contextoDestino, tituloMetrica, -1, &rectanguloTitulo, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
         SelectObject(contextoDestino, fuenteSubtitulo);
         SetTextColor(contextoDestino, colorValor);
-        RECT rVal{posicionX + 10, posicionY + 24, posicionX + anchoTarjeta - 10, posicionY + 46};
-        DrawTextW(contextoDestino, textoValor.c_str(), -1, &rVal, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        RECT rectanguloValor{posicionHorizontal + 10, posicionVertical + 21, posicionHorizontal + anchoTarjeta - 10, posicionVertical + 41};
+        DrawTextW(contextoDestino, textoValor.c_str(), -1, &rectanguloValor, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        if (!textoFantasma.empty()) {
+            SelectObject(contextoDestino, fuentePequena);
+            SetTextColor(contextoDestino, RGB(110, 118, 129));
+            RECT rectanguloFantasma{posicionHorizontal + 10, posicionVertical + 43, posicionHorizontal + anchoTarjeta - 10, posicionVertical + 59};
+            DrawTextW(contextoDestino, textoFantasma.c_str(), -1, &rectanguloFantasma,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
     };
 
     // 1. Peso total
@@ -1430,10 +1566,11 @@ inline void dibujarLienzoVistaVacia(HDC contextoDestino, const RECT& areaDibujo)
 
     yActual += altoTarjeta + 10;
 
-    // 3. Tipos de archivo
+    // 3. Tipos de archivo (con texto fantasma discreto de las extensiones)
     dibujarTarjetaMetrica(areaDibujo.left + 24, yActual, L"Tipos de archivos",
                           std::to_wstring(estadoVistaCarpetas.resumenVistaVacia.cantidadTiposArchivos) + L" extensiones",
-                          RGB(210, 153, 34));
+                          RGB(210, 153, 34),
+                          estadoVistaCarpetas.resumenVistaVacia.textoExtensionesFantasma);
     // 4. Ultimo acceso
     dibujarTarjetaMetrica(areaDibujo.left + 24 + anchoTarjeta + 12, yActual, L"Último acceso",
                           estadoVistaCarpetas.resumenVistaVacia.fechaUltimoAcceso.empty() ? L"N/D" : estadoVistaCarpetas.resumenVistaVacia.fechaUltimoAcceso,
