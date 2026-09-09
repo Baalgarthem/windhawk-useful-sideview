@@ -1083,14 +1083,20 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             bool hoverSiguiente = PtInRect(&estadoVistaCarpetas.botonSiguienteCarpeta, pt) != FALSE;
             bool hoverExpansion = PtInRect(&estadoVistaCarpetas.botonAlternarExpansion, pt) != FALSE;
             bool hoverFusion = PtInRect(&estadoVistaCarpetas.botonFusionCarpetas, pt) != FALSE;
+            bool hoverEnlace = PtInRect(&estadoVistaCarpetas.botonCrearEnlaceSimbolico, pt) != FALSE;
+            bool hoverCopiar = PtInRect(&estadoVistaCarpetas.botonCopiarContenidoPortapapeles, pt) != FALSE;
             if (hoverAnterior != estadoVistaCarpetas.hoverBotonAnterior ||
                 hoverSiguiente != estadoVistaCarpetas.hoverBotonSiguiente ||
                 hoverExpansion != estadoVistaCarpetas.hoverBotonAlternarExpansion ||
-                hoverFusion != estadoVistaCarpetas.hoverBotonFusion) {
+                hoverFusion != estadoVistaCarpetas.hoverBotonFusion ||
+                hoverEnlace != estadoVistaCarpetas.hoverBotonCrearEnlace ||
+                hoverCopiar != estadoVistaCarpetas.hoverBotonCopiarContenido) {
                 estadoVistaCarpetas.hoverBotonAnterior = hoverAnterior;
                 estadoVistaCarpetas.hoverBotonSiguiente = hoverSiguiente;
                 estadoVistaCarpetas.hoverBotonAlternarExpansion = hoverExpansion;
                 estadoVistaCarpetas.hoverBotonFusion = hoverFusion;
+                estadoVistaCarpetas.hoverBotonCrearEnlace = hoverEnlace;
+                estadoVistaCarpetas.hoverBotonCopiarContenido = hoverCopiar;
                 InvalidateRect(ventana, nullptr, FALSE);
             }
             return 0;
@@ -1168,11 +1174,15 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             if (estadoVistaCarpetas.hoverBotonAnterior ||
                 estadoVistaCarpetas.hoverBotonSiguiente ||
                 estadoVistaCarpetas.hoverBotonAlternarExpansion ||
-                estadoVistaCarpetas.hoverBotonFusion) {
+                estadoVistaCarpetas.hoverBotonFusion ||
+                estadoVistaCarpetas.hoverBotonCrearEnlace ||
+                estadoVistaCarpetas.hoverBotonCopiarContenido) {
                 estadoVistaCarpetas.hoverBotonAnterior = false;
                 estadoVistaCarpetas.hoverBotonSiguiente = false;
                 estadoVistaCarpetas.hoverBotonAlternarExpansion = false;
                 estadoVistaCarpetas.hoverBotonFusion = false;
+                estadoVistaCarpetas.hoverBotonCrearEnlace = false;
+                estadoVistaCarpetas.hoverBotonCopiarContenido = false;
                 InvalidateRect(ventana, nullptr, FALSE);
             }
             return 0;
@@ -1221,6 +1231,8 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
                 PtInRect(&estadoVistaCarpetas.botonAlternarExpansion, pt) ||
                 PtInRect(&estadoVistaCarpetas.botonSelectorPrograma, pt) ||
                 PtInRect(&estadoVistaCarpetas.botonEjecutarAbrir, pt) ||
+                PtInRect(&estadoVistaCarpetas.botonCrearEnlaceSimbolico, pt) ||
+                PtInRect(&estadoVistaCarpetas.botonCopiarContenidoPortapapeles, pt) ||
                 PtInRect(&estadoVistaCarpetas.botonFusionCarpetas, pt)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
@@ -1328,6 +1340,18 @@ LRESULT CALLBACK procesarVentanaVideo(HWND ventana, UINT mensaje,
             }
             if (PtInRect(&estadoVistaCarpetas.botonEjecutarAbrir, pt)) {
                 ejecutarAbrirCarpetasConPrograma(ventana);
+                return 0;
+            }
+            if (PtInRect(&estadoVistaCarpetas.botonCrearEnlaceSimbolico, pt)) {
+                if (ejecutarCrearEnlaceSimbolico(ventana)) {
+                    invalidarInterfaz();
+                }
+                return 0;
+            }
+            if (PtInRect(&estadoVistaCarpetas.botonCopiarContenidoPortapapeles, pt)) {
+                if (ejecutarCopiarContenidoPortapapeles(ventana)) {
+                    invalidarInterfaz();
+                }
                 return 0;
             }
             if (PtInRect(&estadoVistaCarpetas.botonFusionCarpetas, pt)) {

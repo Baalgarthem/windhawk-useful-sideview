@@ -971,6 +971,7 @@ inline void dibujarLienzoPendienteImplementacion(HDC contextoDestino,
                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
+    HFONT fuenteOriginal = static_cast<HFONT>(GetCurrentObject(contextoDestino, OBJ_FONT));
     SetBkMode(contextoDestino, TRANSPARENT);
 
     int yActual = areaDibujo.top + 24;
@@ -1053,6 +1054,7 @@ inline void dibujarLienzoPendienteImplementacion(HDC contextoDestino,
     DrawTextW(contextoDestino, mensaje.c_str(), -1, &areaMensaje,
               DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
 
+    SelectObject(contextoDestino, fuenteOriginal);
     DeleteObject(fuenteTitulo);
     DeleteObject(fuenteSubtitulo);
     DeleteObject(fuenteTextoNormal);
@@ -1161,6 +1163,7 @@ inline void dibujarLienzoArchivoDesconocido(HDC contextoDestino,
                                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                                     DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
 
+    HFONT fuenteOriginal = static_cast<HFONT>(GetCurrentObject(contextoDestino, OBJ_FONT));
     SetBkMode(contextoDestino, TRANSPARENT);
 
     int yActual = areaDibujo.top + 24;
@@ -1235,6 +1238,7 @@ inline void dibujarLienzoArchivoDesconocido(HDC contextoDestino,
     DrawTextW(contextoDestino, mensaje.c_str(), -1, &areaMensaje,
               DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
 
+    SelectObject(contextoDestino, fuenteOriginal);
     DeleteObject(fuenteTitulo);
     DeleteObject(fuenteSubtitulo);
     DeleteObject(fuenteTextoNormal);

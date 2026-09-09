@@ -88,18 +88,44 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
                 for (const auto& rutaElemento : rutasSeleccionadas) {
                     claveSeleccion += rutaElemento + L"|";
                 }
-                if (claveSeleccion != rutaArchivoActivo &&
-                    asegurarVisualizadorParaArchivos(rutasSeleccionadas)) {
-                    rutaArchivoActivo = claveSeleccion;
-                    rutaVideoActiva = rutasSeleccionadas.front();
+                if (claveSeleccion != rutaArchivoActivo) {
+                    if (asegurarVisualizadorParaArchivos(rutasSeleccionadas)) {
+                        rutaArchivoActivo = claveSeleccion;
+                        rutaVideoActiva = rutasSeleccionadas.front();
+                    }
+                } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaCarpetas) {
+                    if (estadoVistaCarpetas.indiceCarpetaActual < estadoVistaCarpetas.carpetasSeleccionadas.size()) {
+                        const std::wstring& rutaCarpetaInspeccionada =
+                            estadoVistaCarpetas.carpetasSeleccionadas[estadoVistaCarpetas.indiceCarpetaActual];
+                        WIN32_FILE_ATTRIBUTE_DATA datosAtributosCarpeta;
+                        if (GetFileAttributesExW(rutaCarpetaInspeccionada.c_str(), GetFileExInfoStandard, &datosAtributosCarpeta) != FALSE) {
+                            if (memcmp(&datosAtributosCarpeta.ftLastWriteTime,
+                                       &estadoVistaCarpetas.ftUltimaModificacionArbol,
+                                       sizeof(FILETIME)) != 0) {
+                                cargarCarpetaPorIndice(estadoVistaCarpetas.indiceCarpetaActual);
+                                invalidarInterfaz();
+                            }
+                        }
+                    }
                 }
             } else if (!rutaCarpetaContenedora.empty()) {
                 std::wstring claveVistaVacia =
                     L"VISTA_VACIA|" + rutaCarpetaContenedora;
-                if (claveVistaVacia != rutaArchivoActivo &&
-                    asegurarVisorVistaVacia(rutaCarpetaContenedora)) {
-                    rutaArchivoActivo = claveVistaVacia;
-                    rutaVideoActiva.clear();
+                if (claveVistaVacia != rutaArchivoActivo) {
+                    if (asegurarVisorVistaVacia(rutaCarpetaContenedora)) {
+                        rutaArchivoActivo = claveVistaVacia;
+                        rutaVideoActiva.clear();
+                    }
+                } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaVacia) {
+                    WIN32_FILE_ATTRIBUTE_DATA datosAttrCarpeta;
+                    if (GetFileAttributesExW(rutaCarpetaContenedora.c_str(), GetFileExInfoStandard, &datosAttrCarpeta) != FALSE) {
+                        if (memcmp(&datosAttrCarpeta.ftLastWriteTime,
+                                   &estadoVistaCarpetas.resumenVistaVacia.ftUltimaModificacion,
+                                   sizeof(FILETIME)) != 0) {
+                            calcularResumenVistaVacia(rutaCarpetaContenedora);
+                            invalidarInterfaz();
+                        }
+                    }
                 }
             } else {
                 rutaArchivoActivo.clear();

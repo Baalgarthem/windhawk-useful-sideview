@@ -18,92 +18,125 @@ enum class TipoContenidoArchivo {
 
 namespace {
 
-bool esExtensionDeLista(const wchar_t* extension,
-                        const wchar_t* const* listaExtensiones,
-                        size_t cantidadExtensiones) {
-    if (!extension || *extension == L'\0') {
-        return false;
+inline void normalizarExtensionAMinusculas(const wchar_t* origen, wchar_t* destino, size_t capacidad) {
+    if (!origen || !destino || capacidad == 0) return;
+    size_t indiceCaracter = 0;
+    while (origen[indiceCaracter] != L'\0' && indiceCaracter + 1 < capacidad) {
+        destino[indiceCaracter] = towlower(origen[indiceCaracter]);
+        ++indiceCaracter;
     }
-    for (size_t posicion = 0; posicion < cantidadExtensiones; ++posicion) {
-        if (lstrcmpiW(extension, listaExtensiones[posicion]) == 0) {
-            return true;
-        }
-    }
-    return false;
+    destino[indiceCaracter] = L'\0';
+}
+
+inline bool esExtensionDeListaOrdenada(const wchar_t* extensionMin,
+                                      const wchar_t* const* listaOrdenada,
+                                      size_t cantidad) {
+    if (!extensionMin || *extensionMin == L'\0' || cantidad == 0) return false;
+    return std::binary_search(
+        listaOrdenada, listaOrdenada + cantidad, extensionMin,
+        [](const wchar_t* extensionA, const wchar_t* extensionB) {
+            return wcscmp(extensionA, extensionB) < 0;
+        });
 }
 
 }  // namespace
 
 inline bool esExtensionVideo(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_VIDEO[] = {
-        L".mp4",  L".m4v", L".mov", L".wmv", L".avi",
-        L".mkv",  L".webm", L".mpg", L".mpeg", L".mts",
-        L".m2ts", L".3gp", L".flv", L".ts",  L".vob"};
-    return esExtensionDeLista(extension, EXTENSIONES_VIDEO,
-                              ARRAYSIZE(EXTENSIONES_VIDEO));
+        L".3gp", L".avi", L".flv", L".m2ts", L".m4v",
+        L".mkv", L".mov", L".mp4", L".mpeg", L".mpg",
+        L".mts", L".ts",  L".vob", L".webm", L".wmv"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_VIDEO,
+                                      ARRAYSIZE(EXTENSIONES_VIDEO));
 }
 
 inline bool esExtensionImagen(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_IMAGEN[] = {
-        L".jpg",  L".jpeg", L".png",  L".bmp",  L".gif",
-        L".webp", L".ico",  L".tiff", L".tif",  L".svg",
-        L".avif", L".jfif", L".heic", L".emf",  L".wmf"};
-    return esExtensionDeLista(extension, EXTENSIONES_IMAGEN,
-                              ARRAYSIZE(EXTENSIONES_IMAGEN));
+        L".avif", L".bmp",  L".emf", L".gif",  L".heic",
+        L".ico",  L".jfif", L".jpeg", L".jpg", L".png",
+        L".svg",  L".tif",  L".tiff", L".webp", L".wmf"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_IMAGEN,
+                                      ARRAYSIZE(EXTENSIONES_IMAGEN));
 }
 
 inline bool esExtensionMarkdown(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_MARKDOWN[] = {
-        L".md", L".markdown", L".mdown", L".mkd", L".mkdn"};
-    return esExtensionDeLista(extension, EXTENSIONES_MARKDOWN,
-                              ARRAYSIZE(EXTENSIONES_MARKDOWN));
+        L".markdown", L".md", L".mdown", L".mkd", L".mkdn"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_MARKDOWN,
+                                      ARRAYSIZE(EXTENSIONES_MARKDOWN));
 }
 
 inline bool esExtensionTexto(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_TEXTO[] = {
-        L".txt", L".md", L".markdown", L".mdown", L".mkd", L".mkdn", L".log"};
-    return esExtensionDeLista(extension, EXTENSIONES_TEXTO,
-                              ARRAYSIZE(EXTENSIONES_TEXTO));
+        L".log", L".markdown", L".md", L".mdown", L".mkd", L".mkdn", L".txt"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_TEXTO,
+                                      ARRAYSIZE(EXTENSIONES_TEXTO));
 }
 
 inline bool esExtensionDocumento(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_DOCUMENTO[] = {
-        L".pdf", L".doc", L".docx", L".docm", L".dot",
-        L".dotx", L".dotm", L".rtf", L".odt", L".wps",
-        L".xps", L".oxps", L".epub"};
-    return esExtensionDeLista(extension, EXTENSIONES_DOCUMENTO,
-                              ARRAYSIZE(EXTENSIONES_DOCUMENTO));
+        L".doc",  L".docm", L".docx", L".dot",  L".dotm",
+        L".dotx", L".epub", L".odt",  L".oxps", L".pdf",
+        L".rtf",  L".wps",  L".xps"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_DOCUMENTO,
+                                      ARRAYSIZE(EXTENSIONES_DOCUMENTO));
 }
 
 inline bool esExtensionCodigo(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_CODIGO[] = {
-        L".c", L".cpp", L".cxx", L".cc", L".h", L".hpp", L".hxx", L".inl",
-        L".cs", L".vb", L".fs", L".java", L".kt", L".kts", L".scala",
-        L".py", L".pyw", L".ipynb", L".js", L".mjs", L".cjs", L".jsx",
-        L".ts", L".tsx", L".html", L".htm", L".css", L".scss", L".sass",
-        L".less", L".vue", L".svelte", L".php", L".sh", L".bash", L".zsh",
-        L".bat", L".cmd", L".ps1", L".psm1", L".psd1", L".vbs", L".lua",
-        L".json", L".yaml", L".yml", L".toml", L".xml", L".ini", L".cfg",
-        L".conf", L".sql", L".env", L".rs", L".go", L".swift", L".rb",
-        L".pl", L".pm", L".hs", L".dart", L".zig", L".r", L".asm", L".s"};
-    return esExtensionDeLista(extension, EXTENSIONES_CODIGO,
-                              ARRAYSIZE(EXTENSIONES_CODIGO));
+        L".asm",  L".bat",   L".c",     L".cc",    L".cfg",   L".cjs",
+        L".cmd",  L".conf",  L".cpp",   L".cs",    L".css",   L".cxx",
+        L".dart", L".env",   L".fs",    L".go",    L".h",     L".hpp",
+        L".hs",   L".htm",   L".html",  L".hxx",   L".ini",   L".inl",
+        L".ipynb", L".java", L".js",    L".json",  L".jsx",   L".kt",
+        L".kts",  L".less",  L".lua",   L".mjs",   L".php",   L".pl",
+        L".pm",   L".ps1",   L".psd1",  L".psm1",  L".py",    L".pyw",
+        L".r",    L".rb",    L".rs",    L".s",     L".sass",  L".scala",
+        L".scss", L".sh",    L".sql",   L".svelte", L".swift", L".toml",
+        L".ts",   L".tsx",   L".vb",    L".vbs",   L".vue",   L".xml",
+        L".yaml", L".yml",   L".zig",   L".zsh"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_CODIGO,
+                                      ARRAYSIZE(EXTENSIONES_CODIGO));
 }
 
 inline bool esExtensionComic(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_COMIC[] = {
-        L".cbz", L".cbr", L".cb7", L".cbt", L".cba"};
-    return esExtensionDeLista(extension, EXTENSIONES_COMIC,
-                              ARRAYSIZE(EXTENSIONES_COMIC));
+        L".cb7", L".cba", L".cbr", L".cbt", L".cbz"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_COMIC,
+                                      ARRAYSIZE(EXTENSIONES_COMIC));
 }
 
 inline bool esExtensionComprimido(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t extMin[32]{};
+    normalizarExtensionAMinusculas(extension, extMin, ARRAYSIZE(extMin));
     static const wchar_t* const EXTENSIONES_COMPRIMIDO[] = {
-        L".zip", L".rar", L".7z",  L".tar", L".gz",
-        L".bz2", L".xz",  L".cab", L".iso", L".tgz",
-        L".cbz", L".cbr", L".cb7", L".cbt", L".cba"};
-    return esExtensionDeLista(extension, EXTENSIONES_COMPRIMIDO,
-                              ARRAYSIZE(EXTENSIONES_COMPRIMIDO));
+        L".7z",  L".bz2", L".cab", L".cb7", L".cba",
+        L".cbr", L".cbt", L".cbz", L".gz",  L".iso",
+        L".rar", L".tar", L".tgz", L".xz",  L".zip"};
+    return esExtensionDeListaOrdenada(extMin, EXTENSIONES_COMPRIMIDO,
+                                      ARRAYSIZE(EXTENSIONES_COMPRIMIDO));
 }
 
 inline bool esRutaCarpeta(const wchar_t* rutaArchivo) {

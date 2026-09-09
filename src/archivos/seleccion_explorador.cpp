@@ -202,7 +202,12 @@ inline HWND normalizarVentanaExploradorAnfitriona(HWND ventanaCandidata) {
             return ventanaRaiz;
         }
     }
-    return ventanaCandidata;
+    wchar_t claseCandidata[64];
+    if (GetClassNameW(ventanaCandidata, claseCandidata, ARRAYSIZE(claseCandidata)) &&
+        lstrcmpW(claseCandidata, L"CabinetWClass") == 0) {
+        return ventanaCandidata;
+    }
+    return nullptr;
 }
 
 [[maybe_unused]] inline HWND encontrarContenedorPestanaOExplorador(HWND ventanaVistaDef, HWND ventanaExploradorFallback) {
@@ -215,32 +220,65 @@ inline HWND normalizarVentanaExploradorAnfitriona(HWND ventanaCandidata) {
 
 inline HWND obtenerVistaArchivosVisible(HWND ventanaAnfitriona) {
     if (!ventanaAnfitriona || !IsWindow(ventanaAnfitriona)) return nullptr;
-    struct DatosBusqueda {
-        HWND mejor{nullptr};
+
+    HWND vistaConFoco = nullptr;
+    HWND ventanaFoco = GetFocus();
+    if (ventanaFoco && IsWindow(ventanaFoco) &&
+        (IsChild(ventanaAnfitriona, ventanaFoco) || ventanaFoco == ventanaAnfitriona)) {
+        HWND cursorVentana = ventanaFoco;
+        while (cursorVentana && cursorVentana != ventanaAnfitriona) {
+            wchar_t claseCursor[64];
+            if (GetClassNameW(cursorVentana, claseCursor, ARRAYSIZE(claseCursor)) &&
+                lstrcmpW(claseCursor, L"SHELLDLL_DefView") == 0 &&
+                IsWindowVisible(cursorVentana)) {
+                vistaConFoco = cursorVentana;
+                break;
+            }
+            cursorVentana = GetParent(cursorVentana);
+        }
+    }
+    if (vistaConFoco) {
+        ventanaVistaArchivosActiva = vistaConFoco;
+        return vistaConFoco;
+    }
+
+    struct DatosBusquedaVista {
+        HWND mejorVista{nullptr};
         int mayorArea{0};
-    } datos;
+    } datosBusqueda;
+
     EnumChildWindows(
         ventanaAnfitriona,
-        [](HWND hwnd, LPARAM lParam) -> BOOL {
-            auto* d = reinterpret_cast<DatosBusqueda*>(lParam);
-            wchar_t clase[64];
-            if (GetClassNameW(hwnd, clase, ARRAYSIZE(clase)) &&
-                lstrcmpW(clase, L"SHELLDLL_DefView") == 0 &&
-                IsWindowVisible(hwnd)) {
-                RECT rc;
-                GetWindowRect(hwnd, &rc);
-                int w = rc.right - rc.left;
-                int h = rc.bottom - rc.top;
-                int area = w * h;
-                if (w > 50 && h > 50 && area > d->mayorArea) {
-                    d->mayorArea = area;
-                    d->mejor = hwnd;
+        [](HWND hwndHijo, LPARAM lParam) -> BOOL {
+            wchar_t claseHijo[64];
+            if (GetClassNameW(hwndHijo, claseHijo, ARRAYSIZE(claseHijo)) &&
+                lstrcmpW(claseHijo, L"SHELLDLL_DefView") == 0 &&
+                IsWindowVisible(hwndHijo)) {
+                
+                HWND padreHijo = GetParent(hwndHijo);
+                if (padreHijo && !IsWindowVisible(padreHijo)) return TRUE;
+
+                RECT rectanguloHijo{};
+                GetWindowRect(hwndHijo, &rectanguloHijo);
+                int anchoVentana = rectanguloHijo.right - rectanguloHijo.left;
+                int altoVentana = rectanguloHijo.bottom - rectanguloHijo.top;
+                int areaVentana = anchoVentana * altoVentana;
+                if (rectanguloHijo.left > -1000 && anchoVentana > 50 && altoVentana > 50) {
+                    auto* d = reinterpret_cast<DatosBusquedaVista*>(lParam);
+                    if (areaVentana > d->mayorArea) {
+                        d->mayorArea = areaVentana;
+                        d->mejorVista = hwndHijo;
+                    }
                 }
             }
             return TRUE;
         },
-        reinterpret_cast<LPARAM>(&datos));
-    return datos.mejor;
+        reinterpret_cast<LPARAM>(&datosBusqueda));
+
+    if (datosBusqueda.mejorVista) {
+        ventanaVistaArchivosActiva = datosBusqueda.mejorVista;
+    }
+    return datosBusqueda.mejorVista;
 }
 
 inline std::vector<std::wstring> obtenerArchivosSeleccionados(
@@ -273,17 +311,22 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
         }
     }
 
-    if (!ventanasShell) return {};
+    if (!ventanasShell || !ventanaExploradorAnfitriona) return {};
 
     long cantidadVentanasShell = 0;
     if (FAILED(ventanasShell->get_Count(&cantidadVentanasShell))) return {};
 
     HWND vistaArchivosVisibleEnPantalla = obtenerVistaArchivosVisible(ventanaExploradorAnfitriona);
 
-    auto extraerDatosElementoShell = [&](long indiceItem, std::vector<std::wstring>* rutasOut, std::wstring* rutaDirOut, HWND* hwndDefViewOut) -> bool {
+    auto extraerDatosElementoShell = [&](long indiceItem,
+                                         std::vector<std::wstring>* rutasOut,
+                                         std::wstring* rutaDirOut,
+                                         HWND* hwndDefViewOut,
+                                         HWND* hwndAnfitrionaOut) -> bool {
         rutasOut->clear();
         rutaDirOut->clear();
         if (hwndDefViewOut) *hwndDefViewOut = nullptr;
+        if (hwndAnfitrionaOut) *hwndAnfitrionaOut = nullptr;
 
         VARIANT identificadorVentanaShell;
         VariantInit(&identificadorVentanaShell);
@@ -306,9 +349,14 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
         if (FAILED(explorador->get_HWND(&identificadorVentana))) return false;
 
         HWND ventanaExplorador = reinterpret_cast<HWND>(identificadorVentana);
+        HWND ventanaRaizExplorador = normalizarVentanaExploradorAnfitriona(ventanaExplorador);
+        if (!ventanaRaizExplorador) return false;
+
         DWORD identificadorProceso = 0;
-        GetWindowThreadProcessId(ventanaExplorador, &identificadorProceso);
+        GetWindowThreadProcessId(ventanaRaizExplorador, &identificadorProceso);
         if (identificadorProceso != procesoActual) return false;
+
+        if (hwndAnfitrionaOut) *hwndAnfitrionaOut = ventanaRaizExplorador;
 
         PunteroCom<IServiceProvider> proveedorServicios;
         if (FAILED(explorador->QueryInterface(
@@ -354,6 +402,15 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
                 CoTaskMemFree(rutaDirectorio);
                 if (!candidata.empty() && PathFileExistsW(candidata.c_str())) {
                     rutaDirectorioActual = candidata;
+                }
+            }
+            if (rutaDirectorioActual.empty()) {
+                PWSTR rutaParsing = nullptr;
+                if (SUCCEEDED(elementoDirectorio->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &rutaParsing)) && rutaParsing) {
+                    if (PathFileExistsW(rutaParsing) && PathIsDirectoryW(rutaParsing)) {
+                        rutaDirectorioActual = rutaParsing;
+                    }
+                    CoTaskMemFree(rutaParsing);
                 }
             }
             if (rutaDirectorioActual.empty()) {
@@ -431,61 +488,79 @@ inline std::vector<std::wstring> obtenerArchivosSeleccionados(
         return true;
     };
 
-    // FASE 1: Búsqueda exacta por correspondencia con la vista SHELLDLL_DefView activa visible en pantalla
-    if (vistaArchivosVisibleEnPantalla) {
-        for (long posicionShell = 0; posicionShell < cantidadVentanasShell; ++posicionShell) {
-            std::vector<std::wstring> rutasSeleccionadas;
-            std::wstring rutaDirectorio;
-            HWND hwndDefView = nullptr;
-            if (extraerDatosElementoShell(posicionShell, &rutasSeleccionadas, &rutaDirectorio, &hwndDefView)) {
-                if (hwndDefView == vistaArchivosVisibleEnPantalla) {
-                    ventanaVistaArchivosActiva = hwndDefView;
-                    if (rutaCarpetaActualContenedora) {
-                        *rutaCarpetaActualContenedora = rutaDirectorio;
-                    }
-                    if (!rutasSeleccionadas.empty()) {
-                        std::sort(rutasSeleccionadas.begin(), rutasSeleccionadas.end(),
-                                  [](const std::wstring& a, const std::wstring& b) {
-                                      return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
-                                  });
-                        return rutasSeleccionadas;
-                    }
-                    return {};
-                }
-            }
-        }
-    }
+    struct VistaCandidataAnfitriona {
+        std::vector<std::wstring> rutas;
+        std::wstring rutaDirectorio;
+        HWND hwndDefView{nullptr};
+        bool esVisibleEnPantalla{false};
+    };
+    std::vector<VistaCandidataAnfitriona> candidatasDeEstaAnfitriona;
 
-    // FASE 2: Si no hubo coincidencia directa por HWND, evaluar ventanas que pertenezcan a la anfitriona
-    std::wstring rutaDirectorioFallback;
     for (long posicionShell = 0; posicionShell < cantidadVentanasShell; ++posicionShell) {
         std::vector<std::wstring> rutasSeleccionadas;
         std::wstring rutaDirectorio;
         HWND hwndDefView = nullptr;
-        if (extraerDatosElementoShell(posicionShell, &rutasSeleccionadas, &rutaDirectorio, &hwndDefView)) {
-            if (hwndDefView && IsWindowVisible(hwndDefView)) {
+        HWND hwndAnfitrionaItem = nullptr;
+        if (extraerDatosElementoShell(posicionShell, &rutasSeleccionadas, &rutaDirectorio, &hwndDefView, &hwndAnfitrionaItem)) {
+            // STRICT FILTER: Must belong strictly to THIS active Explorer window
+            if (hwndAnfitrionaItem != ventanaExploradorAnfitriona) {
+                continue;
+            }
+
+            bool esLaVistaActiva = (vistaArchivosVisibleEnPantalla && hwndDefView == vistaArchivosVisibleEnPantalla);
+            if (esLaVistaActiva) {
+                ventanaVistaArchivosActiva = hwndDefView;
+                if (rutaCarpetaActualContenedora) {
+                    *rutaCarpetaActualContenedora = rutaDirectorio;
+                }
                 if (!rutasSeleccionadas.empty()) {
-                    ventanaVistaArchivosActiva = hwndDefView;
-                    if (rutaCarpetaActualContenedora) {
-                        *rutaCarpetaActualContenedora = rutaDirectorio;
-                    }
                     std::sort(rutasSeleccionadas.begin(), rutasSeleccionadas.end(),
-                              [](const std::wstring& a, const std::wstring& b) {
-                                  return StrCmpLogicalW(a.c_str(), b.c_str()) < 0;
+                              [](const std::wstring& primeraRuta, const std::wstring& segundaRuta) {
+                                  return StrCmpLogicalW(primeraRuta.c_str(), segundaRuta.c_str()) < 0;
                               });
                     return rutasSeleccionadas;
                 }
-                if (rutaDirectorioFallback.empty()) {
-                    rutaDirectorioFallback = rutaDirectorio;
-                    ventanaVistaArchivosActiva = hwndDefView;
-                }
+                return {};
             }
+
+            RECT rectanguloDefView{};
+            GetWindowRect(hwndDefView, &rectanguloDefView);
+            bool esVisible = (IsWindowVisible(hwndDefView) && rectanguloDefView.left > -1000);
+            candidatasDeEstaAnfitriona.push_back({rutasSeleccionadas, rutaDirectorio, hwndDefView, esVisible});
         }
     }
 
-    if (!rutaDirectorioFallback.empty()) {
+    for (const auto& candidataVista : candidatasDeEstaAnfitriona) {
+        if (candidataVista.esVisibleEnPantalla) {
+            ventanaVistaArchivosActiva = candidataVista.hwndDefView;
+            if (rutaCarpetaActualContenedora) {
+                *rutaCarpetaActualContenedora = candidataVista.rutaDirectorio;
+            }
+            if (!candidataVista.rutas.empty()) {
+                std::vector<std::wstring> resultadoRutas = candidataVista.rutas;
+                std::sort(resultadoRutas.begin(), resultadoRutas.end(),
+                          [](const std::wstring& primeraRuta, const std::wstring& segundaRuta) {
+                              return StrCmpLogicalW(primeraRuta.c_str(), segundaRuta.c_str()) < 0;
+                          });
+                return resultadoRutas;
+            }
+            return {};
+        }
+    }
+
+    if (!candidatasDeEstaAnfitriona.empty()) {
+        const auto& primeraCandidata = candidatasDeEstaAnfitriona.front();
+        ventanaVistaArchivosActiva = primeraCandidata.hwndDefView;
         if (rutaCarpetaActualContenedora) {
-            *rutaCarpetaActualContenedora = rutaDirectorioFallback;
+            *rutaCarpetaActualContenedora = primeraCandidata.rutaDirectorio;
+        }
+        if (!primeraCandidata.rutas.empty()) {
+            std::vector<std::wstring> resultadoRutas = primeraCandidata.rutas;
+            std::sort(resultadoRutas.begin(), resultadoRutas.end(),
+                      [](const std::wstring& primeraRuta, const std::wstring& segundaRuta) {
+                          return StrCmpLogicalW(primeraRuta.c_str(), segundaRuta.c_str()) < 0;
+                      });
+            return resultadoRutas;
         }
         return {};
     }

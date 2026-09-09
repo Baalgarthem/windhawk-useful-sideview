@@ -956,10 +956,10 @@ inline void enumerarRecursivoFolderItems(IDispatch* carpetaDispatch, const std::
             DISPID dispidGetFolder = 0;
             OLECHAR* nombreGetFolder = const_cast<OLECHAR*>(L"GetFolder");
 
-            for (long pos = 0; pos < totalItems; ++pos) {
+            for (long posicionItem = 0; posicionItem < totalItems; ++posicionItem) {
                 VARIANT argPos{};
                 argPos.vt = VT_I4;
-                argPos.lVal = pos;
+                argPos.lVal = posicionItem;
                 DISPPARAMS paramsItem{};
                 paramsItem.cArgs = 1;
                 paramsItem.rgvarg = &argPos;

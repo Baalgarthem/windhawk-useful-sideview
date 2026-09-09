@@ -321,6 +321,13 @@ inline std::wstring leerArchivoTextoUtf8(const std::wstring& rutaArchivo) {
     return textoWide;
 }
 
+inline std::wstring_view recortarEspaciosVista(std::wstring_view cadenaVista) {
+    size_t primero = cadenaVista.find_first_not_of(L" \t\r\n");
+    if (primero == std::wstring_view::npos) return {};
+    size_t ultimo = cadenaVista.find_last_not_of(L" \t\r\n");
+    return cadenaVista.substr(primero, ultimo - primero + 1);
+}
+
 inline std::wstring recortarEspacios(const std::wstring& cadena) {
     size_t primero = cadena.find_first_not_of(L" \t\r\n");
     if (primero == std::wstring::npos) return L"";
@@ -330,61 +337,61 @@ inline std::wstring recortarEspacios(const std::wstring& cadena) {
 
 inline std::vector<FragmentoTexto> parsearFragmentosTexto(const std::wstring& texto) {
     std::vector<FragmentoTexto> fragmentos;
-    size_t longitud = texto.size();
-    size_t pos = 0;
+    size_t longitudTexto = texto.size();
+    size_t posicionActual = 0;
     std::wstring acumulado;
 
-    while (pos < longitud) {
-        if (texto[pos] == L'`') {
-            size_t fin = texto.find(L'`', pos + 1);
-            if (fin != std::wstring::npos) {
+    while (posicionActual < longitudTexto) {
+        if (texto[posicionActual] == L'`') {
+            size_t posicionFin = texto.find(L'`', posicionActual + 1);
+            if (posicionFin != std::wstring::npos) {
                 if (!acumulado.empty()) {
                     fragmentos.push_back({acumulado, EstiloFragmento::Normal});
                     acumulado.clear();
                 }
-                fragmentos.push_back({texto.substr(pos + 1, fin - pos - 1), EstiloFragmento::CodigoPildora});
-                pos = fin + 1;
+                fragmentos.push_back({texto.substr(posicionActual + 1, posicionFin - posicionActual - 1), EstiloFragmento::CodigoPildora});
+                posicionActual = posicionFin + 1;
                 continue;
             }
         }
-        if (pos + 1 < longitud && texto[pos] == L'*' && texto[pos + 1] == L'*') {
-            size_t fin = texto.find(L"**", pos + 2);
-            if (fin != std::wstring::npos) {
+        if (posicionActual + 1 < longitudTexto && texto[posicionActual] == L'*' && texto[posicionActual + 1] == L'*') {
+            size_t posicionFin = texto.find(L"**", posicionActual + 2);
+            if (posicionFin != std::wstring::npos) {
                 if (!acumulado.empty()) {
                     fragmentos.push_back({acumulado, EstiloFragmento::Normal});
                     acumulado.clear();
                 }
-                fragmentos.push_back({texto.substr(pos + 2, fin - pos - 2), EstiloFragmento::Negrita});
-                pos = fin + 2;
+                fragmentos.push_back({texto.substr(posicionActual + 2, posicionFin - posicionActual - 2), EstiloFragmento::Negrita});
+                posicionActual = posicionFin + 2;
                 continue;
             }
         }
-        if (pos + 1 < longitud && texto[pos] == L'=' && texto[pos + 1] == L'=') {
-            size_t fin = texto.find(L"==", pos + 2);
-            if (fin != std::wstring::npos) {
+        if (posicionActual + 1 < longitudTexto && texto[posicionActual] == L'=' && texto[posicionActual + 1] == L'=') {
+            size_t posicionFin = texto.find(L"==", posicionActual + 2);
+            if (posicionFin != std::wstring::npos) {
                 if (!acumulado.empty()) {
                     fragmentos.push_back({acumulado, EstiloFragmento::Normal});
                     acumulado.clear();
                 }
-                fragmentos.push_back({texto.substr(pos + 2, fin - pos - 2), EstiloFragmento::Subrayado});
-                pos = fin + 2;
+                fragmentos.push_back({texto.substr(posicionActual + 2, posicionFin - posicionActual - 2), EstiloFragmento::Subrayado});
+                posicionActual = posicionFin + 2;
                 continue;
             }
         }
-        if (texto[pos] == L'_') {
-            size_t fin = texto.find(L'_', pos + 1);
-            if (fin != std::wstring::npos && fin > pos + 1) {
+        if (texto[posicionActual] == L'_') {
+            size_t posicionFin = texto.find(L'_', posicionActual + 1);
+            if (posicionFin != std::wstring::npos && posicionFin > posicionActual + 1) {
                 if (!acumulado.empty()) {
                     fragmentos.push_back({acumulado, EstiloFragmento::Normal});
                     acumulado.clear();
                 }
-                fragmentos.push_back({texto.substr(pos + 1, fin - pos - 1), EstiloFragmento::Cursiva});
-                pos = fin + 1;
+                fragmentos.push_back({texto.substr(posicionActual + 1, posicionFin - posicionActual - 1), EstiloFragmento::Cursiva});
+                posicionActual = posicionFin + 1;
                 continue;
             }
         }
-        acumulado += texto[pos];
-        pos++;
+        acumulado += texto[posicionActual];
+        posicionActual++;
     }
 
     if (!acumulado.empty()) {
@@ -479,20 +486,26 @@ inline void parsearContenidoMarkdown(const std::wstring& contenidoCompleto) {
                 if (!linea.empty() && linea.front() == L'|') inicio = 1;
                 size_t fin = linea.size();
                 if (!linea.empty() && linea.back() == L'|') fin = linea.size() - 1;
-                size_t p = inicio;
-                while (p < fin) {
-                    size_t prox = linea.find(L'|', p);
-                    if (prox == std::wstring::npos || prox > fin) prox = fin;
-                    std::wstring celda = recortarEspacios(linea.substr(p, prox - p));
-                    celdas.push_back(celda);
-                    p = prox + 1;
+                size_t posicionCelda = inicio;
+                while (posicionCelda < fin) {
+                    size_t posicionProximoSeparador = linea.find(L'|', posicionCelda);
+                    if (posicionProximoSeparador == std::wstring::npos || posicionProximoSeparador > fin) {
+                        posicionProximoSeparador = fin;
+                    }
+                    std::wstring_view vistaSub = std::wstring_view(linea).substr(posicionCelda, posicionProximoSeparador - posicionCelda);
+                    std::wstring_view vistaRecortada = recortarEspaciosVista(vistaSub);
+                    celdas.emplace_back(vistaRecortada);
+                    posicionCelda = posicionProximoSeparador + 1;
                 }
                 return celdas;
             };
 
             auto esFilaSeparador = [](const std::wstring& linea) -> bool {
-                for (wchar_t c : linea) {
-                    if (c != L'|' && c != L'-' && c != L':' && c != L' ' && c != L'\t') return false;
+                for (wchar_t caracterSeparador : linea) {
+                    if (caracterSeparador != L'|' && caracterSeparador != L'-' && caracterSeparador != L':' &&
+                        caracterSeparador != L' ' && caracterSeparador != L'\t') {
+                        return false;
+                    }
                 }
                 return linea.find(L'-') != std::wstring::npos;
             };

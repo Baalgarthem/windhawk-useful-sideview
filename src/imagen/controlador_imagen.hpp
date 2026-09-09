@@ -541,6 +541,13 @@ inline void dibujarLienzoGaleriaImagenes(HDC contextoDestino, const RECT& areaDi
 
     int yInicio = areaDibujo.top + 34 - estadoImagen.desplazamientoScrollGaleria;
 
+    HBRUSH brochaNormal = CreateSolidBrush(RGB(22, 27, 34));
+    HBRUSH brochaHover = CreateSolidBrush(RGB(26, 32, 44));
+    HBRUSH brochaActiva = CreateSolidBrush(RGB(30, 41, 59));
+    HPEN lapizNormal = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HPEN lapizHover = CreatePen(PS_SOLID, 1, RGB(88, 166, 255));
+    HPEN lapizActiva = CreatePen(PS_SOLID, 2, RGB(0, 120, 215));
+
     for (size_t posicionMiniatura = 0; posicionMiniatura < estadoImagen.miniaturasGaleria.size(); ++posicionMiniatura) {
         int columnaActual = static_cast<int>(posicionMiniatura % cantidadColumnas);
         int filaActual = static_cast<int>(posicionMiniatura / cantidadColumnas);
@@ -557,18 +564,14 @@ inline void dibujarLienzoGaleriaImagenes(HDC contextoDestino, const RECT& areaDi
         bool esActiva = estadoImagen.miniaturasGaleria[posicionMiniatura].esActiva;
         bool hover = estadoImagen.miniaturasGaleria[posicionMiniatura].hover;
 
-        COLORREF colorFondo = esActiva ? RGB(30, 41, 59) : (hover ? RGB(26, 32, 44) : RGB(22, 27, 34));
-        COLORREF colorBorde = esActiva ? RGB(0, 120, 215) : (hover ? RGB(88, 166, 255) : RGB(48, 54, 61));
+        HBRUSH brochaSeleccionada = esActiva ? brochaActiva : (hover ? brochaHover : brochaNormal);
+        HPEN lapizSeleccionado = esActiva ? lapizActiva : (hover ? lapizHover : lapizNormal);
 
-        HBRUSH brochaCard = CreateSolidBrush(colorFondo);
-        HPEN lapizCard = CreatePen(PS_SOLID, esActiva ? 2 : 1, colorBorde);
-        HBRUSH brochaPreviaCard = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaCard));
-        HPEN lapizPrevioCard = static_cast<HPEN>(SelectObject(contextoDestino, lapizCard));
+        HBRUSH brochaPreviaCard = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaSeleccionada));
+        HPEN lapizPrevioCard = static_cast<HPEN>(SelectObject(contextoDestino, lapizSeleccionado));
         RoundRect(contextoDestino, areaTarjeta.left, areaTarjeta.top, areaTarjeta.right, areaTarjeta.bottom, 6, 6);
         SelectObject(contextoDestino, lapizPrevioCard);
         SelectObject(contextoDestino, brochaPreviaCard);
-        DeleteObject(lapizCard);
-        DeleteObject(brochaCard);
 
         RECT areaIcono{areaTarjeta.left + 4, areaTarjeta.top + 6, areaTarjeta.right - 4, areaTarjeta.top + 48};
         SelectObject(contextoDestino, fuenteTitulo);
@@ -581,6 +584,13 @@ inline void dibujarLienzoGaleriaImagenes(HDC contextoDestino, const RECT& areaDi
         DrawTextW(contextoDestino, estadoImagen.miniaturasGaleria[posicionMiniatura].nombreArchivo.c_str(), -1,
                   &areaNombre, DT_CENTER | DT_TOP | DT_WORDBREAK | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
+
+    DeleteObject(lapizActiva);
+    DeleteObject(lapizHover);
+    DeleteObject(lapizNormal);
+    DeleteObject(brochaActiva);
+    DeleteObject(brochaHover);
+    DeleteObject(brochaNormal);
 
     size_t totalFilas = (estadoImagen.miniaturasGaleria.size() + cantidadColumnas - 1) / cantidadColumnas;
     estadoImagen.altoTotalGaleria = static_cast<int>(totalFilas) * (altoTarjeta + espacioEntreTarjetas) + 40;

@@ -320,9 +320,22 @@ inline HRESULT WINAPI GanchoCoCreateInstance(
     return E_FAIL;
 }
 
+inline bool esProcesoExplorerValido() {
+    wchar_t rutaModuloEjecutable[MAX_PATH];
+    if (GetModuleFileNameW(nullptr, rutaModuloEjecutable, MAX_PATH) == 0) return true;
+    const wchar_t* nombreEjecutable = PathFindFileNameW(rutaModuloEjecutable);
+    if (!nombreEjecutable || !*nombreEjecutable) return true;
+    return (_wcsicmp(nombreEjecutable, L"explorer.exe") == 0);
+}
+
 }  // namespace
 
 BOOL Wh_ModInit() {
+    if (!esProcesoExplorerValido()) {
+        Wh_Log(L"Módulo omitido por ejecutarse en proceso distinto de explorer.exe");
+        return FALSE;
+    }
+
     Wh_SetFunctionHook((void*)CreateProcessW, (void*)GanchoCreateProcessW, (void**)&originalCreateProcessW);
     Wh_SetFunctionHook((void*)CoCreateInstance, (void*)GanchoCoCreateInstance, (void**)&originalCoCreateInstance);
 
@@ -382,8 +395,14 @@ void Wh_ModUninit() {
     detenerHilo.store(true);
     if (eventoDetener) SetEvent(eventoDetener);
     if (hiloReproductor) {
-        // No se descarga código mientras el hilo todavía pueda ejecutarlo.
-        WaitForSingleObject(hiloReproductor, INFINITE);
+        DWORD identificadorHiloReproductor = GetThreadId(hiloReproductor);
+        if (identificadorHiloReproductor != 0) {
+            PostThreadMessageW(identificadorHiloReproductor, WM_NULL, 0, 0);
+        }
+        if (ventanaDelegadoReproductor && IsWindow(ventanaDelegadoReproductor)) {
+            PostMessageW(ventanaDelegadoReproductor, WM_NULL, 0, 0);
+        }
+        WaitForSingleObject(hiloReproductor, 3000);
         CloseHandle(hiloReproductor);
         hiloReproductor = nullptr;
     }

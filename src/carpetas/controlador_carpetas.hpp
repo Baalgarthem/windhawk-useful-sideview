@@ -77,6 +77,13 @@ struct EstadoControladorVistaCarpetas {
     RECT botonFusionCarpetas{};
     bool hoverBotonFusion{false};
 
+    // Contenedor de acciones rápidas de carpeta
+    RECT areaContenedorAccionesRapidas{};
+    RECT botonCrearEnlaceSimbolico{};
+    RECT botonCopiarContenidoPortapapeles{};
+    bool hoverBotonCrearEnlace{false};
+    bool hoverBotonCopiarContenido{false};
+
     // Vista vacia cuando no hay nada seleccionado en el Explorador
     ResumenVistaVacia resumenVistaVacia;
 };
@@ -111,6 +118,7 @@ inline std::wstring formatearTamanoCarpeta(uintmax_t tamanoEnBytes) {
 
 inline uintmax_t calcularTamanoDirectorio(const std::wstring& rutaDirectorio, int limiteProfundidad = 64, int* contadorArchivosEscaneados = nullptr) {
     if (limiteProfundidad <= 0) return 0;
+    if (contadorArchivosEscaneados && *contadorArchivosEscaneados >= 50000) return 0;
 
     std::wstring patron = rutaDirectorio + L"\\*";
     WIN32_FIND_DATAW datos;
@@ -127,13 +135,14 @@ inline uintmax_t calcularTamanoDirectorio(const std::wstring& rutaDirectorio, in
         }
         if (contadorArchivosEscaneados) {
             (*contadorArchivosEscaneados)++;
+            if (*contadorArchivosEscaneados >= 50000) break;
         }
         std::wstring rutaHijo = rutaDirectorio + L"\\" + datos.cFileName;
         if (datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             tamanoTotal += calcularTamanoDirectorio(rutaHijo, limiteProfundidad - 1, contadorArchivosEscaneados);
         } else {
-            uintmax_t tam = (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
-            tamanoTotal += tam;
+            uintmax_t tamanoArchivo = (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
+            tamanoTotal += tamanoArchivo;
         }
     } while (FindNextFileW(busqueda, &datos));
     FindClose(busqueda);
@@ -159,6 +168,11 @@ inline void liberarRecursosVistaCarpetas() {
     estadoVistaCarpetas.menuProgramasAbierto = false;
     estadoVistaCarpetas.opcionProgramaHover = -1;
     estadoVistaCarpetas.programaTemporal.clear();
+    estadoVistaCarpetas.areaContenedorAccionesRapidas = {};
+    estadoVistaCarpetas.botonCrearEnlaceSimbolico = {};
+    estadoVistaCarpetas.botonCopiarContenidoPortapapeles = {};
+    estadoVistaCarpetas.hoverBotonCrearEnlace = false;
+    estadoVistaCarpetas.hoverBotonCopiarContenido = false;
     estadoVistaCarpetas.resumenVistaVacia = {};
 }
 
@@ -479,21 +493,22 @@ inline void calcularResumenVistaVacia(const std::wstring& rutaCarpeta) {
             if (PathIsDirectoryEmptyW(rutaHijo.c_str())) {
                 carpetasVaciasDetectadas.push_back(datos.cFileName);
             }
-            uintmax_t tamSub = calcularTamanoDirectorio(rutaHijo);
+            int contadorEscaneados = 0;
+            uintmax_t tamSub = calcularTamanoDirectorio(rutaHijo, 4, &contadorEscaneados);
             tamanoTotal += tamSub;
-            SubcarpetaPesada sp;
-            sp.nombre = datos.cFileName;
-            sp.tamanoBytes = tamSub;
-            subcarpetas.push_back(sp);
+            SubcarpetaPesada subcarpetaItem;
+            subcarpetaItem.nombre = datos.cFileName;
+            subcarpetaItem.tamanoBytes = tamSub;
+            subcarpetas.push_back(subcarpetaItem);
         } else {
             totalArchivos++;
-            uintmax_t tam = (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
-            tamanoTotal += tam;
-            const wchar_t* ext = PathFindExtensionW(datos.cFileName);
-            if (ext && *ext) {
-                std::wstring extLower = ext;
-                std::transform(extLower.begin(), extLower.end(), extLower.begin(), ::towlower);
-                extensiones[extLower]++;
+            uintmax_t tamanoArchivo = (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
+            tamanoTotal += tamanoArchivo;
+            const wchar_t* extensionArchivo = PathFindExtensionW(datos.cFileName);
+            if (extensionArchivo && *extensionArchivo) {
+                std::wstring extensionMinusculas = extensionArchivo;
+                std::transform(extensionMinusculas.begin(), extensionMinusculas.end(), extensionMinusculas.begin(), ::towlower);
+                extensiones[extensionMinusculas]++;
             } else {
                 extensiones[L"(sin extension)"]++;
             }
@@ -687,6 +702,158 @@ inline void ejecutarAbrirCarpetasConPrograma(HWND ventanaPadre) {
         ShellExecuteW(nullptr, L"open", rutaProg.c_str(),
                       (L"\"" + rutaCarpeta + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
     }
+}
+
+inline bool ejecutarCrearEnlaceSimbolico(HWND ventanaPadre) {
+    if (estadoVistaCarpetas.carpetasSeleccionadas.empty() ||
+        estadoVistaCarpetas.indiceCarpetaActual >= estadoVistaCarpetas.carpetasSeleccionadas.size()) {
+        return false;
+    }
+    const std::wstring& rutaOrigen = estadoVistaCarpetas.carpetasSeleccionadas[estadoVistaCarpetas.indiceCarpetaActual];
+    if (rutaOrigen.empty() || !PathFileExistsW(rutaOrigen.c_str())) return false;
+
+    std::wstring nombreCarpetaOrigen = PathFindFileNameW(rutaOrigen.c_str());
+
+    PunteroCom<IFileSaveDialog> dialogoGuardar;
+    HRESULT resultadoCom = CoCreateInstance(CLSID_FileSaveDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                            IID_PPV_ARGS(dialogoGuardar.recibir()));
+    if (FAILED(resultadoCom) || !dialogoGuardar.obtener()) {
+        return false;
+    }
+
+    dialogoGuardar->SetTitle(L"Seleccionar ubicación para el enlace simbólico");
+    dialogoGuardar->SetFileName(nombreCarpetaOrigen.c_str());
+    COMDLG_FILTERSPEC filtroCom[] = {
+        { L"Todos los archivos (*.*)", L"*.*" }
+    };
+    dialogoGuardar->SetFileTypes(1, filtroCom);
+
+    if (SUCCEEDED(dialogoGuardar->Show(ventanaPadre))) {
+        PunteroCom<IShellItem> elementoResultado;
+        if (SUCCEEDED(dialogoGuardar->GetResult(elementoResultado.recibir())) && elementoResultado.obtener()) {
+            PWSTR rutaElegida = nullptr;
+            if (SUCCEEDED(elementoResultado->GetDisplayName(SIGDN_FILESYSPATH, &rutaElegida)) && rutaElegida) {
+                std::wstring rutaDestinoEnlace(rutaElegida);
+                CoTaskMemFree(rutaElegida);
+
+                if (!rutaDestinoEnlace.empty()) {
+                    BOOL enlaceCreado = CreateSymbolicLinkW(rutaDestinoEnlace.c_str(), rutaOrigen.c_str(),
+                                                            SYMBOLIC_LINK_FLAG_DIRECTORY);
+                    if (!enlaceCreado) {
+                        enlaceCreado = CreateSymbolicLinkW(rutaDestinoEnlace.c_str(), rutaOrigen.c_str(),
+                                                            SYMBOLIC_LINK_FLAG_DIRECTORY | 0x1);
+                    }
+                    if (!enlaceCreado) {
+                        std::wstring rutaAccesoDirecto = rutaDestinoEnlace;
+                        if (PathFindExtensionW(rutaAccesoDirecto.c_str()) == nullptr ||
+                            lstrcmpiW(PathFindExtensionW(rutaAccesoDirecto.c_str()), L".lnk") != 0) {
+                            rutaAccesoDirecto += L".lnk";
+                        }
+                        PunteroCom<IShellLinkW> accesoDirecto;
+                        if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(accesoDirecto.recibir())))) {
+                            accesoDirecto->SetPath(rutaOrigen.c_str());
+                            PunteroCom<IPersistFile> archivoPersistente;
+                            if (SUCCEEDED(accesoDirecto->QueryInterface(IID_PPV_ARGS(archivoPersistente.recibir())))) {
+                                if (SUCCEEDED(archivoPersistente->Save(rutaAccesoDirecto.c_str(), TRUE))) {
+                                    enlaceCreado = TRUE;
+                                    rutaDestinoEnlace = rutaAccesoDirecto;
+                                }
+                            }
+                        }
+                    }
+
+                    if (enlaceCreado) {
+                        std::wstring mensajeExito = L"✓ Enlace creado exitosamente en:\n" + rutaDestinoEnlace;
+                        MessageBoxW(ventanaPadre, mensajeExito.c_str(), L"Crear Enlace", MB_OK | MB_ICONINFORMATION);
+                        return true;
+                    } else {
+                        DWORD errorCodigo = GetLastError();
+                        std::wstring mensajeError = L"No fue posible crear el enlace (error " + std::to_wstring(errorCodigo) + L").";
+                        MessageBoxW(ventanaPadre, mensajeError.c_str(), L"Crear Enlace", MB_OK | MB_ICONERROR);
+                    }
+                }
+            }
+        }
+    }
+    return false;
+}
+
+inline bool ejecutarCopiarContenidoPortapapeles(HWND ventanaPadre) {
+    if (estadoVistaCarpetas.carpetasSeleccionadas.empty() ||
+        estadoVistaCarpetas.indiceCarpetaActual >= estadoVistaCarpetas.carpetasSeleccionadas.size()) {
+        return false;
+    }
+    const std::wstring& rutaCarpetaOrigen = estadoVistaCarpetas.carpetasSeleccionadas[estadoVistaCarpetas.indiceCarpetaActual];
+    if (rutaCarpetaOrigen.empty() || !PathFileExistsW(rutaCarpetaOrigen.c_str())) return false;
+
+    std::wstring patronBusqueda = rutaCarpetaOrigen + L"\\*";
+    WIN32_FIND_DATAW datosElemento{};
+    HANDLE busqueda = FindFirstFileW(patronBusqueda.c_str(), &datosElemento);
+    if (busqueda == INVALID_HANDLE_VALUE) return false;
+
+    std::vector<std::wstring> subcarpetasRaiz;
+    std::vector<std::pair<std::wstring, uintmax_t>> archivosRaiz;
+
+    do {
+        if (wcscmp(datosElemento.cFileName, L".") == 0 || wcscmp(datosElemento.cFileName, L"..") == 0) {
+            continue;
+        }
+        if (datosElemento.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            subcarpetasRaiz.push_back(datosElemento.cFileName);
+        } else {
+            uintmax_t tamanoArchivo = (static_cast<uintmax_t>(datosElemento.nFileSizeHigh) << 32) | datosElemento.nFileSizeLow;
+            archivosRaiz.push_back({ datosElemento.cFileName, tamanoArchivo });
+        }
+    } while (FindNextFileW(busqueda, &datosElemento));
+    FindClose(busqueda);
+
+    std::sort(subcarpetasRaiz.begin(), subcarpetasRaiz.end(), [](const std::wstring& primerDirectorio, const std::wstring& segundoDirectorio) {
+        return StrCmpLogicalW(primerDirectorio.c_str(), segundoDirectorio.c_str()) < 0;
+    });
+
+    std::sort(archivosRaiz.begin(), archivosRaiz.end(), [](const std::pair<std::wstring, uintmax_t>& primerArchivo, const std::pair<std::wstring, uintmax_t>& segundoArchivo) {
+        return StrCmpLogicalW(primerArchivo.first.c_str(), segundoArchivo.first.c_str()) < 0;
+    });
+
+    std::wstring textoAcumulado;
+    textoAcumulado += L"Contenido de: ";
+    textoAcumulado += PathFindFileNameW(rutaCarpetaOrigen.c_str());
+    textoAcumulado += L"\r\n";
+    textoAcumulado += L"Ruta: " + rutaCarpetaOrigen + L"\r\n";
+    textoAcumulado += L"--------------------------------------------------\r\n";
+
+    for (const auto& nombreSubcarpeta : subcarpetasRaiz) {
+        textoAcumulado += L"📁 [Carpeta] " + nombreSubcarpeta + L"\r\n";
+    }
+    for (const auto& [nombreArchivo, tamanoBytes] : archivosRaiz) {
+        textoAcumulado += L"📄 [Archivo] " + nombreArchivo + L" (" + formatearTamanoCarpeta(tamanoBytes) + L")\r\n";
+    }
+
+    textoAcumulado += L"--------------------------------------------------\r\n";
+    textoAcumulado += L"Total: " + std::to_wstring(subcarpetasRaiz.size()) + L" carpetas, " +
+                      std::to_wstring(archivosRaiz.size()) + L" archivos (" +
+                      std::to_wstring(subcarpetasRaiz.size() + archivosRaiz.size()) + L" elementos)\r\n";
+
+    if (!OpenClipboard(ventanaPadre)) {
+        return false;
+    }
+    EmptyClipboard();
+
+    size_t tamanoBufer = (textoAcumulado.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memoriaGlobal = GlobalAlloc(GMEM_MOVEABLE, tamanoBufer);
+    if (memoriaGlobal) {
+        wchar_t* punteroDestino = static_cast<wchar_t*>(GlobalLock(memoriaGlobal));
+        if (punteroDestino) {
+            memcpy(punteroDestino, textoAcumulado.c_str(), tamanoBufer);
+            GlobalUnlock(memoriaGlobal);
+            SetClipboardData(CF_UNICODETEXT, memoriaGlobal);
+        }
+    }
+    CloseClipboard();
+
+    MessageBoxW(ventanaPadre, L"✓ El contenido del directorio raíz ha sido copiado al portapapeles.",
+                L"Copiar Contenido", MB_OK | MB_ICONINFORMATION);
+    return true;
 }
 
 inline bool fusionarDirectorioRecursivo(const std::wstring& rutaOrigen, const std::wstring& rutaDestino) {
@@ -1193,7 +1360,7 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
         }
     }
 
-    yActual += 24;
+    yActual += 20;
 
     SelectObject(contextoDestino, fuentePequena);
     SetTextColor(contextoDestino, RGB(139, 148, 158));
@@ -1201,7 +1368,7 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
     DrawTextW(contextoDestino, rutaCompletaActual.c_str(), -1, &areaRutaCompleta,
               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-    yActual += 18;
+    yActual += 16;
 
     SelectObject(contextoDestino, fuentePequena);
     SetTextColor(contextoDestino, RGB(139, 148, 158));
@@ -1222,9 +1389,9 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
     estadoVistaCarpetas.botonAlternarExpansion = {areaDibujo.right - 120, yActual - 2, areaDibujo.right - 24, yActual + 18};
     dibujarBotonNav(estadoVistaCarpetas.botonAlternarExpansion, textoBtnExpansion.c_str(), estadoVistaCarpetas.hoverBotonAlternarExpansion, true);
 
-    yActual += 22;
+    yActual += 20;
 
-    int altoCajaArbol = std::max(120, altoArea - (hayMultiplesCarpetas ? 295 : 230));
+    int altoCajaArbol = std::max(80, std::min<int>(150, altoArea - (hayMultiplesCarpetas ? 410 : 300)));
     RECT areaCajaArbol{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + altoCajaArbol};
     estadoVistaCarpetas.areaCajaArbol = areaCajaArbol;
 
@@ -1362,6 +1529,107 @@ inline void dibujarLienzoVistaCarpetas(HDC contextoDestino, const RECT& areaDibu
     SetTextColor(contextoDestino, RGB(255, 255, 255));
     RECT areaTextoEjecutar = estadoVistaCarpetas.botonEjecutarAbrir;
     DrawTextW(contextoDestino, L"Abrir", -1, &areaTextoEjecutar,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 42;
+
+    HPEN lapizSepAcciones = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HPEN lapizPrevSepAcciones = static_cast<HPEN>(SelectObject(contextoDestino, lapizSepAcciones));
+    MoveToEx(contextoDestino, areaDibujo.left + 24, yActual, nullptr);
+    LineTo(contextoDestino, areaDibujo.right - 24, yActual);
+    SelectObject(contextoDestino, lapizPrevSepAcciones);
+    DeleteObject(lapizSepAcciones);
+
+    yActual += 12;
+
+    SelectObject(contextoDestino, fuentePequena);
+    SetTextColor(contextoDestino, RGB(139, 148, 158));
+    RECT areaSubAcciones{areaDibujo.left + 24, yActual, areaDibujo.right - 24, yActual + 16};
+    DrawTextW(contextoDestino, L"ACCIONES RÁPIDAS", -1, &areaSubAcciones,
+              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    yActual += 20;
+
+    int anchoContenedor = areaDibujo.right - areaDibujo.left - 48;
+    int altoContenedorAcciones = 42;
+    estadoVistaCarpetas.areaContenedorAccionesRapidas = {
+        areaDibujo.left + 24, yActual,
+        areaDibujo.left + 24 + anchoContenedor,
+        yActual + altoContenedorAcciones
+    };
+
+    HBRUSH brochaContenedor = CreateSolidBrush(RGB(22, 27, 34));
+    HPEN lapizContenedor = CreatePen(PS_SOLID, 1, RGB(48, 54, 61));
+    HBRUSH brochaPreviaContenedor = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaContenedor));
+    HPEN lapizPrevioContenedor = static_cast<HPEN>(SelectObject(contextoDestino, lapizContenedor));
+    RoundRect(contextoDestino, estadoVistaCarpetas.areaContenedorAccionesRapidas.left,
+              estadoVistaCarpetas.areaContenedorAccionesRapidas.top,
+              estadoVistaCarpetas.areaContenedorAccionesRapidas.right,
+              estadoVistaCarpetas.areaContenedorAccionesRapidas.bottom, 8, 8);
+    SelectObject(contextoDestino, lapizPrevioContenedor);
+    SelectObject(contextoDestino, brochaPreviaContenedor);
+    DeleteObject(lapizContenedor);
+    DeleteObject(brochaContenedor);
+
+    int paddingInterno = 5;
+    int anchoBotonAccion = (anchoContenedor - (paddingInterno * 3)) / 2;
+    int yBotonesAccion = yActual + paddingInterno;
+    int altoBotonAccion = altoContenedorAcciones - (paddingInterno * 2);
+
+    estadoVistaCarpetas.botonCrearEnlaceSimbolico = {
+        estadoVistaCarpetas.areaContenedorAccionesRapidas.left + paddingInterno,
+        yBotonesAccion,
+        estadoVistaCarpetas.areaContenedorAccionesRapidas.left + paddingInterno + anchoBotonAccion,
+        yBotonesAccion + altoBotonAccion
+    };
+
+    estadoVistaCarpetas.botonCopiarContenidoPortapapeles = {
+        estadoVistaCarpetas.botonCrearEnlaceSimbolico.right + paddingInterno,
+        yBotonesAccion,
+        estadoVistaCarpetas.botonCrearEnlaceSimbolico.right + paddingInterno + anchoBotonAccion,
+        yBotonesAccion + altoBotonAccion
+    };
+
+    // 1. Botón Enlace Simbólico
+    bool hoverEnlace = estadoVistaCarpetas.hoverBotonCrearEnlace;
+    HBRUSH brochaEnlace = CreateSolidBrush(hoverEnlace ? RGB(33, 38, 45) : RGB(13, 17, 23));
+    HPEN lapizEnlace = CreatePen(PS_SOLID, 1, hoverEnlace ? RGB(88, 166, 255) : RGB(48, 54, 61));
+    HBRUSH brochaPreviaEnlace = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaEnlace));
+    HPEN lapizPrevioEnlace = static_cast<HPEN>(SelectObject(contextoDestino, lapizEnlace));
+    RoundRect(contextoDestino, estadoVistaCarpetas.botonCrearEnlaceSimbolico.left,
+              estadoVistaCarpetas.botonCrearEnlaceSimbolico.top,
+              estadoVistaCarpetas.botonCrearEnlaceSimbolico.right,
+              estadoVistaCarpetas.botonCrearEnlaceSimbolico.bottom, 6, 6);
+    SelectObject(contextoDestino, lapizPrevioEnlace);
+    SelectObject(contextoDestino, brochaPreviaEnlace);
+    DeleteObject(lapizEnlace);
+    DeleteObject(brochaEnlace);
+
+    SelectObject(contextoDestino, fuentePequena);
+    SetTextColor(contextoDestino, hoverEnlace ? RGB(255, 255, 255) : RGB(201, 209, 217));
+    RECT areaTextoEnlace = estadoVistaCarpetas.botonCrearEnlaceSimbolico;
+    DrawTextW(contextoDestino, L"🔗 Crear enlace", -1, &areaTextoEnlace,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+    // 2. Botón Copiar Contenido
+    bool hoverCopiar = estadoVistaCarpetas.hoverBotonCopiarContenido;
+    HBRUSH brochaCopiar = CreateSolidBrush(hoverCopiar ? RGB(33, 38, 45) : RGB(13, 17, 23));
+    HPEN lapizCopiar = CreatePen(PS_SOLID, 1, hoverCopiar ? RGB(88, 166, 255) : RGB(48, 54, 61));
+    HBRUSH brochaPreviaCopiar = static_cast<HBRUSH>(SelectObject(contextoDestino, brochaCopiar));
+    HPEN lapizPrevioCopiar = static_cast<HPEN>(SelectObject(contextoDestino, lapizCopiar));
+    RoundRect(contextoDestino, estadoVistaCarpetas.botonCopiarContenidoPortapapeles.left,
+              estadoVistaCarpetas.botonCopiarContenidoPortapapeles.top,
+              estadoVistaCarpetas.botonCopiarContenidoPortapapeles.right,
+              estadoVistaCarpetas.botonCopiarContenidoPortapapeles.bottom, 6, 6);
+    SelectObject(contextoDestino, lapizPrevioCopiar);
+    SelectObject(contextoDestino, brochaPreviaCopiar);
+    DeleteObject(lapizCopiar);
+    DeleteObject(brochaCopiar);
+
+    SelectObject(contextoDestino, fuentePequena);
+    SetTextColor(contextoDestino, hoverCopiar ? RGB(255, 255, 255) : RGB(201, 209, 217));
+    RECT areaTextoCopiar = estadoVistaCarpetas.botonCopiarContenidoPortapapeles;
+    DrawTextW(contextoDestino, L"📋 Copiar contenido", -1, &areaTextoCopiar,
               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
     if (hayMultiplesCarpetas) {
