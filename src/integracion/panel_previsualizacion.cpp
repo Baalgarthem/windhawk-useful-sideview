@@ -31,25 +31,32 @@ inline void bloquearYSuprimirPanelNativoWindows(HWND ventanaExplorador) {
 
     EnumChildWindows(
         ventanaExplorador,
-        [](HWND ventanaHija, LPARAM) -> BOOL {
+        [](HWND ventanaHija, LPARAM) CALLBACK -> BOOL {
             if (ventanaHija == ventanaReproductor || ventanaHija == ventanaVideo ||
                 ventanaHija == ventanaControles || ventanaHija == ventanaMenuVelocidad) {
+                return TRUE;
+            }
+            if (ventanaReproductor && IsChild(ventanaReproductor, ventanaHija)) {
                 return TRUE;
             }
             wchar_t nombreClase[128]{};
             if (GetClassNameW(ventanaHija, nombreClase, ARRAYSIZE(nombreClase))) {
                 if (wcsstr(nombreClase, L"ShellPreview") ||
                     wcsstr(nombreClase, L"PreviewHandler") ||
+                    wcsstr(nombreClase, L"UIPreview") ||
+                    wcsstr(nombreClase, L"PreviewPane") ||
                     wcsstr(nombreClase, L"ATL:") ||
                     wcsstr(nombreClase, L"UniversalSearchBand") ||
                     wcsstr(nombreClase, L"ActiveX") ||
-                    wcsstr(nombreClase, L"RichEdit20W_Preview")) {
+                    wcsstr(nombreClase, L"RichEdit") ||
+                    wcsstr(nombreClase, L"ElementHost")) {
                     if (IsWindowVisible(ventanaHija)) {
                         ShowWindow(ventanaHija, SW_HIDE);
                         SetWindowPos(ventanaHija, nullptr, 0, 0, 0, 0,
                                      SWP_HIDEWINDOW | SWP_NOMOVE | SWP_NOSIZE |
                                      SWP_NOZORDER | SWP_NOACTIVATE);
                     }
+                    EnableWindow(ventanaHija, FALSE);
                 }
             }
             return TRUE;
@@ -64,14 +71,15 @@ LRESULT CALLBACK procesarSubclaseVentanaExplorador(HWND hwnd, UINT uMsg,
     if (uMsg == WM_KEYDOWN || uMsg == WM_SYSKEYDOWN) {
         if (wParam == 'P' || wParam == 'p') {
             bool ctrlPresionado = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool altPresionado = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            if (ctrlPresionado || altPresionado) {
+            bool altPresionado  = (GetKeyState(VK_MENU)    & 0x8000) != 0;
+            if (altPresionado && !ctrlPresionado) {
                 SendMessageW(hwnd, WM_COMMAND, 41489, 0);
                 return 0;
             }
         }
     }
     LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
+    bloquearYSuprimirPanelNativoWindows(hwnd);
     if (uMsg == WM_COMMAND) {
         WORD idComando = LOWORD(wParam);
         if (idComando == 41489 || idComando == 0xA211 ||
@@ -116,8 +124,8 @@ LRESULT CALLBACK procesarSubclaseVistaArchivos(HWND hwnd, UINT uMsg,
         }
         if (wParam == 'P' || wParam == 'p') {
             bool ctrlPresionado = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
-            bool altPresionado = (GetKeyState(VK_MENU) & 0x8000) != 0;
-            if (ctrlPresionado || altPresionado) {
+            bool altPresionado  = (GetKeyState(VK_MENU)    & 0x8000) != 0;
+            if (altPresionado && !ctrlPresionado) {
                 HWND ventanaRaiz = normalizarVentanaExploradorAnfitriona(hwnd);
                 if (ventanaRaiz) {
                     SendMessageW(ventanaRaiz, WM_COMMAND, 41489, 0);
@@ -127,6 +135,9 @@ LRESULT CALLBACK procesarSubclaseVistaArchivos(HWND hwnd, UINT uMsg,
         }
     }
     LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
+    if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
+        bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
+    }
     if (uMsg == WM_WINDOWPOSCHANGED || uMsg == WM_SIZE || uMsg == WM_SHOWWINDOW) {
         if (ventanaReproductor && IsWindow(ventanaReproductor)) {
             RECT areaPanelCalculada{};
@@ -182,6 +193,7 @@ bool obtenerAreaPanel(RECT* areaPanel) {
         return false;
     }
 
+    bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
     asegurarSubclaseVentanaExplorador(ventanaExploradorAnfitriona);
 
     HWND vistaArchivos = ventanaVistaArchivosActiva;
@@ -285,6 +297,9 @@ bool ajustarReproductorAlPanel(const RECT* areaPanelCalculada) {
                                  altoActual != nuevoAlto);
 
     if (!dimensionesCambiaron && IsWindowVisible(ventanaReproductor)) {
+        SetWindowPos(ventanaReproductor, HWND_TOP, 0, 0, 0, 0,
+                     SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW | SWP_NOACTIVATE);
+        ajustarLayoutVentanasReproductor(ventanaReproductor);
         return true;
     }
 
@@ -460,6 +475,10 @@ inline void liberarRecursosDeTodasCategorias() {
     liberarRecursosCodigo();
     liberarRecursosDesconocido();
     tipoContenidoActivo.store(TipoContenidoArchivo::Ninguno);
+    if (ventanaControles && IsWindow(ventanaControles)) {
+        ShowWindow(ventanaControles, SW_HIDE);
+    }
+    ocultarMenuVelocidadInmediato();
 }
 
 bool asegurarReproductor(const std::vector<std::wstring>& listaVideos) {
@@ -495,11 +514,19 @@ bool asegurarReproductor(const std::vector<std::wstring>& listaVideos) {
     reiniciarCacheTiempoReproduccion();
     HRESULT resultadoCarga = reproductor->CreateMediaItemFromURL(
         listaVideosSeleccionados.front().c_str(), FALSE, 0, nullptr);
+    if (FAILED(resultadoCarga)) {
+        estadoVideoMetadatos.errorCargaMF = true;
+        if (!estadoVideoMetadatos.miniaturaExtraida) {
+            estadoVideoMetadatos.miniaturaExtraida = extraerPortadaDesdeShell(listaVideosSeleccionados.front());
+        }
+    } else {
+        estadoVideoMetadatos.errorCargaMF = false;
+    }
     if (ventanaReproductor && IsWindow(ventanaReproductor)) {
         InvalidateRect(ventanaReproductor, nullptr, TRUE);
     }
     invalidarInterfaz();
-    return SUCCEEDED(resultadoCarga);
+    return true;
 }
 
 bool asegurarVisorImagen(const std::vector<std::wstring>& listaImagenes) {
@@ -548,17 +575,27 @@ bool asegurarVisorPendiente(const std::vector<std::wstring>& listaArchivos,
 
     if (!asegurarVentanasContenedoras()) return false;
 
-    EstadoPendienteImplementacion& estado =
-        (tipo == TipoContenidoArchivo::Documento) ? estadoDocumentos : estadoCodigo;
-    estado.archivosSeleccionados = listaArchivos;
-    std::sort(estado.archivosSeleccionados.begin(), estado.archivosSeleccionados.end(),
-              [](const std::wstring& rutaPrimera, const std::wstring& rutaSegunda) {
-                  return StrCmpLogicalW(rutaPrimera.c_str(), rutaSegunda.c_str()) < 0;
-              });
-    estado.indiceActual = 0;
-    estado.rutaActual = estado.archivosSeleccionados.front();
-    estado.nombreArchivo = PathFindFileNameW(estado.rutaActual.c_str());
-    estado.extension = PathFindExtensionW(estado.rutaActual.c_str());
+    if (tipo == TipoContenidoArchivo::Documento) {
+        estadoDocumentos.archivosSeleccionados = listaArchivos;
+        std::sort(estadoDocumentos.archivosSeleccionados.begin(), estadoDocumentos.archivosSeleccionados.end(),
+                  [](const std::wstring& rutaPrimera, const std::wstring& rutaSegunda) {
+                      return StrCmpLogicalW(rutaPrimera.c_str(), rutaSegunda.c_str()) < 0;
+                  });
+        estadoDocumentos.indiceActual = 0;
+        estadoDocumentos.rutaActual = estadoDocumentos.archivosSeleccionados.front();
+        estadoDocumentos.nombreArchivo = PathFindFileNameW(estadoDocumentos.rutaActual.c_str());
+        estadoDocumentos.extension = PathFindExtensionW(estadoDocumentos.rutaActual.c_str());
+    } else {
+        estadoCodigo.archivosSeleccionados = listaArchivos;
+        std::sort(estadoCodigo.archivosSeleccionados.begin(), estadoCodigo.archivosSeleccionados.end(),
+                  [](const std::wstring& rutaPrimera, const std::wstring& rutaSegunda) {
+                      return StrCmpLogicalW(rutaPrimera.c_str(), rutaSegunda.c_str()) < 0;
+                  });
+        estadoCodigo.indiceActual = 0;
+        estadoCodigo.rutaActual = estadoCodigo.archivosSeleccionados.front();
+        estadoCodigo.nombreArchivo = PathFindFileNameW(estadoCodigo.rutaActual.c_str());
+        estadoCodigo.extension = PathFindExtensionW(estadoCodigo.rutaActual.c_str());
+    }
 
     if (!ajustarReproductorAlPanel()) return false;
     invalidarInterfaz();
