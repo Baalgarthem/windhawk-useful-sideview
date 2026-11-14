@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         2.1.1-alpha
+// @version         3.0.1-alpha
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
