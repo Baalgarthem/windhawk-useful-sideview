@@ -257,11 +257,23 @@ void cargarConfiguracion() {
         configuracion.programasComicsRecordados;
     estadoComprimidos.programasComunesRecordados =
         configuracion.programasComprimidosRecordados;
-    estadoComprimidos.indiceProgramaSeleccionado = 0;
+    // No reiniciar la selección aquí: el índice representa el último programa
+    // elegido por el usuario mientras la vista cambia entre archivos.
+    if (estadoComprimidos.indiceProgramaSeleccionado < 0 ||
+        estadoComprimidos.indiceProgramaSeleccionado >=
+            static_cast<int>(estadoComprimidos.programasComunesRecordados.size())) {
+        estadoComprimidos.indiceProgramaSeleccionado = 0;
+    }
 
     estadoVistaCarpetas.programasCarpetasRecordados =
         configuracion.programasCarpetasRecordados;
-    estadoVistaCarpetas.indiceProgramaSeleccionado = 0;
+    // La vista vacía y la vista de carpeta comparten esta selección para que
+    // ambas recuerden el último programa usado.
+    if (estadoVistaCarpetas.indiceProgramaSeleccionado < 0 ||
+        estadoVistaCarpetas.indiceProgramaSeleccionado >=
+            static_cast<int>(estadoVistaCarpetas.programasCarpetasRecordados.size())) {
+        estadoVistaCarpetas.indiceProgramaSeleccionado = 0;
+    }
 
     configuracionPendiente.store(true);
 }

@@ -73,10 +73,15 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
         RECT areaPanel{};
         bool panelPrevisualizacionAbierto = obtenerAreaPanel(&areaPanel);
         if (!panelPrevisualizacionAbierto) {
-            if (!rutaArchivoActivo.empty() ||
+            AcquireSRWLockShared(&bloqueoRutaArchivoActivo);
+            bool rutaActivaNoVacia = !rutaArchivoActivo.empty();
+            ReleaseSRWLockShared(&bloqueoRutaArchivoActivo);
+            if (rutaActivaNoVacia ||
                 (ventanaReproductor && IsWindowVisible(ventanaReproductor))) {
                 liberarRecursosDeTodasCategorias();
+                AcquireSRWLockExclusive(&bloqueoRutaArchivoActivo);
                 rutaArchivoActivo.clear();
+                ReleaseSRWLockExclusive(&bloqueoRutaArchivoActivo);
                 rutaVideoActiva.clear();
                 if (ventanaReproductor) {
                     ShowWindow(ventanaReproductor, SW_HIDE);
@@ -88,9 +93,17 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
                 for (const auto& rutaElemento : rutasSeleccionadas) {
                     claveSeleccion += rutaElemento + L"|";
                 }
-                if (claveSeleccion != rutaArchivoActivo) {
+                bool necesitaActualizar = false;
+                {
+                    AcquireSRWLockShared(&bloqueoRutaArchivoActivo);
+                    necesitaActualizar = (claveSeleccion != rutaArchivoActivo);
+                    ReleaseSRWLockShared(&bloqueoRutaArchivoActivo);
+                }
+                if (necesitaActualizar) {
                     if (asegurarVisualizadorParaArchivos(rutasSeleccionadas)) {
+                        AcquireSRWLockExclusive(&bloqueoRutaArchivoActivo);
                         rutaArchivoActivo = claveSeleccion;
+                        ReleaseSRWLockExclusive(&bloqueoRutaArchivoActivo);
                         rutaVideoActiva = rutasSeleccionadas.front();
                     }
                 } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaCarpetas) {
@@ -111,9 +124,17 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
             } else if (!rutaCarpetaContenedora.empty()) {
                 std::wstring claveVistaVacia =
                     L"VISTA_VACIA|" + rutaCarpetaContenedora;
-                if (claveVistaVacia != rutaArchivoActivo) {
+                bool necesitaVacia = false;
+                {
+                    AcquireSRWLockShared(&bloqueoRutaArchivoActivo);
+                    necesitaVacia = (claveVistaVacia != rutaArchivoActivo);
+                    ReleaseSRWLockShared(&bloqueoRutaArchivoActivo);
+                }
+                if (necesitaVacia) {
                     if (asegurarVisorVistaVacia(rutaCarpetaContenedora)) {
+                        AcquireSRWLockExclusive(&bloqueoRutaArchivoActivo);
                         rutaArchivoActivo = claveVistaVacia;
+                        ReleaseSRWLockExclusive(&bloqueoRutaArchivoActivo);
                         rutaVideoActiva.clear();
                     }
                 } else if (tipoContenidoActivo.load() == TipoContenidoArchivo::VistaVacia) {
@@ -128,7 +149,9 @@ DWORD WINAPI ejecutarHiloReproductor(void*) {
                     }
                 }
             } else {
+                AcquireSRWLockExclusive(&bloqueoRutaArchivoActivo);
                 rutaArchivoActivo.clear();
+                ReleaseSRWLockExclusive(&bloqueoRutaArchivoActivo);
                 rutaVideoActiva.clear();
                 if (ventanaReproductor) {
                     ShowWindow(ventanaReproductor, SW_HIDE);

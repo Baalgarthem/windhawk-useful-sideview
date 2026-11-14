@@ -249,10 +249,17 @@ inline Gdiplus::Bitmap* obtenerBitmapParaMarkdown(
 }
 
 inline std::wstring leerArchivoTextoUtf8(const std::wstring& rutaArchivo) {
-    HANDLE manejadorArchivo = CreateFileW(
-        rutaArchivo.c_str(), GENERIC_READ,
-        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // Causa 3: Reintentar apertura si el archivo esta bloqueado temporalmente
+    HANDLE manejadorArchivo = INVALID_HANDLE_VALUE;
+    for (int intento = 0; intento < 3; ++intento) {
+        manejadorArchivo = CreateFileW(
+            rutaArchivo.c_str(), GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (manejadorArchivo != INVALID_HANDLE_VALUE) break;
+        if (GetLastError() != ERROR_SHARING_VIOLATION) break;
+        Sleep(5);
+    }
     if (manejadorArchivo == INVALID_HANDLE_VALUE) return {};
 
     DWORD tamanoArchivoAlto = 0;

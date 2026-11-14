@@ -751,7 +751,7 @@ void dibujarControlesComprimidos(HDC contextoMemoria, HWND ventana,
     areaTextoProg.right -= 22;
     SetTextColor(contextoMemoria, RGB(240, 240, 240));
 
-    std::wstring textoProgramaActual = L"Añade un programa";
+    std::wstring textoProgramaActual = L"(click para seleccionar programa)";
     std::wstring rutaResuelta = resolverProgramaParaComprimidos();
     if (!rutaResuelta.empty()) {
         textoProgramaActual = PathFindFileNameW(rutaResuelta.c_str());

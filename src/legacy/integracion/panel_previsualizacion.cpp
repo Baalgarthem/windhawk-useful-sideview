@@ -41,15 +41,15 @@ inline void bloquearYSuprimirPanelNativoWindows(HWND ventanaExplorador) {
             }
             wchar_t nombreClase[128]{};
             if (GetClassNameW(ventanaHija, nombreClase, ARRAYSIZE(nombreClase))) {
+                // SOLO suprimir ventanas del panel de previsualizacion nativo.
+                // NO suprimir RichEdit, UniversalSearchBand, ElementHost, ATL:, ActiveX
+                // ya que son controles legitimos de Explorer (renombrar, tooltips, etc).
                 if (wcsstr(nombreClase, L"ShellPreview") ||
                     wcsstr(nombreClase, L"PreviewHandler") ||
                     wcsstr(nombreClase, L"UIPreview") ||
                     wcsstr(nombreClase, L"PreviewPane") ||
-                    wcsstr(nombreClase, L"ATL:") ||
-                    wcsstr(nombreClase, L"UniversalSearchBand") ||
-                    wcsstr(nombreClase, L"ActiveX") ||
-                    wcsstr(nombreClase, L"RichEdit") ||
-                    wcsstr(nombreClase, L"ElementHost")) {
+                    wcsstr(nombreClase, L"ReadingPaneModuleInner") ||
+                    wcsstr(nombreClase, L"Intermediate D3D Window")) {
                     if (IsWindowVisible(ventanaHija)) {
                         ShowWindow(ventanaHija, SW_HIDE);
                         SetWindowPos(ventanaHija, nullptr, 0, 0, 0, 0,
@@ -79,8 +79,9 @@ LRESULT CALLBACK procesarSubclaseVentanaExplorador(HWND hwnd, UINT uMsg,
         }
     }
     LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
-    bloquearYSuprimirPanelNativoWindows(hwnd);
+    // Causa 2: Solo suprimir panel nativo en eventos relevantes, no en cada mensaje
     if (uMsg == WM_COMMAND) {
+        bloquearYSuprimirPanelNativoWindows(hwnd);
         WORD idComando = LOWORD(wParam);
         if (idComando == 41489 || idComando == 0xA211 ||
             idComando == 41490 || idComando == 0xA212) {
@@ -135,10 +136,11 @@ LRESULT CALLBACK procesarSubclaseVistaArchivos(HWND hwnd, UINT uMsg,
         }
     }
     LRESULT resultado = DefSubclassProc(hwnd, uMsg, wParam, lParam);
-    if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
-        bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
-    }
+    // Causa 2b: Solo suprimir panel nativo en resize/show, no en cada mensaje
     if (uMsg == WM_WINDOWPOSCHANGED || uMsg == WM_SIZE || uMsg == WM_SHOWWINDOW) {
+        if (ventanaExploradorAnfitriona && IsWindow(ventanaExploradorAnfitriona)) {
+            bloquearYSuprimirPanelNativoWindows(ventanaExploradorAnfitriona);
+        }
         if (ventanaReproductor && IsWindow(ventanaReproductor)) {
             RECT areaPanelCalculada{};
             if (obtenerAreaPanel(&areaPanelCalculada)) {

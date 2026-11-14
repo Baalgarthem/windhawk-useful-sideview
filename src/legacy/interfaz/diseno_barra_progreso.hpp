@@ -227,8 +227,9 @@ inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
         topeSeparador + 1
     };
 
-    // Fila 1: Abrir con
-    int topeFilaAbrir = topeSeparador + 8;
+    // Fila inferior: Abrir con. La conversión ocupa ahora la primera fila.
+    int topeFilaConv = topeSeparador + 8;
+    int topeFilaAbrir = topeFilaConv + altoFila + 6;
     int anchoDesplegableProg = std::min<int>(
         170, std::max<int>(110, (anchoDisponible - anchoBotonAccion - 12) / 2 + 30));
     int anchoEtiquetaAbrir = std::max<int>(
@@ -249,8 +250,7 @@ inline DisenoComprimidos calcularDisenoComprimidos(HWND ventana) {
         static_cast<LONG>(areaCliente.right) - margenLateral,
         topeFilaAbrir + altoFila};
 
-    // Fila 2: Convertir a
-    int topeFilaConv = topeFilaAbrir + altoFila + 6;
+    // Fila superior: Convertir a
     int anchoDesplegableForm = std::min<int>(
         130, std::max<int>(90, (anchoDisponible - anchoBotonAccion - 12) / 2));
     int anchoEtiquetaConv = std::max<int>(

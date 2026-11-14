@@ -10,6 +10,7 @@ std::wstring rutaVideoActiva;
 std::vector<std::wstring> listaVideosSeleccionados;
 size_t indiceVideoSeleccionado = 0;
 std::wstring rutaArchivoActivo;
+SRWLOCK bloqueoRutaArchivoActivo = SRWLOCK_INIT;  // Causa 4: proteger acceso multihilo
 std::atomic<TipoContenidoArchivo> tipoContenidoActivo{TipoContenidoArchivo::Ninguno};
 ULONG_PTR tokenGdiplus = 0;
 

@@ -1,0 +1,425 @@
+#pragma once
+
+#include <windows.h>
+#include <commctrl.h>
+#include <map>
+#include <mutex>
+#include <vector>
+#include <windhawk_api.h>
+#include <windhawk_utils.h>
+#include "v2/ui/ventana_base.hpp"
+#include "v2/ui/tema_visual.hpp"
+#include "v2/nucleo/shell_extractor.hpp"
+#include "v2/nucleo/enrutador_vistas.hpp"
+#include "v2/nucleo/fabrica_vistas.hpp"
+
+namespace SideViewV2 {
+
+inline UINT WM_SIDEVIEW_TOGGLE = 0;
+inline UINT WM_SIDEVIEW_SETTINGS = 0;
+inline UINT WM_SIDEVIEW_CLEANUP = 0;
+
+inline std::mutex g_bloqueoEstados;
+inline std::map<HWND, EstadoPanelV2*> g_estadosPorVentana;
+
+LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
+LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                            UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                          DWORD_PTR dwRefData);
+
+inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
+    if (!estado) return;
+
+    LiberarBufferMemoria(estado);
+
+    if (estado->vistaContenido) {
+        estado->vistaContenido->Liberar();
+        estado->vistaContenido.reset();
+    }
+
+    if (estado->panel && IsWindow(estado->panel)) {
+        DestroyWindow(estado->panel);
+        estado->panel = nullptr;
+    }
+
+    if (estado->parent && IsWindow(estado->parent)) {
+        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
+    }
+
+    if (estado->tab && IsWindow(estado->tab)) {
+        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
+    }
+
+    if (quitarDelMapa) {
+        std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+        for (auto it = g_estadosPorVentana.begin(); it != g_estadosPorVentana.end(); ) {
+            if (it->second == estado) {
+                it = g_estadosPorVentana.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    delete estado;
+}
+
+inline void DisponerPanel(EstadoPanelV2* estado) {
+    if (!estado || !estado->abierto || !estado->panel || !estado->view || !estado->parent) {
+        return;
+    }
+    if (!IsWindow(estado->panel) || !IsWindow(estado->view) || !IsWindow(estado->parent)) {
+        return;
+    }
+
+    UINT dpi = ObtenerDpiVentana(estado->panel);
+    RECT rectCliente{};
+    GetClientRect(estado->parent, &rectCliente);
+
+    int deltaAncho = rectCliente.right - estado->parentCliente.right;
+    int deltaAlto = rectCliente.bottom - estado->parentCliente.bottom;
+    if (deltaAncho != 0 || deltaAlto != 0) {
+        estado->viewOriginal.right += deltaAncho;
+        estado->viewOriginal.bottom += deltaAlto;
+        estado->parentCliente = rectCliente;
+    }
+
+    estado->viewOriginal.left = std::max(0L, estado->viewOriginal.left);
+    estado->viewOriginal.top = std::max(0L, estado->viewOriginal.top);
+    estado->viewOriginal.right = std::min(rectCliente.right, estado->viewOriginal.right);
+    estado->viewOriginal.bottom = std::min(rectCliente.bottom, estado->viewOriginal.bottom);
+
+    int anchoVista = estado->viewOriginal.right - estado->viewOriginal.left;
+    int altoVista = estado->viewOriginal.bottom - estado->viewOriginal.top;
+    if (anchoVista < 1 || altoVista < 1) return;
+
+    int anchoPanel = EscalarDpi(estado->anchoDIP, dpi);
+    anchoPanel = std::min(std::max(anchoPanel, EscalarDpi(280, dpi)), anchoVista - EscalarDpi(200, dpi));
+    if (anchoPanel < EscalarDpi(220, dpi)) anchoPanel = EscalarDpi(220, dpi);
+
+    int nuevoAnchoVista = std::max(1, anchoVista - anchoPanel);
+
+    RECT rectPanel = {
+        estado->viewOriginal.left + anchoVista - anchoPanel,
+        estado->viewOriginal.top,
+        estado->viewOriginal.right,
+        estado->viewOriginal.bottom
+    };
+
+    // Redimensionar la vista nativa de archivos para reservar espacio sin distorsionar DirectUI
+    SetWindowPos(estado->view, nullptr, estado->viewOriginal.left, estado->viewOriginal.top,
+                 nuevoAnchoVista, altoVista, SWP_NOZORDER | SWP_NOACTIVATE);
+
+    // Posicionar nuestro panel cooperativo a la derecha
+    SetWindowPos(estado->panel, HWND_TOP, rectPanel.left, rectPanel.top,
+                 rectPanel.right - rectPanel.left, rectPanel.bottom - rectPanel.top,
+                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+
+    InvalidateRect(estado->panel, nullptr, FALSE);
+}
+
+inline void CerrarEstado(EstadoPanelV2* estado) {
+    if (!estado || !estado->abierto) return;
+    estado->abierto = false;
+
+    if (estado->panel && IsWindow(estado->panel)) {
+        ShowWindow(estado->panel, SW_HIDE);
+    }
+
+    // Restaurar el ancho completo de la vista de archivos
+    if (estado->view && IsWindow(estado->view)) {
+        int anchoTotal = estado->viewOriginal.right - estado->viewOriginal.left;
+        int altoTotal = estado->viewOriginal.bottom - estado->viewOriginal.top;
+        SetWindowPos(estado->view, nullptr, estado->viewOriginal.left, estado->viewOriginal.top,
+                     anchoTotal, altoTotal, SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+}
+
+inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) {
+    if (outVista) *outVista = nullptr;
+    if (!IsWindow(top)) return nullptr;
+
+    HWND tab = nullptr;
+    IWebBrowser2* webBrowser = nullptr;
+    IShellView* vistaShell = ObtenerShellViewActivo(top, &tab, &webBrowser);
+    if (!vistaShell) return nullptr;
+
+    HWND ventanaVista = nullptr;
+    vistaShell->GetWindow(&ventanaVista);
+    if (!ventanaVista) {
+        if (webBrowser) webBrowser->Release();
+        vistaShell->Release();
+        return nullptr;
+    }
+
+    HWND padre = GetParent(ventanaVista);
+    if (!padre) padre = tab ? tab : top;
+
+    HWND clave = tab ? tab : top;
+    EstadoPanelV2* estado = nullptr;
+
+    {
+        std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+        auto it = g_estadosPorVentana.find(clave);
+        if (it != g_estadosPorVentana.end()) {
+            estado = it->second;
+        }
+    }
+
+    if (estado && (estado->view != ventanaVista || estado->parent != padre)) {
+        DestruirEstado(estado, true);
+        estado = nullptr;
+    }
+
+    if (!estado) {
+        estado = new EstadoPanelV2();
+        estado->top = top;
+        estado->tab = clave;
+        estado->view = ventanaVista;
+        estado->parent = padre;
+        estado->tema = ObtenerTemaActual();
+
+        GetWindowRect(ventanaVista, &estado->viewOriginal);
+        MapWindowPoints(HWND_DESKTOP, padre, reinterpret_cast<POINT*>(&estado->viewOriginal), 2);
+        GetClientRect(padre, &estado->parentCliente);
+
+        HINSTANCE hInst = GetModuleHandleW(nullptr);
+        estado->panel = CreateWindowExW(
+            0, CLASE_PANEL_V2, L"",
+            WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            0, 0, 10, 10, padre, nullptr, hInst, estado);
+
+        if (!estado->panel) {
+            delete estado;
+            if (webBrowser) webBrowser->Release();
+            vistaShell->Release();
+            return nullptr;
+        }
+
+        SetWindowSubclass(padre, ProcedimientoSubclasePadre, 1, reinterpret_cast<DWORD_PTR>(estado));
+        if (tab && tab != padre) {
+            SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2, reinterpret_cast<DWORD_PTR>(estado));
+        }
+
+        std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+        g_estadosPorVentana[clave] = estado;
+    }
+
+    if (webBrowser) webBrowser->Release();
+
+    if (outVista) {
+        *outVista = vistaShell;
+    } else {
+        vistaShell->Release();
+    }
+
+    return estado;
+}
+
+inline void AlternarSideView(HWND top) {
+    if (!top || !IsWindow(top)) return;
+
+    HRESULT hrCom = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool desinicializarCom = (hrCom == S_OK);
+
+    IShellView* vista = nullptr;
+    EstadoPanelV2* estado = AsegurarEstado(top, &vista);
+    if (!estado) {
+        if (vista) vista->Release();
+        if (desinicializarCom) CoUninitialize();
+        return;
+    }
+
+    if (estado->abierto) {
+        CerrarEstado(estado);
+    } else {
+        estado->tema = ObtenerTemaActual();
+        estado->abierto = true;
+
+        // Extraer selección de archivos actual de Explorer
+        if (vista) {
+            std::wstring carpeta;
+            auto archivos = ObtenerRutasSeleccionadasDeVista(vista, &carpeta);
+            estado->archivosSeleccionados = archivos;
+            estado->carpetaContenedora = carpeta;
+
+            // Inyectar dinámicamente la vista correspondiente mediante la Fábrica
+            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(archivos, carpeta);
+        } else {
+            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion({}, L"");
+        }
+
+        DisponerPanel(estado);
+        SetTimer(estado->panel, 101, 150, nullptr); // Timer de polling no invasivo para selección
+    }
+
+    if (vista) vista->Release();
+    if (desinicializarCom) CoUninitialize();
+}
+
+inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    if (estado && estado->vistaContenido) {
+        if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
+            if (estado->vistaContenido->ProcesarMensajeRaton(msg, wParam, lParam, hwnd)) {
+                return 0;
+            }
+        } else if (msg >= WM_KEYFIRST && msg <= WM_KEYLAST) {
+            if (estado->vistaContenido->ProcesarMensajeTeclado(msg, wParam, lParam, hwnd)) {
+                return 0;
+            }
+        }
+    }
+
+    switch (msg) {
+        case WM_NCCREATE: {
+            CREATESTRUCTW* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(cs->lpCreateParams));
+            return TRUE;
+        }
+
+        case WM_ERASEBKGND:
+            return 1; // Manejado completamente por el doble buffer
+
+        case WM_TIMER: {
+            if (wParam == 101 && estado && estado->abierto) {
+                // Actualizar selección periódicamente si el panel está visible
+                IShellView* vista = nullptr;
+                HWND tab = nullptr;
+                vista = ObtenerShellViewActivo(estado->top, &tab);
+                if (vista) {
+                    std::wstring carpeta;
+                    auto seleccion = ObtenerRutasSeleccionadasDeVista(vista, &carpeta);
+                    if (seleccion != estado->archivosSeleccionados || carpeta != estado->carpetaContenedora) {
+                        TipoVistaContenido tipoPrevio = ClasificarSeleccion(
+                            estado->archivosSeleccionados, estado->carpetaContenedora);
+                        TipoVistaContenido tipoNuevo = ClasificarSeleccion(seleccion, carpeta);
+
+                        estado->archivosSeleccionados = seleccion;
+                        estado->carpetaContenedora = carpeta;
+
+                        // Si cambió la categoría de archivo, reemplazamos la vista inyectada
+                        if (tipoPrevio != tipoNuevo || !estado->vistaContenido) {
+                            if (estado->vistaContenido) estado->vistaContenido->Liberar();
+                            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
+                        } else {
+                            estado->vistaContenido->AlCambiarSeleccion(seleccion, carpeta);
+                        }
+
+                        InvalidateRect(hwnd, nullptr, FALSE);
+                    }
+                    vista->Release();
+                }
+            }
+            return 0;
+        }
+
+        case WM_PAINT: {
+            PAINTSTRUCT ps;
+            HDC hdcPantalla = BeginPaint(hwnd, &ps);
+            RECT rectCliente;
+            GetClientRect(hwnd, &rectCliente);
+            int ancho = rectCliente.right - rectCliente.left;
+            int alto = rectCliente.bottom - rectCliente.top;
+
+            if (ancho > 0 && alto > 0 && estado) {
+                if (AsegurarBufferMemoria(estado, hdcPantalla, ancho, alto)) {
+                    if (estado->vistaContenido) {
+                        estado->vistaContenido->Renderizar(estado->dcMemoria, rectCliente, estado->tema);
+                    }
+                    BitBlt(hdcPantalla, 0, 0, ancho, alto, estado->dcMemoria, 0, 0, SRCCOPY);
+                }
+            }
+
+            EndPaint(hwnd, &ps);
+            return 0;
+        }
+
+        case WM_DESTROY: {
+            if (estado) {
+                KillTimer(hwnd, 101);
+                LiberarBufferMemoria(estado);
+            }
+            return 0;
+        }
+    }
+
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                                  UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(dwRefData);
+
+    if (msg == WM_SIZE) {
+        LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
+        if (estado && estado->abierto) {
+            DisponerPanel(estado);
+        }
+        return res;
+    }
+
+    if (msg == WM_CLOSE && estado && hwnd == estado->tab && estado->abierto) {
+        CerrarEstado(estado);
+    }
+
+    // En Explorer con pestañas el contenedor de la pestaña puede destruirse
+    // antes que la ventana principal. En Explorer clásico, en cambio, sólo
+    // recibimos el ciclo de vida del top-level. Cubrir ambos evita estados
+    // colgantes que bloqueaban la segunda ventana de Explorer.
+    if (msg == WM_DESTROY && estado && (hwnd == estado->tab || hwnd == estado->top)) {
+        DestruirEstado(estado, true);
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(hwnd, ProcedimientoSubclasePadre, uIdSubclass);
+    }
+
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+inline LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
+                                                DWORD_PTR) {
+    if (msg == WM_SIDEVIEW_TOGGLE) {
+        AlternarSideView(hwnd);
+        return 0;
+    }
+
+    if (msg == WM_SETTINGCHANGE || msg == WM_THEMECHANGED || msg == WM_SYSCOLORCHANGE) {
+        std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+        for (auto& par : g_estadosPorVentana) {
+            if (par.second && par.second->top == hwnd) {
+                par.second->tema = ObtenerTemaActual();
+                if (par.second->panel && IsWindow(par.second->panel)) {
+                    InvalidateRect(par.second->panel, nullptr, FALSE);
+                }
+            }
+        }
+    }
+
+    if (msg == WM_NCDESTROY) {
+        WindhawkUtils::RemoveWindowSubclassFromAnyThread(hwnd, ProcedimientoSubclaseTop);
+    }
+
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
+inline bool RegistrarClasePanelV2(HINSTANCE hInstance) {
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.style = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc = ProcedimientoVentanaPanel;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.lpszClassName = CLASE_PANEL_V2;
+
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        return false;
+    }
+    return true;
+}
+
+} // namespace SideViewV2
