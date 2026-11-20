@@ -14,6 +14,15 @@ public:
     explicit VistaComparadorTextoV2(std::shared_ptr<ServicioComparadorTextoV2> servicio)
         : VistaComparadorArchivosV2(servicio), m_diff(std::move(servicio)) {}
 
+    void Liberar() override {
+        m_estadoDiff = {};
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+        m_sliderActivo = 0;
+        VistaComparadorArchivosV2::Liberar();
+    }
+
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring& carpeta) override {
         VistaComparadorArchivosV2::AlCambiarSeleccion(archivos, carpeta);

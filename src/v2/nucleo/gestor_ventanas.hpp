@@ -33,6 +33,16 @@ LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, 
 LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                           DWORD_PTR dwRefData);
 
+inline void LiberarVistaContenidoV2(EstadoPanelV2* estado) {
+    if (!estado || !estado->vistaContenido) return;
+    // Liberar es parte del contrato de la vista: desmonta reproductores,
+    // timers, capturas de ratón y cualquier backend que pueda mantener abierto
+    // un archivo. El shared_ptr se corta inmediatamente después para impedir
+    // que una vista contraída siga recibiendo eventos.
+    estado->vistaContenido->Liberar();
+    estado->vistaContenido.reset();
+}
+
 inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
     if (!estado) return;
     bool esperado = false;
@@ -62,10 +72,7 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
 
     LiberarBufferMemoria(estado);
 
-    if (estado->vistaContenido) {
-        estado->vistaContenido->Liberar();
-        estado->vistaContenido.reset();
-    }
+    LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
         DestroyWindow(estado->panel);
@@ -203,6 +210,11 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
 inline void CerrarEstado(EstadoPanelV2* estado) {
     if (!estado || !estado->abierto) return;
     estado->abierto = false;
+
+    // Contraer el panel no es sólo una operación visual. El contenido deja
+    // de estar activo y debe desmontarse para liberar handles de archivos,
+    // Media Foundation, callbacks y timers antes de ocultar la ventana.
+    LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
         KillTimer(estado->panel, 101);
@@ -361,7 +373,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         try {
         if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS &&
             estado->comparadorArchivosActivo) {
-            estado->vistaContenido->Liberar();
+            LiberarVistaContenidoV2(estado);
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora, true);
             estado->comparadorArchivosActivo = false;
@@ -374,7 +386,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         if (msg == WM_SIDEVIEW_SETTINGS) {
             if (estado->comparadorArchivosActivo &&
                 !EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-                estado->vistaContenido->Liberar();
+                LiberarVistaContenidoV2(estado);
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
                 estado->comparadorArchivosActivo = false;
@@ -382,7 +394,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 DisponerPanel(estado);
             } else if (!estado->comparadorArchivosActivo &&
                        EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-                estado->vistaContenido->Liberar();
+                LiberarVistaContenidoV2(estado);
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
                 estado->comparadorArchivosActivo = true;
@@ -397,7 +409,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         if (msg == WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS &&
             !estado->comparadorArchivosActivo &&
             EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-            estado->vistaContenido->Liberar();
+            LiberarVistaContenidoV2(estado);
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora);
             estado->comparadorArchivosActivo = true;
@@ -477,7 +489,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                                    EsComparadorArchivosActivoPorSeleccionV2(seleccion) !=
                                        estado->comparadorArchivosActivo ||
                                    !estado->vistaContenido) {
-                            if (estado->vistaContenido) estado->vistaContenido->Liberar();
+                            LiberarVistaContenidoV2(estado);
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
                             estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(seleccion);
                             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
@@ -537,6 +549,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         case WM_DESTROY: {
             if (estado) {
                 KillTimer(hwnd, 101);
+                LiberarVistaContenidoV2(estado);
                 LiberarBufferMemoria(estado);
             }
             return 0;

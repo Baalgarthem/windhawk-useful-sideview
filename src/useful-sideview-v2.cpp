@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.0
+// @version         4.1.1
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -54,7 +54,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.0)
+# Useful Side View V2 (4.1.1)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -66,8 +66,9 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
 - **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
 - **Comparadores de texto y documentos**: panel 50/50 con sliders individuales y sincronizados, resumen fijo de tres columnas y Diff View ampliado; el modo semántico explica los cambios en lenguaje claro.
-- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización confirmable con límite seguro para duraciones distintas, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 - **Persistencia nativa**: Historial de programas de "Abrir con" por categoría, migrado y validado con valores persistentes de Windhawk.
+- **Liberación segura de comparadores**: al cerrar, contraer, cambiar de vista o descargar el mod se desmontan reproductores, callbacks, timers y capturas para no dejar archivos en uso.
 - **Toolbox de notas**: La vista general permite crear, editar, copiar y eliminar notas persistentes. La sincronización con WinKlok es experimental y está desactivada por defecto.
 - **Versión visible**: La vista general puede mostrar la versión actual desde el ajuste correspondiente.
 - **Compatibilidad GPU**: El panel coopera con `gpu-accelerated-explorer-view` usando su overlay visual sin alterar su layout DirectComposition.

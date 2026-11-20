@@ -27,10 +27,8 @@ public:
     virtual void Pausar() = 0;
     virtual void Buscar(double segundos) = 0;
     virtual bool EstaListo() const = 0;
-    virtual bool EstaReproduciendo() const = 0;
     virtual double Posicion() const = 0;
     virtual double Duracion() const = 0;
-    virtual const std::wstring& Mensaje() const = 0;
     virtual void Liberar() = 0;
 };
 
@@ -90,7 +88,6 @@ public:
         Liberar();
         m_panel = panel;
         m_ranura = ranura;
-        m_ruta = ruta;
         m_mensaje.clear();
 
         RegistrarClase();
@@ -104,6 +101,7 @@ public:
 
         if (ruta.empty()) {
             m_mensaje = L"Selecciona dos videos para iniciar la comparación.";
+            Liberar();
             return false;
         }
 
@@ -111,12 +109,14 @@ public:
         if (atributos == INVALID_FILE_ATTRIBUTES ||
             (atributos & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             m_mensaje = L"No se pudo abrir el archivo de video.";
+            Liberar();
             return false;
         }
 
         HRESULT hr = MFStartup(MF_VERSION);
         if (FAILED(hr)) {
             m_mensaje = L"Media Foundation no está disponible en este sistema.";
+            Liberar();
             return false;
         }
         m_mfIniciado = true;
@@ -124,7 +124,7 @@ public:
         MediaEngineNotifyV2* callback = new (std::nothrow) MediaEngineNotifyV2(m_ventana);
         if (!callback) {
             m_mensaje = L"No hubo memoria suficiente para iniciar el reproductor.";
-            LiberarMediaFoundation();
+            Liberar();
             return false;
         }
         m_callback = callback;
@@ -168,7 +168,7 @@ public:
         if (fabrica) fabrica->Release();
         if (FAILED(hr)) {
             m_mensaje = L"No se pudo reproducir este formato de video.";
-            LiberarBackend();
+            Liberar();
             return false;
         }
 
@@ -217,8 +217,6 @@ public:
     }
 
     bool EstaListo() const override { return m_listo; }
-    bool EstaReproduciendo() const override { return m_reproduciendo; }
-
     double Posicion() const override {
         if (m_engine && m_listo) {
             double actual = m_engine->GetCurrentTime();
@@ -234,8 +232,6 @@ public:
         }
         return 0.0;
     }
-
-    const std::wstring& Mensaje() const override { return m_mensaje; }
 
     void Liberar() override {
         LiberarBackend();
@@ -423,7 +419,6 @@ private:
     bool m_reproduciendo{false};
     bool m_reproduccionSolicitada{false};
     double m_posicionPendiente{0.0};
-    std::wstring m_ruta;
     std::wstring m_mensaje;
     IMFMediaEngine* m_engine{nullptr};
     IMFMediaEngineEx* m_engineEx{nullptr};

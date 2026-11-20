@@ -21,7 +21,6 @@ struct EstadoComparadorVideosV2 : public EstadoComparadorArchivosV2 {
     double duracionIzquierda{0.0};
     double duracionDerecha{0.0};
     bool reproduciendo{false};
-    bool simulado{true};
     bool sincronizacionConfirmada{false};
     bool duracionesSimetricas{false};
     bool modoPantallaCompleta{false};
@@ -43,7 +42,6 @@ public:
         EstadoComparadorArchivosV2 comun = CrearComparacion(seleccion);
         estado.izquierda = EnriquecerVideo(comun.izquierda);
         estado.derecha = EnriquecerVideo(comun.derecha);
-        estado.simulado = seleccion.size() != 2;
         estado.mensaje = seleccion.size() == 2
             ? L"Confirma la sincronización para validar la duración de ambos videos."
             : L"Selecciona dos videos para iniciar la comparación.";

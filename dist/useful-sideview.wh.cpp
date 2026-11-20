@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.0
+// @version         4.1.1
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -55,7 +55,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.0)
+# Useful Side View V2 (4.1.1)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -67,8 +67,9 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
 - **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
 - **Comparadores de texto y documentos**: panel 50/50 con sliders individuales y sincronizados, resumen fijo de tres columnas y Diff View ampliado; el modo semántico explica los cambios en lenguaje claro.
-- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización confirmable con límite seguro para duraciones distintas, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 - **Persistencia nativa**: Historial de programas de "Abrir con" por categoría, migrado y validado con valores persistentes de Windhawk.
+- **Liberación segura de comparadores**: al cerrar, contraer, cambiar de vista o descargar el mod se desmontan reproductores, callbacks, timers y capturas para no dejar archivos en uso.
 - **Toolbox de notas**: La vista general permite crear, editar, copiar y eliminar notas persistentes. La sincronización con WinKlok es experimental y está desactivada por defecto.
 - **Versión visible**: La vista general puede mostrar la versión actual desde el ajuste correspondiente.
 - **Compatibilidad GPU**: El panel coopera con `gpu-accelerated-explorer-view` usando su overlay visual sin alterar su layout DirectComposition.
@@ -1944,10 +1945,8 @@ public:
     virtual void Pausar() = 0;
     virtual void Buscar(double segundos) = 0;
     virtual bool EstaListo() const = 0;
-    virtual bool EstaReproduciendo() const = 0;
     virtual double Posicion() const = 0;
     virtual double Duracion() const = 0;
-    virtual const std::wstring& Mensaje() const = 0;
     virtual void Liberar() = 0;
 };
 
@@ -2007,7 +2006,6 @@ public:
         Liberar();
         m_panel = panel;
         m_ranura = ranura;
-        m_ruta = ruta;
         m_mensaje.clear();
 
         RegistrarClase();
@@ -2021,6 +2019,7 @@ public:
 
         if (ruta.empty()) {
             m_mensaje = L"Selecciona dos videos para iniciar la comparación.";
+            Liberar();
             return false;
         }
 
@@ -2028,12 +2027,14 @@ public:
         if (atributos == INVALID_FILE_ATTRIBUTES ||
             (atributos & FILE_ATTRIBUTE_DIRECTORY) != 0) {
             m_mensaje = L"No se pudo abrir el archivo de video.";
+            Liberar();
             return false;
         }
 
         HRESULT hr = MFStartup(MF_VERSION);
         if (FAILED(hr)) {
             m_mensaje = L"Media Foundation no está disponible en este sistema.";
+            Liberar();
             return false;
         }
         m_mfIniciado = true;
@@ -2041,7 +2042,7 @@ public:
         MediaEngineNotifyV2* callback = new (std::nothrow) MediaEngineNotifyV2(m_ventana);
         if (!callback) {
             m_mensaje = L"No hubo memoria suficiente para iniciar el reproductor.";
-            LiberarMediaFoundation();
+            Liberar();
             return false;
         }
         m_callback = callback;
@@ -2085,7 +2086,7 @@ public:
         if (fabrica) fabrica->Release();
         if (FAILED(hr)) {
             m_mensaje = L"No se pudo reproducir este formato de video.";
-            LiberarBackend();
+            Liberar();
             return false;
         }
 
@@ -2134,8 +2135,6 @@ public:
     }
 
     bool EstaListo() const override { return m_listo; }
-    bool EstaReproduciendo() const override { return m_reproduciendo; }
-
     double Posicion() const override {
         if (m_engine && m_listo) {
             double actual = m_engine->GetCurrentTime();
@@ -2151,8 +2150,6 @@ public:
         }
         return 0.0;
     }
-
-    const std::wstring& Mensaje() const override { return m_mensaje; }
 
     void Liberar() override {
         LiberarBackend();
@@ -2340,7 +2337,6 @@ private:
     bool m_reproduciendo{false};
     bool m_reproduccionSolicitada{false};
     double m_posicionPendiente{0.0};
-    std::wstring m_ruta;
     std::wstring m_mensaje;
     IMFMediaEngine* m_engine{nullptr};
     IMFMediaEngineEx* m_engineEx{nullptr};
@@ -2377,7 +2373,6 @@ struct EstadoComparadorVideosV2 : public EstadoComparadorArchivosV2 {
     double duracionIzquierda{0.0};
     double duracionDerecha{0.0};
     bool reproduciendo{false};
-    bool simulado{true};
     bool sincronizacionConfirmada{false};
     bool duracionesSimetricas{false};
     bool modoPantallaCompleta{false};
@@ -2399,7 +2394,6 @@ public:
         EstadoComparadorArchivosV2 comun = CrearComparacion(seleccion);
         estado.izquierda = EnriquecerVideo(comun.izquierda);
         estado.derecha = EnriquecerVideo(comun.derecha);
-        estado.simulado = seleccion.size() != 2;
         estado.mensaje = seleccion.size() == 2
             ? L"Confirma la sincronización para validar la duración de ambos videos."
             : L"Selecciona dos videos para iniciar la comparación.";
@@ -2710,7 +2704,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.0";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.1";
 
 class ServicioVersionModV2 final {
 public:
@@ -5864,9 +5858,19 @@ public:
         std::shared_ptr<ServicioComparadorArchivosV2> servicio)
         : m_servicio(std::move(servicio)) {}
 
+    void Liberar() override {
+        if (m_panel && GetCapture() == m_panel) ReleaseCapture();
+        m_estado = {};
+        m_modoDiffView = false;
+        m_panel = nullptr;
+        m_rcVolver = {};
+        m_rcBotonDiffView = {};
+        m_rcAreaEspecifica = {};
+        m_rcResumen = {};
+    }
+
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
-        m_archivos = archivos;
         m_modoDiffView = false;
         CargarComparacionComun(archivos);
     }
@@ -5974,10 +5978,8 @@ protected:
                                : EstadoComparadorArchivosV2{};
     }
 
-    const EstadoComparadorArchivosV2& EstadoComun() const { return m_estado; }
     const RECT& AreaEspecifica() const { return m_rcAreaEspecifica; }
     bool EstaEnDiffView() const { return m_modoDiffView; }
-    std::shared_ptr<ServicioComparadorArchivosV2> ServicioComun() const { return m_servicio; }
 
     void DibujarContenedor(HDC hdc, const RECT& rect, const TemaVisual& tema) const {
         if (rect.right <= rect.left || rect.bottom <= rect.top) return;
@@ -6119,7 +6121,6 @@ protected:
     RECT m_rcAreaEspecifica{};
     RECT m_rcResumen{};
     bool m_modoDiffView{false};
-    std::vector<std::wstring> m_archivos;
     EstadoComparadorArchivosV2 m_estado;
     std::shared_ptr<ServicioComparadorArchivosV2> m_servicio;
 };
@@ -6165,8 +6166,13 @@ public:
     }
 
     void Liberar() override {
+        if (m_panel && GetCapture() == m_panel) ReleaseCapture();
         LiberarReproductores();
+        m_estado = {};
+        m_arrastrandoTiempo = false;
+        m_hoverVideo = 0;
         m_panel = nullptr;
+        VistaComparadorArchivosV2::Liberar();
     }
 
     bool ProcesarMensajeVentana(UINT msg, WPARAM wParam, LPARAM,
@@ -6685,6 +6691,15 @@ public:
     explicit VistaComparadorTextoV2(std::shared_ptr<ServicioComparadorTextoV2> servicio)
         : VistaComparadorArchivosV2(servicio), m_diff(std::move(servicio)) {}
 
+    void Liberar() override {
+        m_estadoDiff = {};
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+        m_sliderActivo = 0;
+        VistaComparadorArchivosV2::Liberar();
+    }
+
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring& carpeta) override {
         VistaComparadorArchivosV2::AlCambiarSeleccion(archivos, carpeta);
@@ -6955,6 +6970,15 @@ public:
     explicit VistaComparadorDocumentosV2(
         std::shared_ptr<ServicioComparadorDocumentosV2> servicio)
         : VistaComparadorArchivosV2(servicio), m_diff(std::move(servicio)) {}
+
+    void Liberar() override {
+        m_estadoDiff = {};
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+        m_sliderActivo = 0;
+        VistaComparadorArchivosV2::Liberar();
+    }
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring& carpeta) override {
@@ -7547,6 +7571,16 @@ LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, 
 LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                           DWORD_PTR dwRefData);
 
+inline void LiberarVistaContenidoV2(EstadoPanelV2* estado) {
+    if (!estado || !estado->vistaContenido) return;
+    // Liberar es parte del contrato de la vista: desmonta reproductores,
+    // timers, capturas de ratón y cualquier backend que pueda mantener abierto
+    // un archivo. El shared_ptr se corta inmediatamente después para impedir
+    // que una vista contraída siga recibiendo eventos.
+    estado->vistaContenido->Liberar();
+    estado->vistaContenido.reset();
+}
+
 inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
     if (!estado) return;
     bool esperado = false;
@@ -7576,10 +7610,7 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
 
     LiberarBufferMemoria(estado);
 
-    if (estado->vistaContenido) {
-        estado->vistaContenido->Liberar();
-        estado->vistaContenido.reset();
-    }
+    LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
         DestroyWindow(estado->panel);
@@ -7717,6 +7748,11 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
 inline void CerrarEstado(EstadoPanelV2* estado) {
     if (!estado || !estado->abierto) return;
     estado->abierto = false;
+
+    // Contraer el panel no es sólo una operación visual. El contenido deja
+    // de estar activo y debe desmontarse para liberar handles de archivos,
+    // Media Foundation, callbacks y timers antes de ocultar la ventana.
+    LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
         KillTimer(estado->panel, 101);
@@ -7875,7 +7911,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         try {
         if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS &&
             estado->comparadorArchivosActivo) {
-            estado->vistaContenido->Liberar();
+            LiberarVistaContenidoV2(estado);
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora, true);
             estado->comparadorArchivosActivo = false;
@@ -7888,7 +7924,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         if (msg == WM_SIDEVIEW_SETTINGS) {
             if (estado->comparadorArchivosActivo &&
                 !EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-                estado->vistaContenido->Liberar();
+                LiberarVistaContenidoV2(estado);
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
                 estado->comparadorArchivosActivo = false;
@@ -7896,7 +7932,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 DisponerPanel(estado);
             } else if (!estado->comparadorArchivosActivo &&
                        EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-                estado->vistaContenido->Liberar();
+                LiberarVistaContenidoV2(estado);
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
                 estado->comparadorArchivosActivo = true;
@@ -7911,7 +7947,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         if (msg == WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS &&
             !estado->comparadorArchivosActivo &&
             EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-            estado->vistaContenido->Liberar();
+            LiberarVistaContenidoV2(estado);
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora);
             estado->comparadorArchivosActivo = true;
@@ -7991,7 +8027,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                                    EsComparadorArchivosActivoPorSeleccionV2(seleccion) !=
                                        estado->comparadorArchivosActivo ||
                                    !estado->vistaContenido) {
-                            if (estado->vistaContenido) estado->vistaContenido->Liberar();
+                            LiberarVistaContenidoV2(estado);
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
                             estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(seleccion);
                             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
@@ -8051,6 +8087,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         case WM_DESTROY: {
             if (estado) {
                 KillTimer(hwnd, 101);
+                LiberarVistaContenidoV2(estado);
                 LiberarBufferMemoria(estado);
             }
             return 0;

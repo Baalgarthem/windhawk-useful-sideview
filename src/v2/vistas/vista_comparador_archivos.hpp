@@ -19,9 +19,19 @@ public:
         std::shared_ptr<ServicioComparadorArchivosV2> servicio)
         : m_servicio(std::move(servicio)) {}
 
+    void Liberar() override {
+        if (m_panel && GetCapture() == m_panel) ReleaseCapture();
+        m_estado = {};
+        m_modoDiffView = false;
+        m_panel = nullptr;
+        m_rcVolver = {};
+        m_rcBotonDiffView = {};
+        m_rcAreaEspecifica = {};
+        m_rcResumen = {};
+    }
+
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
-        m_archivos = archivos;
         m_modoDiffView = false;
         CargarComparacionComun(archivos);
     }
@@ -129,10 +139,8 @@ protected:
                                : EstadoComparadorArchivosV2{};
     }
 
-    const EstadoComparadorArchivosV2& EstadoComun() const { return m_estado; }
     const RECT& AreaEspecifica() const { return m_rcAreaEspecifica; }
     bool EstaEnDiffView() const { return m_modoDiffView; }
-    std::shared_ptr<ServicioComparadorArchivosV2> ServicioComun() const { return m_servicio; }
 
     void DibujarContenedor(HDC hdc, const RECT& rect, const TemaVisual& tema) const {
         if (rect.right <= rect.left || rect.bottom <= rect.top) return;
@@ -274,7 +282,6 @@ protected:
     RECT m_rcAreaEspecifica{};
     RECT m_rcResumen{};
     bool m_modoDiffView{false};
-    std::vector<std::wstring> m_archivos;
     EstadoComparadorArchivosV2 m_estado;
     std::shared_ptr<ServicioComparadorArchivosV2> m_servicio;
 };

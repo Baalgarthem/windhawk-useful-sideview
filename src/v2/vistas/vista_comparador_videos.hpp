@@ -43,8 +43,13 @@ public:
     }
 
     void Liberar() override {
+        if (m_panel && GetCapture() == m_panel) ReleaseCapture();
         LiberarReproductores();
+        m_estado = {};
+        m_arrastrandoTiempo = false;
+        m_hoverVideo = 0;
         m_panel = nullptr;
+        VistaComparadorArchivosV2::Liberar();
     }
 
     bool ProcesarMensajeVentana(UINT msg, WPARAM wParam, LPARAM,
