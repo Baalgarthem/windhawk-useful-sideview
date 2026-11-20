@@ -317,7 +317,7 @@ private:
         DestroyMenu(hMenu);
 
         if (cmd > 0 && cmd <= static_cast<int>(m_formatosDisponibles.size())) {
-            m_formatoSeleccionado = m_formatosDisponibles[cmd - 1];
+            m_formatoSeleccionado = m_formatosDisponibles[static_cast<std::size_t>(cmd - 1)];
             InvalidateRect(hwndPadre, nullptr, FALSE);
         }
     }

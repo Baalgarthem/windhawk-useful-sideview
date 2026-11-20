@@ -14,6 +14,7 @@
 #include "v2/nucleo/servicio_persistencia_windhawk.hpp"
 #include "v2/nucleo/servicio_version_mod.hpp"
 #include "v2/nucleo/servicio_compatibilidad_gpu.hpp"
+#include "v2/nucleo/servicio_notas.hpp"
 #include <memory>
 namespace SideViewV2 {
 struct DependenciasVistaV2 {
@@ -22,6 +23,7 @@ struct DependenciasVistaV2 {
     std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia{std::make_shared<ServicioPersistenciaWindhawkV2>()};
     std::shared_ptr<ServicioVersionModV2> versionMod{std::make_shared<ServicioVersionModV2>()};
     std::shared_ptr<ServicioCompatibilidadGpuV2> compatibilidadGpu{std::make_shared<ServicioCompatibilidadGpuV2>()};
+    std::shared_ptr<ServicioNotasV2> notas{std::make_shared<ServicioNotasV2>(persistencia)};
     std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(persistencia, L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
     std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(persistencia, L"comprimidos")};
     std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(persistencia, L"imagenes")};

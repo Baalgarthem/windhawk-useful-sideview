@@ -171,7 +171,7 @@ private:
         if (resultado.pesadas.size() > limite) resultado.pesadas.resize(limite);
         for (auto& carpeta : resultado.pesadas) {
             carpeta.porcentaje = totalCompleto > 0
-                ? (static_cast<double>(carpeta.tamanoBytes) / totalCompleto) * 100.0
+                ? (static_cast<double>(carpeta.tamanoBytes) / static_cast<double>(totalCompleto)) * 100.0
                 : 0.0;
         }
     }

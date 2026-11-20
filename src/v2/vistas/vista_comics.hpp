@@ -192,7 +192,7 @@ private:
         const wchar_t* opciones[] = {L".cbz", L".cbr", L".cb7", L".cbt", L".cba", L".zip", L".rar"};
         for (UINT i = 0; i < ARRAYSIZE(opciones); ++i) AppendMenuW(menu, MF_STRING, i + 1, opciones[i]);
         POINT p{m_rcCambiarExtension.left, m_rcCambiarExtension.bottom}; ClientToScreen(hwnd, &p);
-        UINT cmd = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hwnd, nullptr);
+        UINT cmd = static_cast<UINT>(TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hwnd, nullptr));
         DestroyMenu(menu);
         if (cmd >= 1 && cmd <= ARRAYSIZE(opciones)) {
             size_t cantidad = m_extensiones->Cambiar(m_archivos, opciones[cmd - 1]);

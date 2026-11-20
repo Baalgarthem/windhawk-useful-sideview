@@ -106,7 +106,8 @@ public:
             case TipoVistaContenido::Carpetas:
                 vista = std::make_shared<VistaCarpetas>(Dependencias().abrirConCarpetas,
                     Dependencias().navegacion, Dependencias().fusionCarpetas,
-                    Dependencias().inspeccionCarpetas, Dependencias().versionMod);
+                    Dependencias().inspeccionCarpetas, Dependencias().versionMod,
+                    Dependencias().notas);
                 break;
 
             case TipoVistaContenido::Texto:

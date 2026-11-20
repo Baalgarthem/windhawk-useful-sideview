@@ -58,7 +58,7 @@ inline void ConfigurarAtajoDesdeString(const wchar_t* strAtajo) {
     if (s.find(L"SPACE") != std::wstring::npos) vk = VK_SPACE;
     for (int numero = 12; numero >= 1; --numero) {
         if (s.find(L"F" + std::to_wstring(numero)) != std::wstring::npos) {
-            vk = VK_F1 + numero - 1;
+            vk = static_cast<DWORD>(VK_F1 + numero - 1);
             break;
         }
     }

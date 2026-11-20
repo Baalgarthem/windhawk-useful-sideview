@@ -113,13 +113,15 @@ public:
                            std::shared_ptr<ServicioNavegacionV2> navegacion,
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
                            std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
-                           std::shared_ptr<ServicioVersionModV2> versionMod)
+                           std::shared_ptr<ServicioVersionModV2> versionMod,
+                           std::shared_ptr<ServicioNotasV2> notas)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
           m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
-          m_versionMod(std::move(versionMod)) {
+          m_versionMod(std::move(versionMod)), m_notas(std::move(notas)) {
         m_programasRecordados = m_servicio ? m_servicio->Programas()
                                            : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
+        if (m_notas) m_notas->Cargar();
     }
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
@@ -130,6 +132,11 @@ public:
         m_nivelExpansionMax = 1; // 1 = Raíz, 2 = Nivel 1, 3 = Nivel 2, 4 = Todo
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
 
+        if (m_carpetasSeleccionadas.empty() && m_notas) {
+            m_notas->Recargar();
+            m_notaSeleccionada = 0;
+            m_mostrarDetalleNota = false;
+        }
         CargarCarpetaActual();
     }
 
@@ -137,6 +144,7 @@ public:
         int limiteAnterior = m_limiteCarpetasPesadas;
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
         if (limiteAnterior != m_limiteCarpetasPesadas) CargarCarpetaActual();
+        if (m_carpetasSeleccionadas.empty() && m_notas) m_notas->Recargar();
     }
 
     bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) override {
@@ -235,6 +243,62 @@ public:
             if (PtInRect(&m_rcBotonCopiarContenido, pt)) {
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
+            }
+            if (m_carpetasSeleccionadas.empty() && m_notas) {
+                if (PtInRect(&m_rcBotonNuevaNota, pt)) {
+                    if (m_notas->EditarConPrompt(hwndPanel, 0, true)) {
+                        m_notas->Recargar();
+                        m_mostrarDetalleNota = false;
+                        m_notaSeleccionada = m_notas->Notas().empty() ? 0 : m_notas->Notas().front().id;
+                        InvalidateRect(hwndPanel, nullptr, FALSE);
+                    }
+                    return true;
+                }
+                if (PtInRect(&m_rcBotonSincronizarNotas, pt)) {
+                    const ResultadoSincronizacionNotasV2 resultado = m_notas->ForzarSincronizacion();
+                    m_notaSeleccionada = 0;
+                    m_mostrarDetalleNota = false;
+                    MessageBoxW(hwndPanel, resultado.mensaje.c_str(), L"Useful Side View - Notas", MB_OK |
+                                (resultado.realizada ? MB_ICONINFORMATION : MB_ICONWARNING));
+                    InvalidateRect(hwndPanel, nullptr, FALSE);
+                    return true;
+                }
+                if (m_mostrarDetalleNota) {
+                    if (PtInRect(&m_rcBotonVolverNotas, pt)) {
+                        m_mostrarDetalleNota = false;
+                        InvalidateRect(hwndPanel, nullptr, FALSE);
+                        return true;
+                    }
+                    if (PtInRect(&m_rcBotonEditarNota, pt) && m_notaSeleccionada > 0) {
+                        if (m_notas->EditarConPrompt(hwndPanel, m_notaSeleccionada, false)) {
+                            m_notas->Recargar();
+                            InvalidateRect(hwndPanel, nullptr, FALSE);
+                        }
+                        return true;
+                    }
+                    if (PtInRect(&m_rcBotonCopiarNota, pt) && m_notaSeleccionada > 0) {
+                        m_notas->Copiar(hwndPanel, m_notaSeleccionada);
+                        return true;
+                    }
+                    if (PtInRect(&m_rcBotonEliminarNota, pt) && m_notaSeleccionada > 0) {
+                        if (MessageBoxW(hwndPanel, L"¿Eliminar esta nota?", L"Useful Side View - Notas",
+                                        MB_YESNO | MB_ICONQUESTION) == IDYES) {
+                            m_notas->Eliminar(m_notaSeleccionada);
+                            m_notaSeleccionada = 0;
+                            m_mostrarDetalleNota = false;
+                            InvalidateRect(hwndPanel, nullptr, FALSE);
+                        }
+                        return true;
+                    }
+                } else if (PtInRect(&m_rcCajaNotas, pt)) {
+                    const int indice = (pt.y - m_rcCajaNotas.top) / 42;
+                    if (indice >= 0 && indice < static_cast<int>(m_notas->Notas().size())) {
+                        m_notaSeleccionada = m_notas->Notas()[static_cast<std::size_t>(indice)].id;
+                        m_mostrarDetalleNota = true;
+                        InvalidateRect(hwndPanel, nullptr, FALSE);
+                    }
+                    return true;
+                }
             }
             // El acceso permanece visible en la vista general, pero el
             // comparador sólo se activa al seleccionar exactamente dos videos.
@@ -368,6 +432,13 @@ public:
         m_rcBotonCompararVideos = {};
         m_rcBotonFusionCarpetas = {};
         m_rcBotonEliminarVacias = {};
+        m_rcBotonNuevaNota = {};
+        m_rcBotonSincronizarNotas = {};
+        m_rcCajaNotas = {};
+        m_rcBotonVolverNotas = {};
+        m_rcBotonEditarNota = {};
+        m_rcBotonCopiarNota = {};
+        m_rcBotonEliminarNota = {};
 
         // 3. SECCIÓN ESTRUCTURA DE ARCHIVOS (Árbol Jerárquico)
         SelectObject(hdc, fuentePequena);
@@ -493,6 +564,10 @@ public:
 
         yCursor += 38;
 
+        if (m_carpetasSeleccionadas.empty() && m_notas) {
+            DibujarNotas(hdc, rect, tema, fuentePequena, fuenteSubtitulo, fuenteBold, yCursor);
+        }
+
         // Acceso fijo del comparador experimental. El flujo real se activa
         // automáticamente cuando Explorer entrega dos videos seleccionados.
         if (m_carpetasSeleccionadas.empty()) {
@@ -566,12 +641,13 @@ public:
                     SelectObject(hdc, fuenteSubtitulo);
                     SetTextColor(hdc, tema.textoPrincipal);
                     RECT rcNomP{rcPesada.left + 10, rcPesada.top + 2, rcPesada.right - 90, rcPesada.top + 18};
-                    DrawTextW(hdc, m_topCarpetasPesadas[i].nombre.c_str(), -1, &rcNomP,
+                    const std::size_t indicePesada = static_cast<std::size_t>(i);
+                    DrawTextW(hdc, m_topCarpetasPesadas[indicePesada].nombre.c_str(), -1, &rcNomP,
                               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
                     SetTextColor(hdc, tema.acento);
                     RECT rcTamP{rcPesada.right - 85, rcPesada.top + 2, rcPesada.right - 10, rcPesada.top + 18};
-                    std::wstring strPesadaTam = FormatearTamano(m_topCarpetasPesadas[i].tamanoBytes);
+                    std::wstring strPesadaTam = FormatearTamano(m_topCarpetasPesadas[indicePesada].tamanoBytes);
                     DrawTextW(hdc, strPesadaTam.c_str(), -1, &rcTamP,
                               DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
@@ -581,7 +657,7 @@ public:
                     FillRect(hdc, &rcBarraFondo, brBkgBar);
                     DeleteObject(brBkgBar);
 
-                    int anchoLleno = static_cast<int>((rcBarraFondo.right - rcBarraFondo.left) * (m_topCarpetasPesadas[i].porcentaje / 100.0));
+                    int anchoLleno = static_cast<int>(static_cast<double>(rcBarraFondo.right - rcBarraFondo.left) * (m_topCarpetasPesadas[indicePesada].porcentaje / 100.0));
                     RECT rcBarraProg{rcBarraFondo.left, rcBarraFondo.top, rcBarraFondo.left + anchoLleno, rcBarraFondo.bottom};
                     HBRUSH brFillBar = CreateSolidBrush(tema.acento);
                     FillRect(hdc, &rcBarraProg, brFillBar);
@@ -602,6 +678,114 @@ public:
     }
 
 private:
+    void DibujarNotas(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                      HFONT fuentePequena, HFONT fuenteSubtitulo, HFONT fuenteBold,
+                      int& yCursor) {
+        const int margen = 16;
+        SelectObject(hdc, fuentePequena);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT etiqueta{rect.left + margen, yCursor, rect.right - margen, yCursor + 16};
+        const auto& notas = m_notas->Notas();
+        int nativas = 0;
+        int winklok = 0;
+        for (const auto& nota : notas) {
+            if (nota.fuente == FuenteNotaV2::WinKlok) ++winklok;
+            else ++nativas;
+        }
+        std::wstring textoEtiqueta = L"NOTAS  ·  " + std::to_wstring(nativas) + L" nativas";
+        if (winklok > 0) textoEtiqueta += L"  ·  " + std::to_wstring(winklok) + L" WinKlok";
+        DrawTextW(hdc, textoEtiqueta.c_str(), -1, &etiqueta, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        yCursor += 20;
+        const int anchoMitad = ((rect.right - rect.left) - (margen * 2) - 8) / 2;
+        m_rcBotonNuevaNota = {rect.left + margen, yCursor, rect.left + margen + anchoMitad, yCursor + 30};
+        m_rcBotonSincronizarNotas = {m_rcBotonNuevaNota.right + 8, yCursor, rect.right - margen, yCursor + 30};
+        DibujarBoton(hdc, m_rcBotonNuevaNota, L"📝 Nueva nota", tema, true);
+        DibujarBoton(hdc, m_rcBotonSincronizarNotas, L"⟳ Forzar sincronización", tema, m_notas->WinKlokDisponible());
+        yCursor += 38;
+
+        const int altoDisponible = std::max(90, static_cast<int>(rect.bottom - yCursor - 92));
+        const int altoCaja = std::min(190, altoDisponible);
+        m_rcCajaNotas = {rect.left + margen, yCursor, rect.right - margen, yCursor + altoCaja};
+        DibujarContenedor(hdc, m_rcCajaNotas, tema);
+
+        if (m_mostrarDetalleNota) {
+            const NotaV2* nota = m_notas->Buscar(m_notaSeleccionada);
+            if (!nota) {
+                m_mostrarDetalleNota = false;
+                m_notaSeleccionada = 0;
+            } else {
+                const int anchoBoton = std::max(70, static_cast<int>((m_rcCajaNotas.right - m_rcCajaNotas.left - 42) / 4));
+                int xBoton = m_rcCajaNotas.left + 8;
+                m_rcBotonVolverNotas = {xBoton, m_rcCajaNotas.top + 8, xBoton + anchoBoton, m_rcCajaNotas.top + 32};
+                xBoton += anchoBoton + 6;
+                m_rcBotonEditarNota = {xBoton, m_rcCajaNotas.top + 8, xBoton + anchoBoton, m_rcCajaNotas.top + 32};
+                xBoton += anchoBoton + 6;
+                m_rcBotonCopiarNota = {xBoton, m_rcCajaNotas.top + 8, xBoton + anchoBoton, m_rcCajaNotas.top + 32};
+                xBoton += anchoBoton + 6;
+                m_rcBotonEliminarNota = {xBoton, m_rcCajaNotas.top + 8, m_rcCajaNotas.right - 8, m_rcCajaNotas.top + 32};
+                DibujarBoton(hdc, m_rcBotonVolverNotas, L"Volver", tema, true);
+                DibujarBoton(hdc, m_rcBotonEditarNota, L"Editar", tema, true);
+                DibujarBoton(hdc, m_rcBotonCopiarNota, L"Copiar", tema, true);
+                DibujarBoton(hdc, m_rcBotonEliminarNota, L"Eliminar", tema, true);
+
+                SelectObject(hdc, fuenteBold);
+                SetTextColor(hdc, tema.textoPrincipal);
+                RECT titulo{m_rcCajaNotas.left + 10, m_rcCajaNotas.top + 38, m_rcCajaNotas.right - 10, m_rcCajaNotas.top + 60};
+                DrawTextW(hdc, nota->titulo.c_str(), -1, &titulo, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                SelectObject(hdc, fuentePequena);
+                SetTextColor(hdc, nota->fuente == FuenteNotaV2::WinKlok ? tema.acento : tema.textoSecundario);
+                RECT origen{m_rcCajaNotas.left + 10, m_rcCajaNotas.top + 60, m_rcCajaNotas.right - 10, m_rcCajaNotas.top + 78};
+                DrawTextW(hdc, nota->fuente == FuenteNotaV2::WinKlok ? L"Origen: WinKlok" :
+                          (nota->idWinKlok > 0 ? L"Origen: Useful Side View · sincronizada" : L"Origen: Useful Side View"),
+                          -1, &origen, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                SelectObject(hdc, fuenteSubtitulo);
+                SetTextColor(hdc, tema.textoPrincipal);
+                RECT cuerpo{m_rcCajaNotas.left + 10, m_rcCajaNotas.top + 82, m_rcCajaNotas.right - 10, m_rcCajaNotas.bottom - 8};
+                DrawTextW(hdc, nota->cuerpo.empty() ? L"(Nota vacía)" : nota->cuerpo.c_str(), -1, &cuerpo,
+                          DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+            }
+        }
+
+        if (!m_mostrarDetalleNota) {
+            if (notas.empty()) {
+                SelectObject(hdc, fuenteSubtitulo);
+                SetTextColor(hdc, tema.textoSecundario);
+                RECT vacio = m_rcCajaNotas;
+                DrawTextW(hdc, L"(No hay notas. Crea una para comenzar.)", -1, &vacio,
+                          DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            } else {
+                HRGN clip = CreateRectRgn(m_rcCajaNotas.left + 2, m_rcCajaNotas.top + 2,
+                                          m_rcCajaNotas.right - 2, m_rcCajaNotas.bottom - 2);
+                SelectClipRgn(hdc, clip);
+                int yNota = m_rcCajaNotas.top + 6;
+                for (const auto& nota : notas) {
+                    RECT tarjeta{m_rcCajaNotas.left + 6, yNota, m_rcCajaNotas.right - 6, yNota + 36};
+                    SelectObject(hdc, fuenteBold);
+                    SetTextColor(hdc, tema.textoPrincipal);
+                    RECT titulo{tarjeta.left + 8, tarjeta.top + 2, tarjeta.right - 112, tarjeta.top + 19};
+                    DrawTextW(hdc, nota.titulo.empty() ? L"Sin título" : nota.titulo.c_str(), -1, &titulo,
+                              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    SelectObject(hdc, fuentePequena);
+                    SetTextColor(hdc, nota.fuente == FuenteNotaV2::WinKlok ? tema.acento : tema.textoSecundario);
+                    RECT origen{tarjeta.right - 106, tarjeta.top + 2, tarjeta.right - 8, tarjeta.top + 19};
+                    DrawTextW(hdc, nota.fuente == FuenteNotaV2::WinKlok ? L"WinKlok" :
+                              (nota.idWinKlok > 0 ? L"Nativa · sync" : L"Nativa"), -1, &origen,
+                              DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                    SetTextColor(hdc, tema.textoSecundario);
+                    RECT resumen{tarjeta.left + 8, tarjeta.top + 19, tarjeta.right - 8, tarjeta.bottom - 2};
+                    DrawTextW(hdc, nota.cuerpo.empty() ? L"(vacía)" : nota.cuerpo.c_str(), -1, &resumen,
+                              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+                    yNota += 42;
+                    if (yNota > m_rcCajaNotas.bottom) break;
+                }
+                SelectClipRgn(hdc, nullptr);
+                DeleteObject(clip);
+            }
+        }
+        yCursor += altoCaja + 12;
+    }
+
     void CargarCarpetaActual() {
         m_elementosArbol.clear();
         m_tamanoTotalBytes = 0;
@@ -719,7 +903,7 @@ private:
                 InvalidateRect(hwndPadre, nullptr, FALSE);
             }
         } else if (cmd > 0 && cmd <= static_cast<int>(m_programasRecordados.size())) {
-            m_servicio->Seleccionar(m_programasRecordados[cmd - 1]);
+            m_servicio->Seleccionar(m_programasRecordados[static_cast<std::size_t>(cmd - 1)]);
             InvalidateRect(hwndPadre, nullptr, FALSE);
         }
     }
@@ -741,7 +925,7 @@ private:
 
         std::wstring textoAcumulado = L"Contenido de: " + ruta + L"\r\n\r\n";
         for (const auto& item : m_elementosArbol) {
-            std::wstring sangria(item.nivelJerarquia * 2, L' ');
+            std::wstring sangria(static_cast<std::size_t>(item.nivelJerarquia * 2), L' ');
             textoAcumulado += sangria + (item.esDirectorio ? L"[CARPETA] " : L"  ") + item.nombre;
             if (!item.esDirectorio) {
                 textoAcumulado += L" (" + FormatearTamano(item.tamanoBytes) + L")";
@@ -893,6 +1077,9 @@ private:
     std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
     std::shared_ptr<ServicioVersionModV2> m_versionMod;
+    std::shared_ptr<ServicioNotasV2> m_notas;
+    int m_notaSeleccionada{0};
+    bool m_mostrarDetalleNota{false};
     bool m_fusionEnCurso{false};
     std::wstring m_destinoFusion;
 
@@ -909,6 +1096,13 @@ private:
     RECT m_rcBotonEliminarVacias{};
     RECT m_rcBotonLimitePesadas{};
     RECT m_rcCajaPesadas{};
+    RECT m_rcBotonNuevaNota{};
+    RECT m_rcBotonSincronizarNotas{};
+    RECT m_rcCajaNotas{};
+    RECT m_rcBotonVolverNotas{};
+    RECT m_rcBotonEditarNota{};
+    RECT m_rcBotonCopiarNota{};
+    RECT m_rcBotonEliminarNota{};
 };
 
 } // namespace SideViewV2

@@ -1,4 +1,4 @@
-# Useful Side View 4.0.3
+# Useful Side View 4.0.4
 
 **Useful Side View** es un mod para [Windhawk](https://windhawk.net/) que transforma el panel de vista previa de Windows 11 (`Alt + P`) en una suite multimedia integral, ultrarrápida y responsiva para videos, imágenes, cómics, archivos comprimidos y documentos Markdown.
 
@@ -57,6 +57,12 @@
   superpone sobre su renderer GPU sin redimensionar ni interferir con su
   superficie DirectComposition; la selección y navegación continúan usando el
   contrato Shell nativo.
+
+### 🗒️ 8. Toolbox de notas y compatibilidad WinKlok
+- La vista general de carpetas incluye notas persistentes con título, contenido, edición, copia y eliminación.
+- Las notas propias se guardan en el almacenamiento local nativo del mod mediante fragmentos acotados para no perder cuerpos largos.
+- Si WinKlok está instalado, se lee y escribe su formato real de `noteIds`, `noteNext` y `note<ID>`; cada nota muestra si su origen es Useful Side View, WinKlok o una nota nativa sincronizada.
+- **Forzar sincronización** permite preparar el almacén de WinKlok aunque esté desactivado, para que ambos mods encuentren la información al volver a iniciarse.
 
 ---
 
