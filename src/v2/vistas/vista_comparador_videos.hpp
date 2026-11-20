@@ -28,6 +28,7 @@ public:
                                : EstadoComparadorVideosV2{};
         m_arrastrandoTiempo = false;
         m_hoverVideo = 0;
+        m_resumenExpandido = false;
         if (m_panel) MontarReproductores();
     }
 
@@ -79,6 +80,8 @@ public:
             int hoverNuevo = 0;
             if (PtInRect(&m_rcBotonFullIzquierda, punto)) hoverNuevo = 1;
             else if (PtInRect(&m_rcBotonFullDerecha, punto)) hoverNuevo = 2;
+            else if (PtInRect(&m_rcVistaLadoLado, punto)) hoverNuevo = 6;
+            else if (PtInRect(&m_rcBotonResumen, punto)) hoverNuevo = 5;
             else if (PtInRect(&m_rcVideoIzquierda, punto)) hoverNuevo = 3;
             else if (PtInRect(&m_rcVideoDerecha, punto)) hoverNuevo = 4;
             if (hoverNuevo != m_hoverVideo) {
@@ -118,6 +121,16 @@ public:
                 InvalidateRect(hwndPanel, nullptr, FALSE);
                 return true;
             }
+            if (PtInRect(&m_rcVistaLadoLado, punto)) {
+                if (m_servicio) m_servicio->SalirPantallaCompleta(m_estado);
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+                return true;
+            }
+        }
+        if (PtInRect(&m_rcBotonResumen, punto)) {
+            m_resumenExpandido = !m_resumenExpandido;
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
         }
         if (PtInRect(&m_rcLineaTiempo, punto)) {
             m_arrastrandoTiempo = true;
@@ -196,12 +209,26 @@ public:
         const int altoCliente = static_cast<int>(rect.bottom - rect.top);
         const int ancho = std::max(1, anchoCliente);
         const int anchoVideo = std::max(1, (ancho - margen * 2 - espacio) / 2);
-        const int altoVideo = std::max(220, std::min(520, altoCliente / 2));
         const int yVideo = rect.top + 52;
+        const int altoResumen = m_resumenExpandido ? 148 : 36;
+        const int espacioPosteriorVideo = 18 + 34 + 8 + 30 + 46 + altoResumen + margen;
+        const int altoVideoBase = std::max(220, std::min(520, altoCliente / 2));
+        const int altoVideo = m_resumenExpandido
+            ? altoVideoBase
+            : std::max(220, std::min(760,
+                  altoCliente - yVideo - espacioPosteriorVideo));
 
         m_rcVolver = {rect.left + margen, rect.top + 12,
                       rect.left + 124, rect.top + 40};
         DibujarBoton(hdc, m_rcVolver, L"←  Volver", tema, true);
+        m_rcVistaLadoLado = {};
+        if (m_estado.modoPantallaCompleta &&
+            ComparadorVideosPantallaCompletaDisponibleV2()) {
+            m_rcVistaLadoLado = {rect.right - margen - 154, rect.top + 12,
+                                 rect.right - margen, rect.top + 40};
+            DibujarBoton(hdc, m_rcVistaLadoLado, L"↔  Lado a lado", tema,
+                         m_hoverVideo == 6);
+        }
 
         if (m_estado.modoPantallaCompleta &&
             ComparadorVideosPantallaCompletaDisponibleV2()) {
@@ -255,45 +282,57 @@ public:
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         const int yInfo = yBotones + 46;
-        RECT info{rect.left + margen, yInfo, rect.right - margen,
-                  std::max(yInfo + 148, static_cast<int>(rect.bottom - margen))};
+        const int limiteInferiorResumen = static_cast<int>(rect.bottom) - margen;
+        const int fondoResumen = std::max(yInfo + 36,
+            std::min(limiteInferiorResumen, yInfo + altoResumen));
+        m_rcResumen = {rect.left + margen, yInfo, rect.right - margen,
+                       fondoResumen};
+        RECT info = m_rcResumen;
         DibujarContenedor(hdc, info, tema);
         SelectObject(hdc, negrita);
         SetTextColor(hdc, tema.textoPrincipal);
         RECT tituloInfo{info.left + 12, info.top + 10,
-                        info.right - 12, info.top + 32};
+                        info.right - 132, info.top + 32};
         DrawTextW(hdc, L"INFORMACIÓN DE LA COMPARACIÓN", -1, &tituloInfo,
                   DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-        SelectObject(hdc, texto);
-        DibujarDato(hdc, info, m_estado.izquierda, L"Video 1", 0, tema);
-        DibujarDato(hdc, info, m_estado.derecha, L"Video 2", 1, tema);
-        SetTextColor(hdc, tema.acento);
-        RECT diferencia{info.left + 12, info.bottom - 30,
-                        info.right - 12, info.bottom - 10};
-        std::wstring diferenciaTexto = L"Diferencia de peso: " +
-            (m_servicio ? m_servicio->FormatearDiferencia(
-                m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
-        DrawTextW(hdc, diferenciaTexto.c_str(), -1, &diferencia,
-                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        m_rcBotonResumen = {info.right - 120, info.top + 4,
+                            info.right - 12, info.top + 30};
+        DibujarBoton(hdc, m_rcBotonResumen,
+                     m_resumenExpandido ? L"Contraer" : L"Expandir", tema,
+                     m_hoverVideo == 5);
 
-        SetTextColor(hdc, tema.textoSecundario);
-        RECT hashIzquierda{info.left + 12, info.top + 124,
-                           info.left + (info.right - info.left) / 2 - 12,
-                           info.top + 144};
-        RECT hashDerecha{info.left + (info.right - info.left) / 2 + 12,
-                         info.top + 124, info.right - 12, info.top + 144};
-        std::wstring shaIzquierda = L"SHA-256: " + m_estado.izquierda.sha256;
-        std::wstring shaDerecha = L"SHA-256: " + m_estado.derecha.sha256;
-        DrawTextW(hdc, shaIzquierda.c_str(), -1, &hashIzquierda,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        DrawTextW(hdc, shaDerecha.c_str(), -1, &hashDerecha,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        if (m_resumenExpandido) {
+            SelectObject(hdc, texto);
+            DibujarDato(hdc, info, m_estado.izquierda, L"Video 1", 0, tema);
+            DibujarDato(hdc, info, m_estado.derecha, L"Video 2", 1, tema);
+            SetTextColor(hdc, tema.acento);
+            RECT diferencia{info.left + 12, info.bottom - 30,
+                            info.right - 12, info.bottom - 10};
+            std::wstring diferenciaTexto = L"Diferencia de peso: " +
+                (m_servicio ? m_servicio->FormatearDiferencia(
+                    m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
+            DrawTextW(hdc, diferenciaTexto.c_str(), -1, &diferencia,
+                      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
 
-        SetTextColor(hdc, tema.textoSecundario);
-        RECT mensaje{info.left + 12, info.top + 34,
-                     info.right - 12, info.top + 54};
-        DrawTextW(hdc, m_estado.mensaje.c_str(), -1, &mensaje,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            SetTextColor(hdc, tema.textoSecundario);
+            RECT hashIzquierda{info.left + 12, info.top + 124,
+                               info.left + (info.right - info.left) / 2 - 12,
+                               info.top + 144};
+            RECT hashDerecha{info.left + (info.right - info.left) / 2 + 12,
+                             info.top + 124, info.right - 12, info.top + 144};
+            std::wstring shaIzquierda = L"SHA-256: " + m_estado.izquierda.sha256;
+            std::wstring shaDerecha = L"SHA-256: " + m_estado.derecha.sha256;
+            DrawTextW(hdc, shaIzquierda.c_str(), -1, &hashIzquierda,
+                      DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DrawTextW(hdc, shaDerecha.c_str(), -1, &hashDerecha,
+                      DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+            SetTextColor(hdc, tema.textoSecundario);
+            RECT mensaje{info.left + 12, info.top + 34,
+                         info.right - 12, info.top + 54};
+            DrawTextW(hdc, m_estado.mensaje.c_str(), -1, &mensaje,
+                      DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
 
         if (m_hoverVideo >= 3 && m_hoverVideo <= 4) {
             const DatosVideoComparacionV2& video = m_hoverVideo == 3
@@ -542,11 +581,15 @@ private:
     RECT m_rcVideoDerecha{};
     RECT m_rcBotonFullIzquierda{};
     RECT m_rcBotonFullDerecha{};
+    RECT m_rcVistaLadoLado{};
+    RECT m_rcResumen{};
+    RECT m_rcBotonResumen{};
     RECT m_rcLineaTiempo{};
     RECT m_rcRetroceder{};
     RECT m_rcReproducir{};
     RECT m_rcAvanzar{};
     RECT m_rcConfirmarSincronizacion{};
+    bool m_resumenExpandido{false};
 };
 
 } // namespace SideViewV2

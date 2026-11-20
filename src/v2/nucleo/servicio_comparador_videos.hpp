@@ -63,6 +63,11 @@ public:
             estado.indicePantallaCompleta = 1 - estado.indicePantallaCompleta;
     }
 
+    void SalirPantallaCompleta(EstadoComparadorVideosV2& estado) const {
+        estado.modoPantallaCompleta = false;
+        estado.indicePantallaCompleta = 0;
+    }
+
     void AlternarEstadoReproduccion(EstadoComparadorVideosV2& estado,
                                     IReproductorVideoV2* izquierda,
                                     IReproductorVideoV2* derecha) const {
