@@ -4,6 +4,7 @@
 #include "v2/ui/ventana_base.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include "v2/nucleo/servicio_com.hpp"
+#include "v2/nucleo/configuracion_v2.hpp"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -111,9 +112,11 @@ public:
     explicit VistaCarpetas(std::shared_ptr<ServicioAbrirConV2> servicio,
                            std::shared_ptr<ServicioNavegacionV2> navegacion,
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
-                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion)
+                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
+                           std::shared_ptr<ServicioVersionModV2> versionMod)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
-          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)) {
+          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
+          m_versionMod(std::move(versionMod)) {
         m_programasRecordados = m_servicio ? m_servicio->Programas()
                                            : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
@@ -344,6 +347,10 @@ public:
         std::wstring strSub = L"Peso total: " + FormatearTamano(m_tamanoTotalBytes) +
                               L" • " + std::to_wstring(m_totalSubcarpetas) + L" carpetas, " +
                               std::to_wstring(m_totalArchivos) + L" archivos";
+        if (m_carpetasSeleccionadas.empty() && MostrarVersionModDisponibleV2() &&
+            m_versionMod) {
+            strSub += L" • " + m_versionMod->TextoVersion();
+        }
         RECT rectTextoSub{rect.left + 16, rect.top + 28, rect.right - 90, rect.top + 46};
         DrawTextW(hdc, strSub.c_str(), -1, &rectTextoSub,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -885,6 +892,7 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
+    std::shared_ptr<ServicioVersionModV2> m_versionMod;
     bool m_fusionEnCurso{false};
     std::wstring m_destinoFusion;
 

@@ -1,4 +1,4 @@
-# Useful Side View 4.0.0
+# Useful Side View 4.0.2
 
 **Useful Side View** es un mod para [Windhawk](https://windhawk.net/) que transforma el panel de vista previa de Windows 11 (`Alt + P`) en una suite multimedia integral, ultrarrápida y responsiva para videos, imágenes, cómics, archivos comprimidos y documentos Markdown.
 
@@ -43,6 +43,17 @@
 - Los errores de formato o archivos corruptos se muestran dentro del espacio reservado, sin reiniciar Explorer.
 - El backend permanece aislado en `ServicioReproductorVideoV2` y `ServicioComparadorVideosV2` para poder sustituirlo o retirarlo sin afectar las demás vistas.
 
+### 🔎 7. Comparadores generales y persistencia nativa
+- Dos archivos del mismo tipo activan el comparador correspondiente: general,
+  texto/diff, documentos o video.
+- El comparador general muestra nombres, peso y SHA-256; el diff de texto usa
+  una vista de dos columnas estilo GitHub.
+- Los programas elegidos en “Abrir con” se guardan con la persistencia nativa
+  de Windhawk por categoría, sobreviven a reinicios de Explorer y se migran
+  desde el formato anterior sin perder datos.
+- La opción **Mostrar versión del mod** expone `Useful Side View v4.0.2` en la
+  vista general de carpetas cuando está activada.
+
 ---
 
 ## 🚀 Instalación y Compilación
@@ -54,7 +65,7 @@
    - Los errores y operaciones quedan registrados en `dist/compilador.log`.
 
 2. **Herramientas de despliegue y calidad (Avanzado)**:
-   - El flujo universal incorpora las validaciones de versionado, bundle, inyección y Git del antiguo Deployment Manager.
+   - `compilador.ps1` incorpora las validaciones de versión, bundle, inyección y Git; acepta un mensaje personalizado o uno genérico para patch, minor y major.
 
 3. **Carga en Windhawk**:
    - Carga el archivo generado en [`dist/useful-sideview.wh.cpp`](file:///D:/Development/windhawk-development/windhawk-useful-sideview/dist/useful-sideview.wh.cpp) como mod local en Windhawk.

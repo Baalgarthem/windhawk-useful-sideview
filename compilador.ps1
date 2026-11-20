@@ -71,6 +71,18 @@ function Assert-Bundle($path) {
     }
     return $info
 }
+function Assert-VersionSynchronized($bundlePath, $expectedVersion) {
+    $bundle = Get-Content -Raw -LiteralPath $bundlePath -ErrorAction Stop
+    $matchMetadata = [regex]::Match($bundle, '(?m)^//\s*@version\s+([0-9]+\.[0-9]+\.[0-9]+)')
+    $matchConstante = [regex]::Match($bundle, 'VERSION_MOD_V2\[\]\s*=\s*L"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $matchMetadata.Success -or -not $matchConstante.Success) {
+        throw "El bundle no contiene metadato y constante de versión verificables: $bundlePath"
+    }
+    if ($matchMetadata.Groups[1].Value -ne $expectedVersion -or
+        $matchConstante.Groups[1].Value -ne $expectedVersion) {
+        throw "Versión desincronizada en el bundle: esperado $expectedVersion, metadato $($matchMetadata.Groups[1].Value), constante $($matchConstante.Groups[1].Value)."
+    }
+}
 function Invoke-Step($title, [scriptblock]$action) {
     try { Log "INICIO: $title"; & $action; Log "OK: $title" }
     catch {
@@ -80,6 +92,7 @@ function Invoke-Step($title, [scriptblock]$action) {
     }
 }
 function Build-Bundle {
+    $version = Get-Version
     $python = Require-Tool 'python' 'Python.Python.3.12'
     $combiner = Join-Path $root 'tools\combiner\combine.py'
     $entrypoint = Join-Path $root 'src\main.wh.cpp'
@@ -94,6 +107,7 @@ function Build-Bundle {
         $salida | ForEach-Object { Log $_.ToString() }
         if ($codigo -ne 0) { throw "El combinador terminó con código $codigo." }
         Assert-Bundle $temp | Out-Null
+        Assert-VersionSynchronized $temp $version
         Move-Item -LiteralPath $temp -Destination $output -Force
     } finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force }
@@ -109,37 +123,67 @@ function Build-Bundle {
         throw 'La compilación no dejó exactamente un único bundle final en dist.'
     }
     Assert-Bundle $output | Out-Null
-    Log "Bundle V2 generado: $output"
+    Assert-VersionSynchronized $output $version
+    Log "Bundle V2 generado y sincronizado en versión ${version}: $output"
 }
 function Get-Version {
-    $text = Get-Content -Raw -LiteralPath (Join-Path $root 'src\useful-sideview-v2.cpp')
-    if ($text -match '(?m)^//\s*@version\s+([0-9]+\.[0-9]+\.[0-9]+)') { return $matches[1] }
-    throw 'No se encontró @version en el entrypoint V2.'
+    $entryText = Get-Content -Raw -LiteralPath (Join-Path $root 'src\useful-sideview-v2.cpp')
+    $versionText = Get-Content -Raw -LiteralPath (Join-Path $root 'src\v2\nucleo\servicio_version_mod.hpp')
+    $metadato = [regex]::Match($entryText, '(?m)^//\s*@version\s+([0-9]+\.[0-9]+\.[0-9]+)')
+    $constante = [regex]::Match($versionText, 'VERSION_MOD_V2\[\]\s*=\s*L"([0-9]+\.[0-9]+\.[0-9]+)"')
+    if (-not $metadato.Success -or -not $constante.Success) {
+        throw 'No se encontraron el metadato @version y la constante VERSION_MOD_V2 en el entrypoint V2.'
+    }
+    if ($metadato.Groups[1].Value -ne $constante.Groups[1].Value) {
+        throw "La versión del metadato ($($metadato.Groups[1].Value)) no coincide con VERSION_MOD_V2 ($($constante.Groups[1].Value))."
+    }
+    return $metadato.Groups[1].Value
 }
-function Set-Version($kind) {
+function Get-DefaultCommitMessage($kind, $version) {
+    switch ($kind) {
+        'patch' { return "Useful Side View v$version — actualización patch" }
+        'minor' { return "Useful Side View v$version — actualización minor" }
+        'major' { return "Useful Side View v$version — actualización major" }
+        default { return "Useful Side View v$version — actualización de versión" }
+    }
+}
+function Set-Version($kind, $customMessage) {
     if ($kind -notin @('patch', 'minor', 'major')) { throw "Tipo de versión no válido: $kind" }
     $old = Get-Version; $p = $old.Split('.') | ForEach-Object { [int]$_ }
     switch ($kind) { 'patch' { $p[2]++ } 'minor' { $p[1]++; $p[2]=0 } 'major' { $p[0]++; $p[1]=0; $p[2]=0 } }
     $new = "$($p[0]).$($p[1]).$($p[2])"
-    $file = Join-Path $root 'src\useful-sideview-v2.cpp'; $text = Get-Content -Raw -LiteralPath $file
+    $file = Join-Path $root 'src\useful-sideview-v2.cpp'
+    $text = Get-Content -Raw -LiteralPath $file
     $updated = [regex]::Replace($text, '(?m)^//\s*@version\s+[0-9]+\.[0-9]+\.[0-9]+', "// @version         $new", 1)
-    [IO.File]::WriteAllText($file, $updated, [Text.UTF8Encoding]::new($false)); Log "Versión actualizada: $old -> $new"; Build-Bundle
+    [IO.File]::WriteAllText($file, $updated, [Text.UTF8Encoding]::new($false))
+    $versionFile = Join-Path $root 'src\v2\nucleo\servicio_version_mod.hpp'
+    $versionText = Get-Content -Raw -LiteralPath $versionFile
+    $versionUpdated = [regex]::Replace($versionText, '(VERSION_MOD_V2\[\]\s*=\s*L")([0-9]+\.[0-9]+\.[0-9]+)(")', "`${1}$new`${3}", 1)
+    [IO.File]::WriteAllText($versionFile, $versionUpdated, [Text.UTF8Encoding]::new($false))
+    Log "Versión actualizada: $old -> $new"; Build-Bundle
+    $script:pendingCommitMessage = if ([string]::IsNullOrWhiteSpace($customMessage)) {
+        Get-DefaultCommitMessage $kind $new
+    } else { $customMessage.Trim() }
+    Log "Mensaje preparado: $script:pendingCommitMessage"
 }
-function Commit-Push {
+function Commit-Push($customMessage) {
     Build-Bundle
     $git = Require-Tool 'git' 'Git.Git'
 
-    if (-not (Test-Path -LiteralPath (Join-Path $root 'build-universal.ps1'))) {
-        & $git -C $root add -u -- build-universal.ps1
-        if ($LASTEXITCODE -ne 0) { throw "No fue posible registrar la eliminación del script anterior ($LASTEXITCODE)." }
-    }
-    & $git -C $root add -A -- src compilador.ps1 build-universal.ps1 dist/useful-sideview.wh.cpp tools README.md
+    & $git -C $root add -A -- src docs compilador.ps1 dist/useful-sideview.wh.cpp tools README.md
     if ($LASTEXITCODE -ne 0) { throw "git add terminó con código $LASTEXITCODE." }
 
     & $git -C $root diff --cached --quiet
     $hayCambios = $LASTEXITCODE -ne 0
     if ($hayCambios) {
-        $salidaCommit = & $git -C $root commit -m 'nueva versión totalmente refactorizada con varias mejoras de calidad.' 2>&1
+        $mensajeCommit = if (-not [string]::IsNullOrWhiteSpace($customMessage)) {
+            $customMessage.Trim()
+        } elseif (-not [string]::IsNullOrWhiteSpace($script:pendingCommitMessage)) {
+            $script:pendingCommitMessage
+        } else {
+            Get-DefaultCommitMessage 'release' (Get-Version)
+        }
+        $salidaCommit = & $git -C $root commit -m $mensajeCommit 2>&1
         $salidaCommit | ForEach-Object { Log $_.ToString() }
         if ($LASTEXITCODE -ne 0) { throw "git commit terminó con código $LASTEXITCODE." }
     } else {
@@ -208,12 +252,14 @@ $buttons = @()
 function Add-ActionButton($text, $y, $action) { $b = New-Object Windows.Forms.Button; $b.Text=$text; $b.Tag=$action; $b.Size=New-Object Drawing.Size(270,42); $b.Location=New-Object Drawing.Point(24,$y); $b.FlatStyle='Flat'; $b.BackColor=[Drawing.Color]::FromArgb(38,116,190); $b.ForeColor=[Drawing.Color]::White; $b.Add_Click({ Invoke-Step $this.Text $this.Tag }); $form.Controls.Add($b); $script:buttons += $b }
 Add-ActionButton '⚙  Compilar bundle V2' 140 { Build-Bundle }
 Add-ActionButton '📦  Compilar + inyectar' 190 { Build-Bundle; Inject-Bundle }
-Add-ActionButton '✓  Commit y push guiado' 240 { Commit-Push }
+Add-ActionButton '✓  Commit y push guiado' 240 { Commit-Push $messageBox.Text }
 Add-ActionButton '🚀  Inyectar bundle existente' 290 { Inject-Bundle }
 $versionMenu = New-Object Windows.Forms.ComboBox; $versionMenu.Items.AddRange(@('patch','minor','major')); $versionMenu.SelectedIndex=0; $versionMenu.DropDownStyle='DropDownList'; $versionMenu.DrawMode='OwnerDrawFixed'; $versionMenu.ItemHeight=38; $versionMenu.Size=New-Object Drawing.Size(130,42); $versionMenu.Location=New-Object Drawing.Point(24,350)
 $versionMenu.Add_DrawItem({ param($sender,$event) $seleccionado = (($event.State -band [Windows.Forms.DrawItemState]::Selected) -ne 0); $colorFondo = if ($seleccionado) { [Drawing.Color]::FromArgb(38,116,190) } else { [Drawing.Color]::FromArgb(40,44,52) }; $fondo = New-Object Drawing.SolidBrush($colorFondo); $event.Graphics.FillRectangle($fondo, $event.Bounds); $fondo.Dispose(); if ($event.Index -ge 0) { [Windows.Forms.TextRenderer]::DrawText($event.Graphics, $sender.Items[$event.Index].ToString(), $sender.Font, $event.Bounds, [Drawing.Color]::White, [Windows.Forms.TextFormatFlags]::HorizontalCenter -bor [Windows.Forms.TextFormatFlags]::VerticalCenter -bor [Windows.Forms.TextFormatFlags]::NoPrefix) } if ($seleccionado) { $event.DrawFocusRectangle() } }); $form.Controls.Add($versionMenu)
-$versionButton = New-Object Windows.Forms.Button; $versionButton.Text='Subir versión + compilar'; $versionButton.Size=New-Object Drawing.Size(130,42); $versionButton.Location=New-Object Drawing.Point(164,350); $versionButton.FlatStyle='Flat'; $versionButton.BackColor=[Drawing.Color]::FromArgb(38,116,190); $versionButton.ForeColor=[Drawing.Color]::White; $versionButton.Add_Click({ Invoke-Step 'Versionar y compilar' { Set-Version $versionMenu.SelectedItem } }); $form.Controls.Add($versionButton); $script:buttons += $versionButton
-$close = New-Object Windows.Forms.Button; $close.Text='Cerrar'; $close.Size=New-Object Drawing.Size(270,42); $close.Location=New-Object Drawing.Point(24,410); $close.Add_Click({$form.Close()}); $form.Controls.Add($close); $script:buttons += $close
+$versionButton = New-Object Windows.Forms.Button; $versionButton.Text='Subir versión + compilar'; $versionButton.Size=New-Object Drawing.Size(130,42); $versionButton.Location=New-Object Drawing.Point(164,350); $versionButton.FlatStyle='Flat'; $versionButton.BackColor=[Drawing.Color]::FromArgb(38,116,190); $versionButton.ForeColor=[Drawing.Color]::White; $versionButton.Add_Click({ Invoke-Step 'Versionar y compilar' { Set-Version $versionMenu.SelectedItem $messageBox.Text } }); $form.Controls.Add($versionButton); $script:buttons += $versionButton
+$messageLabel = New-Object Windows.Forms.Label; $messageLabel.Text='Mensaje de commit (opcional; vacío = genérico)'; $messageLabel.AutoSize=$true; $messageLabel.Location=New-Object Drawing.Point(24,405); $form.Controls.Add($messageLabel)
+$messageBox = New-Object Windows.Forms.TextBox; $messageBox.Size=New-Object Drawing.Size(400,30); $messageBox.Location=New-Object Drawing.Point(24,428); $messageBox.BackColor=[Drawing.Color]::FromArgb(12,14,18); $messageBox.ForeColor=[Drawing.Color]::White; $messageBox.BorderStyle='FixedSingle'; $form.Controls.Add($messageBox)
+$close = New-Object Windows.Forms.Button; $close.Text='Cerrar'; $close.Size=New-Object Drawing.Size(270,42); $close.Location=New-Object Drawing.Point(24,475); $close.Add_Click({$form.Close()}); $form.Controls.Add($close); $script:buttons += $close
 $script:logBox = New-Object Windows.Forms.TextBox; $script:logBox.Multiline=$true; $script:logBox.ReadOnly=$true; $script:logBox.ScrollBars='Both'; $script:logBox.WordWrap=$false; $script:logBox.Font=New-Object Drawing.Font('Consolas',10); $script:logBox.BackColor=[Drawing.Color]::FromArgb(12,14,18); $script:logBox.ForeColor=[Drawing.Color]::LightGreen; $script:logBox.Location=New-Object Drawing.Point(590,90); $script:logBox.Size=New-Object Drawing.Size(275,470); $form.Controls.Add($script:logBox)
 $form.KeyPreview=$true; $form.Add_KeyDown({if($_.KeyCode -eq 'Escape'){$form.Close()}}); $form.Add_Shown({$buttons[0].Focus(); Log 'Menú listo. No se modificará legacy desde este flujo.'}); [void]$form.ShowDialog()
 } finally {

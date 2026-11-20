@@ -41,25 +41,12 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
         return;
     }
 
-    LiberarBufferMemoria(estado);
-
-    if (estado->vistaContenido) {
-        estado->vistaContenido->Liberar();
-        estado->vistaContenido.reset();
-    }
-
+    // Cortar primero la entrada del estado evita que un timer, una reentrada
+    // de DestroyWindow o una notificación pendiente use recursos en proceso
+    // de liberación.
+    estado->abierto = false;
     if (estado->panel && IsWindow(estado->panel)) {
         KillTimer(estado->panel, 101);
-        DestroyWindow(estado->panel);
-        estado->panel = nullptr;
-    }
-
-    if (estado->parent && IsWindow(estado->parent)) {
-        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
-    }
-
-    if (estado->tab && IsWindow(estado->tab)) {
-        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     if (quitarDelMapa) {
@@ -71,6 +58,26 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
                 ++it;
             }
         }
+    }
+
+    LiberarBufferMemoria(estado);
+
+    if (estado->vistaContenido) {
+        estado->vistaContenido->Liberar();
+        estado->vistaContenido.reset();
+    }
+
+    if (estado->panel && IsWindow(estado->panel)) {
+        DestroyWindow(estado->panel);
+        estado->panel = nullptr;
+    }
+
+    if (estado->parent && IsWindow(estado->parent)) {
+        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
+    }
+
+    if (estado->tab && IsWindow(estado->tab)) {
+        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     delete estado;
@@ -288,6 +295,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     if (estado && estado->vistaContenido) {
+        try {
         if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS &&
             estado->comparadorArchivosActivo) {
             estado->vistaContenido->Liberar();
@@ -318,7 +326,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                 DisponerPanel(estado);
             }
-            estado->vistaContenido->ActualizarConfiguracion();
+            if (estado->vistaContenido) estado->vistaContenido->ActualizarConfiguracion();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -347,6 +355,10 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 return 0;
             }
         }
+        } catch (...) {
+            Wh_Log(L"[UsefulSideView] Excepción contenida en el procedimiento del panel");
+            return 0;
+        }
     }
 
     switch (msg) {
@@ -360,6 +372,8 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             return 1; // Manejado completamente por el doble buffer
 
         case WM_TIMER: {
+            IShellView* vistaPendiente = nullptr;
+            try {
             if (wParam == 101 && estado && estado->abierto) {
                 HWND frente = GetForegroundWindow();
                 if (frente && frente != estado->top && GetAncestor(frente, GA_ROOT) != estado->top) {
@@ -368,12 +382,11 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 // Actualizar selección periódicamente si el panel está visible
                 AmbitoComV2 com;
                 if (!com.Disponible()) return 0;
-                IShellView* vista = nullptr;
                 HWND tab = nullptr;
-                vista = ObtenerShellViewActivo(estado->top, &tab);
-                if (vista) {
+                vistaPendiente = ObtenerShellViewActivo(estado->top, &tab);
+                if (vistaPendiente) {
                     std::wstring carpeta;
-                    auto seleccion = ObtenerRutasSeleccionadasDeVista(vista, &carpeta);
+                    auto seleccion = ObtenerRutasSeleccionadasDeVista(vistaPendiente, &carpeta);
                     if (seleccion != estado->archivosSeleccionados || carpeta != estado->carpetaContenedora) {
                         TipoVistaContenido tipoPrevio = ClasificarSeleccion(
                             estado->archivosSeleccionados, estado->carpetaContenedora);
@@ -406,8 +419,13 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
                         InvalidateRect(hwnd, nullptr, FALSE);
                     }
-                    vista->Release();
+                    vistaPendiente->Release();
+                    vistaPendiente = nullptr;
                 }
+            }
+            } catch (...) {
+                if (vistaPendiente) vistaPendiente->Release();
+                Wh_Log(L"[UsefulSideView] Excepción contenida durante WM_TIMER");
             }
             return 0;
         }
@@ -423,7 +441,21 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             if (ancho > 0 && alto > 0 && estado) {
                 if (AsegurarBufferMemoria(estado, hdcPantalla, ancho, alto)) {
                     if (estado->vistaContenido) {
-                        estado->vistaContenido->Renderizar(estado->dcMemoria, rectCliente, estado->tema);
+                        try {
+                            estado->vistaContenido->Renderizar(
+                                estado->dcMemoria, rectCliente, estado->tema);
+                        } catch (...) {
+                            Wh_Log(L"[UsefulSideView] Excepción contenida durante WM_PAINT");
+                            HBRUSH fondo = CreateSolidBrush(estado->tema.fondo);
+                            FillRect(estado->dcMemoria, &rectCliente, fondo);
+                            DeleteObject(fondo);
+                            SetBkMode(estado->dcMemoria, TRANSPARENT);
+                            SetTextColor(estado->dcMemoria, estado->tema.textoSecundario);
+                            DrawTextW(estado->dcMemoria,
+                                      L"Useful Side View no pudo dibujar esta vista.", -1,
+                                      &rectCliente,
+                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                        }
                     }
                     BitBlt(hdcPantalla, 0, 0, ancho, alto, estado->dcMemoria, 0, 0, SRCCOPY);
                 }
@@ -480,7 +512,11 @@ inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM w
 inline LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                 DWORD_PTR) {
     if (msg == WM_SIDEVIEW_TOGGLE) {
-        AlternarSideView(hwnd);
+        try {
+            AlternarSideView(hwnd);
+        } catch (...) {
+            Wh_Log(L"[UsefulSideView] Excepción contenida al alternar el panel");
+        }
         return 0;
     }
 

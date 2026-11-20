@@ -102,7 +102,15 @@ inline bool AsegurarBufferMemoria(EstadoPanelV2* estado, HDC hdcReferencia, int 
         return false;
     }
 
-    estado->bmpAnterior = static_cast<HBITMAP>(SelectObject(estado->dcMemoria, estado->bmpMemoria));
+    HGDIOBJ anterior = SelectObject(estado->dcMemoria, estado->bmpMemoria);
+    if (!anterior || anterior == HGDI_ERROR) {
+        DeleteObject(estado->bmpMemoria);
+        estado->bmpMemoria = nullptr;
+        DeleteDC(estado->dcMemoria);
+        estado->dcMemoria = nullptr;
+        return false;
+    }
+    estado->bmpAnterior = static_cast<HBITMAP>(anterior);
     estado->anchoBuffer = ancho;
     estado->altoBuffer = alto;
     return true;

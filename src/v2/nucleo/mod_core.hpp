@@ -13,6 +13,7 @@ namespace SideViewV2 {
 
 using CreateWindowExW_t = decltype(&CreateWindowExW);
 inline CreateWindowExW_t CreateWindowExW_Original = nullptr;
+inline thread_local bool g_dentroHookCreateWindowV2{false};
 
 inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
                                         LPCWSTR lpWindowName, DWORD dwStyle,
@@ -26,10 +27,18 @@ inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
         return hwnd;
     }
 
+    // La instalación de una subclase puede provocar creación de ventanas
+    // auxiliares. Evitar reentrada aquí impide encadenar el hook sobre sí
+    // mismo durante la construcción de Explorer.
+    if (g_dentroHookCreateWindowV2) return hwnd;
+    g_dentroHookCreateWindowV2 = true;
+
     if (!IS_INTRESOURCE(lpClassName) && (_wcsicmp(lpClassName, L"CabinetWClass") == 0 ||
                                          _wcsicmp(lpClassName, L"ExploreWClass") == 0)) {
         WindhawkUtils::SetWindowSubclassFromAnyThread(hwnd, ProcedimientoSubclaseTop, 0);
     }
+
+    g_dentroHookCreateWindowV2 = false;
 
     return hwnd;
 }
@@ -55,9 +64,11 @@ inline void CargarConfiguracionesV2() {
     PCWSTR atajoStr = Wh_GetStringSetting(L"atajoTeclado");
     if (atajoStr && *atajoStr != L'\0') {
         ConfigurarAtajoDesdeString(atajoStr);
-        Wh_FreeStringSetting(atajoStr);
     } else {
         ConfigurarAtajoDesdeString(L"Ctrl+K");
+    }
+    if (atajoStr) {
+        Wh_FreeStringSetting(atajoStr);
     }
 
     int limite = Wh_GetIntSetting(L"limiteCarpetasPesadas");
@@ -69,9 +80,13 @@ inline void CargarConfiguracionesV2() {
     g_comparadorVideosPantallaCompletaV2.store(
         Wh_GetIntSetting(L"comparadorVideosPantallaCompleta") != 0,
         std::memory_order_release);
+    g_mostrarVersionModV2.store(
+        Wh_GetIntSetting(L"mostrarVersionMod") != 0,
+        std::memory_order_release);
 }
 
 inline bool InicializarModV2() {
+    g_descargandoMod.store(false, std::memory_order_release);
     WM_SIDEVIEW_TOGGLE = RegisterWindowMessageW(L"UsefulSideView_WM_Toggle_V2");
     WM_SIDEVIEW_SETTINGS = RegisterWindowMessageW(L"UsefulSideView_WM_Settings_V2");
 

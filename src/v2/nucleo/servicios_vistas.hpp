@@ -11,15 +11,19 @@
 #include "v2/nucleo/servicio_comparador_videos.hpp"
 #include "v2/nucleo/servicio_diff.hpp"
 #include "v2/nucleo/servicio_reproductor_video.hpp"
+#include "v2/nucleo/servicio_persistencia_windhawk.hpp"
+#include "v2/nucleo/servicio_version_mod.hpp"
 #include <memory>
 namespace SideViewV2 {
 struct DependenciasVistaV2 {
     std::shared_ptr<ServicioNavegacionV2> navegacion{std::make_shared<ServicioNavegacionV2>()};
     std::shared_ptr<ServicioExtensionV2> extensiones{std::make_shared<ServicioExtensionV2>()};
-    std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
-    std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(L"comprimidos")};
-    std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(L"imagenes")};
-    std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(L"videos")};
+    std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia{std::make_shared<ServicioPersistenciaWindhawkV2>()};
+    std::shared_ptr<ServicioVersionModV2> versionMod{std::make_shared<ServicioVersionModV2>()};
+    std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(persistencia, L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
+    std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(persistencia, L"comprimidos")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(persistencia, L"imagenes")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(persistencia, L"videos")};
     std::shared_ptr<ServicioTextoV2> texto{std::make_shared<ServicioTextoV2>()};
     std::shared_ptr<ServicioComparadorArchivosV2> comparadorArchivos{std::make_shared<ServicioComparadorArchivosV2>()};
     std::shared_ptr<ServicioComparadorTextoV2> comparadorTexto{std::make_shared<ServicioComparadorTextoV2>(texto)};

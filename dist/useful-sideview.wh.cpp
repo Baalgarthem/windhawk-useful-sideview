@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.0.1
+// @version         4.0.2
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -35,12 +35,17 @@
   $description: >-
     Muestra los controles para alternar un video a pantalla completa y el otro
     en Picture in Picture dentro del comparador experimental.
+- mostrarVersionMod: true
+  $name: Mostrar versión del mod
+  $description: >-
+    Muestra la versión actual de Useful Side View en la vista general de
+    carpetas cuando no hay una carpeta seleccionada.
 */
 // ==/WindhawkModSettings==
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View (v2.1 Architecture)
+# Useful Side View V2 (4.0.2)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -53,6 +58,8 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
 - **Comparador de texto**: Diff clásico de dos columnas, estilo GitHub, con navegación y metadatos comunes.
 - **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
+- **Persistencia nativa**: Historial de programas de "Abrir con" por categoría, migrado y validado con valores persistentes de Windhawk.
+- **Versión visible**: La vista general puede mostrar la versión actual desde el ajuste correspondiente.
 */
 // ==/WindhawkModReadme==
 
@@ -271,7 +278,15 @@ inline bool AsegurarBufferMemoria(EstadoPanelV2* estado, HDC hdcReferencia, int 
         return false;
     }
 
-    estado->bmpAnterior = static_cast<HBITMAP>(SelectObject(estado->dcMemoria, estado->bmpMemoria));
+    HGDIOBJ anterior = SelectObject(estado->dcMemoria, estado->bmpMemoria);
+    if (!anterior || anterior == HGDI_ERROR) {
+        DeleteObject(estado->bmpMemoria);
+        estado->bmpMemoria = nullptr;
+        DeleteDC(estado->dcMemoria);
+        estado->dcMemoria = nullptr;
+        return false;
+    }
+    estado->bmpAnterior = static_cast<HBITMAP>(anterior);
     estado->anchoBuffer = ancho;
     estado->altoBuffer = alto;
     return true;
@@ -721,22 +736,97 @@ public:
 #include <windows.h>
 #include <commdlg.h>
 #include <shellapi.h>
-#include <windhawk_api.h>
 #include <algorithm>
 #include <cwchar>
-#include <mutex>
 #include <limits>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <utility>
+#include <vector>
+/**** start inlining v2/nucleo/servicio_persistencia_windhawk.hpp ****/
+
+#include <windhawk_api.h>
+#include <algorithm>
 #include <string>
 #include <utility>
 #include <vector>
 
 namespace SideViewV2 {
 
+// Adaptador único para los valores persistentes propios del mod. Los ajustes
+// visibles siguen usando Wh_*Setting; este servicio sólo encapsula el estado
+// operativo que debe sobrevivir a reinicios de Explorer y del equipo.
+class ServicioPersistenciaWindhawkV2 final {
+public:
+    explicit ServicioPersistenciaWindhawkV2(
+        std::wstring prefijo = L"useful-sideview.v3")
+        : m_prefijo(std::move(prefijo)) {}
+
+    int LeerEntero(const std::wstring& clave, int predeterminado) const {
+        return Wh_GetIntValue(clave.c_str(), predeterminado);
+    }
+
+    bool GuardarEntero(const std::wstring& clave, int valor) const {
+        return Wh_SetIntValue(clave.c_str(), valor) != FALSE;
+    }
+
+    std::wstring LeerCadena(const std::wstring& clave) const {
+        constexpr std::size_t capacidadInicial = 256;
+        constexpr std::size_t capacidadMaxima = 65536;
+        std::size_t capacidad = capacidadInicial;
+        while (capacidad <= capacidadMaxima) {
+            std::vector<wchar_t> buffer(capacidad, L'\0');
+            const std::size_t copiados = Wh_GetStringValue(
+                clave.c_str(), buffer.data(), buffer.size());
+            if (copiados > 0 && copiados < buffer.size()) {
+                return std::wstring(buffer.data(), copiados);
+            }
+            // La API devuelve cero tanto para ausencia como para un buffer
+            // insuficiente. Reintentar con crecimiento acotado cubre rutas
+            // largas sin reservar memoria sin límite.
+            capacidad *= 2;
+        }
+        return {};
+    }
+
+    bool GuardarCadena(const std::wstring& clave,
+                       const std::wstring& valor) const {
+        return Wh_SetStringValue(clave.c_str(), valor.c_str()) != FALSE;
+    }
+
+    bool Eliminar(const std::wstring& clave) const {
+        return Wh_DeleteValue(clave.c_str()) != FALSE;
+    }
+
+    std::wstring CrearClave(const std::wstring& dominio,
+                            const wchar_t* sufijo) const {
+        return m_prefijo + L"." + dominio + L"." + (sufijo ? sufijo : L"");
+    }
+
+    static std::wstring CrearClaveLegacy(const std::wstring& dominio,
+                                         const wchar_t* sufijo) {
+        return L"abrirCon.v2." + dominio + L"." +
+               (sufijo ? sufijo : L"");
+    }
+
+private:
+    std::wstring m_prefijo;
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_persistencia_windhawk.hpp ****/
+
+namespace SideViewV2 {
+
 class ServicioAbrirConV2 {
 public:
-    ServicioAbrirConV2(std::wstring clavePersistencia,
-                       std::vector<std::wstring> inicial = {})
-        : m_clavePersistencia(std::move(clavePersistencia)),
+    ServicioAbrirConV2(
+        std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia,
+        std::wstring clavePersistencia,
+        std::vector<std::wstring> inicial = {})
+        : m_persistencia(std::move(persistencia)),
+          m_clavePersistencia(std::move(clavePersistencia)),
           m_programas(std::move(inicial)) {
         CargarPersistencia();
     }
@@ -748,23 +838,22 @@ public:
 
     std::wstring ProgramaActual() const {
         std::lock_guard<std::mutex> lock(m_bloqueo);
-        return m_ultimo.empty() && m_programas.size() == 1 ? m_programas.front() : m_ultimo;
+        return m_ultimo.empty() && m_programas.size() == 1
+            ? m_programas.front() : m_ultimo;
     }
 
     void Seleccionar(const std::wstring& ruta) {
         if (ruta.empty()) return;
         std::lock_guard<std::mutex> lock(m_bloqueo);
-        bool agregado = false;
-        size_t indiceNuevo = 0;
-        if (std::find_if(m_programas.begin(), m_programas.end(),
-                         [&ruta](const std::wstring& programa) { return EsMismoPrograma(programa, ruta); }) == m_programas.end()) {
-            m_programas.push_back(ruta);
-            agregado = true;
-            indiceNuevo = m_programas.size() - 1;
-        }
-        if (!agregado && EsMismoPrograma(m_ultimo, ruta)) return;
+        const auto encontrado = std::find_if(
+            m_programas.begin(), m_programas.end(),
+            [&ruta](const std::wstring& programa) {
+                return EsMismoPrograma(programa, ruta);
+            });
+        if (encontrado == m_programas.end()) m_programas.push_back(ruta);
+        if (!m_ultimo.empty() && EsMismoPrograma(m_ultimo, ruta)) return;
         m_ultimo = ruta;
-        GuardarPersistenciaBloqueada(agregado ? indiceNuevo : m_programas.size());
+        GuardarPersistenciaBloqueada();
     }
 
     bool AbrirDialogo(HWND owner) {
@@ -772,7 +861,8 @@ public:
         OPENFILENAMEW dialogo{};
         dialogo.lStructSize = sizeof(dialogo);
         dialogo.hwndOwner = owner;
-        dialogo.lpstrFilter = L"Programas ejecutables (*.exe)\0*.exe\0Todos los archivos (*.*)\0*.*\0";
+        dialogo.lpstrFilter = L"Programas ejecutables (*.exe)\0*.exe\0"
+                              L"Todos los archivos (*.*)\0*.*\0";
         dialogo.lpstrFile = ruta;
         dialogo.nMaxFile = ARRAYSIZE(ruta);
         dialogo.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
@@ -781,9 +871,14 @@ public:
         return true;
     }
 
-    bool Ejecutar(const std::vector<std::wstring>& archivos) const {
-        std::wstring programa = ProgramaActual();
+    bool Ejecutar(const std::vector<std::wstring>& archivos) {
+        const std::wstring programa = ProgramaActual();
         if (programa.empty()) return false;
+
+        // Registra el uso también en las vistas que no tienen un selector
+        // visible propio, antes de lanzar el programa elegido.
+        Seleccionar(programa);
+
         bool algunoAbierto = false;
         for (const auto& archivo : archivos) {
             HINSTANCE resultado = ShellExecuteW(
@@ -795,64 +890,118 @@ public:
     }
 
 private:
-    static bool EsMismoPrograma(const std::wstring& izquierdo, const std::wstring& derecho) {
+    static constexpr int kVersionPersistencia = 1;
+    static constexpr int kCantidadMaximaSegura = 100000;
+
+    static bool EsMismoPrograma(const std::wstring& izquierdo,
+                                const std::wstring& derecho) {
         return _wcsicmp(izquierdo.c_str(), derecho.c_str()) == 0;
     }
 
-    std::wstring Clave(const wchar_t* sufijo) const {
-        return L"abrirCon.v2." + m_clavePersistencia + L"." + sufijo;
+    std::wstring ClaveNueva(const wchar_t* sufijo) const {
+        return m_persistencia
+            ? m_persistencia->CrearClave(L"abrirCon." + m_clavePersistencia, sufijo)
+            : std::wstring{};
     }
 
-    static std::wstring LeerCadena(const std::wstring& clave) {
-        size_t capacidad = 512;
-        while (capacidad <= 32768) {
-            std::vector<wchar_t> buffer(capacidad, L'\0');
-            size_t copiados = Wh_GetStringValue(clave.c_str(), buffer.data(), buffer.size());
-            if (copiados > 0 && copiados < buffer.size()) return std::wstring(buffer.data(), copiados);
-            capacidad *= 2;
+    static std::wstring ClaveLegacy(const std::wstring& dominio,
+                                    const wchar_t* sufijo) {
+        return ServicioPersistenciaWindhawkV2::CrearClaveLegacy(
+            dominio, sufijo);
+    }
+
+    void AgregarSiNoExiste(const std::wstring& programa) {
+        if (programa.empty()) return;
+        const auto encontrado = std::find_if(
+            m_programas.begin(), m_programas.end(),
+            [&programa](const std::wstring& existente) {
+                return EsMismoPrograma(existente, programa);
+            });
+        if (encontrado == m_programas.end()) m_programas.push_back(programa);
+    }
+
+    bool CargarFormatoNuevo() {
+        if (!m_persistencia) return false;
+        if (m_persistencia->LeerEntero(ClaveNueva(L"schema"), 0) <
+            kVersionPersistencia) return false;
+
+        const int cantidad = m_persistencia->LeerEntero(
+            ClaveNueva(L"count"), -1);
+        if (cantidad < 0 || cantidad > kCantidadMaximaSegura) return false;
+
+        for (int i = 0; i < cantidad; ++i) {
+            const std::wstring clave = ClaveNueva(
+                (L"program." + std::to_wstring(i)).c_str());
+            AgregarSiNoExiste(m_persistencia->LeerCadena(clave));
         }
-        return {};
+        m_ultimo = m_persistencia->LeerCadena(ClaveNueva(L"last"));
+        AgregarSiNoExiste(m_ultimo);
+        return true;
+    }
+
+    bool CargarFormatoLegacy() {
+        if (!m_persistencia || m_clavePersistencia.empty()) return false;
+        const std::wstring textoCantidad = m_persistencia->LeerCadena(
+            ClaveLegacy(m_clavePersistencia, L"count"));
+        if (textoCantidad.empty()) return false;
+
+        wchar_t* fin = nullptr;
+        const unsigned long long cantidadRaw = wcstoull(
+            textoCantidad.c_str(), &fin, 10);
+        if (fin == textoCantidad.c_str() || *fin != L'\0' ||
+            cantidadRaw > static_cast<unsigned long long>(kCantidadMaximaSegura) ||
+            cantidadRaw > std::numeric_limits<size_t>::max()) {
+            return false;
+        }
+
+        const size_t cantidad = static_cast<size_t>(cantidadRaw);
+        for (size_t i = 0; i < cantidad; ++i) {
+            const std::wstring clave = ClaveLegacy(
+                m_clavePersistencia,
+                (L"program." + std::to_wstring(i)).c_str());
+            AgregarSiNoExiste(m_persistencia->LeerCadena(clave));
+        }
+        m_ultimo = m_persistencia->LeerCadena(
+            ClaveLegacy(m_clavePersistencia, L"last"));
+        AgregarSiNoExiste(m_ultimo);
+        return true;
     }
 
     void CargarPersistencia() {
-        if (m_clavePersistencia.empty()) return;
-        std::wstring textoCantidad = LeerCadena(Clave(L"count").c_str());
-        if (textoCantidad.empty()) return;
-        wchar_t* fin = nullptr;
-        unsigned long long cantidadRaw = wcstoull(textoCantidad.c_str(), &fin, 10);
-        if (fin == textoCantidad.c_str() || *fin != L'\0' || cantidadRaw > 1000000ULL || cantidadRaw > std::numeric_limits<size_t>::max()) return;
-        size_t cantidad = static_cast<size_t>(cantidadRaw);
-        for (size_t i = 0; i < cantidad; ++i) {
-            std::wstring indice = std::to_wstring(i);
-            std::wstring programa = LeerCadena(Clave((L"program." + indice).c_str()));
-            if (!programa.empty() && std::find_if(m_programas.begin(), m_programas.end(),
-                                                  [&programa](const std::wstring& existente) {
-                                                      return EsMismoPrograma(existente, programa);
-                                                  }) == m_programas.end()) {
-                m_programas.push_back(std::move(programa));
-            }
+        if (m_clavePersistencia.empty() || !m_persistencia) return;
+        if (CargarFormatoNuevo()) return;
+
+        // Migración idempotente: conserva las claves históricas y publica el
+        // formato nuevo únicamente después de cargar un estado válido.
+        if (CargarFormatoLegacy()) GuardarPersistenciaBloqueada();
+    }
+
+    void GuardarPersistenciaBloqueada() {
+        if (!m_persistencia || m_clavePersistencia.empty()) return;
+
+        bool correcto = true;
+        for (size_t i = 0; i < m_programas.size(); ++i) {
+            const std::wstring clave = ClaveNueva(
+                (L"program." + std::to_wstring(i)).c_str());
+            correcto = m_persistencia->GuardarCadena(clave, m_programas[i]) &&
+                       correcto;
         }
-        m_ultimo = LeerCadena(Clave(L"last").c_str());
-        if (!m_ultimo.empty() && std::find_if(m_programas.begin(), m_programas.end(),
-                                              [this](const std::wstring& existente) {
-                                                  return EsMismoPrograma(existente, m_ultimo);
-                                              }) == m_programas.end()) {
-            m_programas.push_back(m_ultimo);
+        correcto = m_persistencia->GuardarCadena(
+            ClaveNueva(L"last"), m_ultimo) && correcto;
+        correcto = m_persistencia->GuardarEntero(
+            ClaveNueva(L"schema"), kVersionPersistencia) && correcto;
+
+        // El contador es el marcador de commit lógico de la instantánea.
+        correcto = m_persistencia->GuardarEntero(
+            ClaveNueva(L"count"), static_cast<int>(m_programas.size())) &&
+                   correcto;
+        if (!correcto) {
+            Wh_Log(L"[UsefulSideView] No fue posible guardar Abrir con (%s)",
+                   m_clavePersistencia.c_str());
         }
     }
 
-    void GuardarPersistenciaBloqueada(size_t indiceNuevo) {
-        if (m_clavePersistencia.empty()) return;
-        if (indiceNuevo < m_programas.size()) {
-            std::wstring indice = std::to_wstring(indiceNuevo);
-            std::wstring clavePrograma = Clave((L"program." + indice).c_str());
-            Wh_SetStringValue(clavePrograma.c_str(), m_programas[indiceNuevo].c_str());
-        }
-        std::wstring cantidad = std::to_wstring(m_programas.size());
-        Wh_SetStringValue(Clave(L"count").c_str(), cantidad.c_str());
-        Wh_SetStringValue(Clave(L"last").c_str(), m_ultimo.c_str());
-    }
-
+    std::shared_ptr<ServicioPersistenciaWindhawkV2> m_persistencia;
     std::wstring m_clavePersistencia;
     std::vector<std::wstring> m_programas;
     std::wstring m_ultimo;
@@ -2318,15 +2467,37 @@ public:
 } // namespace SideViewV2
 /**** ended inlining v2/nucleo/servicio_diff.hpp ****/
 /**** skipping file: v2/nucleo/servicio_reproductor_video.hpp ****/
+/**** skipping file: v2/nucleo/servicio_persistencia_windhawk.hpp ****/
+/**** start inlining v2/nucleo/servicio_version_mod.hpp ****/
+
+#include <string>
+
+namespace SideViewV2 {
+
+// Fuente de verdad legible por la UI. El compilador comprueba que coincida con
+// el campo @version antes de crear el bundle distribuible.
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.0.2";
+
+class ServicioVersionModV2 final {
+public:
+    std::wstring TextoVersion() const {
+        return L"Useful Side View v" + std::wstring(VERSION_MOD_V2);
+    }
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_version_mod.hpp ****/
 #include <memory>
 namespace SideViewV2 {
 struct DependenciasVistaV2 {
     std::shared_ptr<ServicioNavegacionV2> navegacion{std::make_shared<ServicioNavegacionV2>()};
     std::shared_ptr<ServicioExtensionV2> extensiones{std::make_shared<ServicioExtensionV2>()};
-    std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
-    std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(L"comprimidos")};
-    std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(L"imagenes")};
-    std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(L"videos")};
+    std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia{std::make_shared<ServicioPersistenciaWindhawkV2>()};
+    std::shared_ptr<ServicioVersionModV2> versionMod{std::make_shared<ServicioVersionModV2>()};
+    std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(persistencia, L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
+    std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(persistencia, L"comprimidos")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(persistencia, L"imagenes")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(persistencia, L"videos")};
     std::shared_ptr<ServicioTextoV2> texto{std::make_shared<ServicioTextoV2>()};
     std::shared_ptr<ServicioComparadorArchivosV2> comparadorArchivos{std::make_shared<ServicioComparadorArchivosV2>()};
     std::shared_ptr<ServicioComparadorTextoV2> comparadorTexto{std::make_shared<ServicioComparadorTextoV2>(texto)};
@@ -2694,6 +2865,32 @@ private:
 /**** skipping file: v2/ui/ventana_base.hpp ****/
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 /**** skipping file: v2/nucleo/servicio_com.hpp ****/
+/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
+
+#include <atomic>
+
+namespace SideViewV2 {
+
+// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
+// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
+inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
+inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
+inline std::atomic_bool g_mostrarVersionModV2{true};
+
+inline bool ComparadorVideosExperimentalDisponibleV2() {
+    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
+}
+
+inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
+    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
+}
+
+inline bool MostrarVersionModDisponibleV2() {
+    return g_mostrarVersionModV2.load(std::memory_order_acquire);
+}
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -2801,9 +2998,11 @@ public:
     explicit VistaCarpetas(std::shared_ptr<ServicioAbrirConV2> servicio,
                            std::shared_ptr<ServicioNavegacionV2> navegacion,
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
-                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion)
+                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
+                           std::shared_ptr<ServicioVersionModV2> versionMod)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
-          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)) {
+          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
+          m_versionMod(std::move(versionMod)) {
         m_programasRecordados = m_servicio ? m_servicio->Programas()
                                            : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
@@ -3034,6 +3233,10 @@ public:
         std::wstring strSub = L"Peso total: " + FormatearTamano(m_tamanoTotalBytes) +
                               L" • " + std::to_wstring(m_totalSubcarpetas) + L" carpetas, " +
                               std::to_wstring(m_totalArchivos) + L" archivos";
+        if (m_carpetasSeleccionadas.empty() && MostrarVersionModDisponibleV2() &&
+            m_versionMod) {
+            strSub += L" • " + m_versionMod->TextoVersion();
+        }
         RECT rectTextoSub{rect.left + 16, rect.top + 28, rect.right - 90, rect.top + 46};
         DrawTextW(hdc, strSub.c_str(), -1, &rectTextoSub,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
@@ -3575,6 +3778,7 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
+    std::shared_ptr<ServicioVersionModV2> m_versionMod;
     bool m_fusionEnCurso{false};
     std::wstring m_destinoFusion;
 
@@ -4197,27 +4401,7 @@ private:
 /**** start inlining v2/vistas/vista_comparador_videos.hpp ****/
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
-/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
-
-#include <atomic>
-
-namespace SideViewV2 {
-
-// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
-// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
-inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
-inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
-
-inline bool ComparadorVideosExperimentalDisponibleV2() {
-    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
-}
-
-inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
-    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
-}
-
-} // namespace SideViewV2
-/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 /**** skipping file: v2/nucleo/servicio_comparador_videos.hpp ****/
 /**** start inlining v2/vistas/vista_comparador_archivos.hpp ****/
 
@@ -5178,7 +5362,7 @@ public:
             case TipoVistaContenido::Carpetas:
                 vista = std::make_shared<VistaCarpetas>(Dependencias().abrirConCarpetas,
                     Dependencias().navegacion, Dependencias().fusionCarpetas,
-                    Dependencias().inspeccionCarpetas);
+                    Dependencias().inspeccionCarpetas, Dependencias().versionMod);
                 break;
 
             case TipoVistaContenido::Texto:
@@ -5419,25 +5603,12 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
         return;
     }
 
-    LiberarBufferMemoria(estado);
-
-    if (estado->vistaContenido) {
-        estado->vistaContenido->Liberar();
-        estado->vistaContenido.reset();
-    }
-
+    // Cortar primero la entrada del estado evita que un timer, una reentrada
+    // de DestroyWindow o una notificación pendiente use recursos en proceso
+    // de liberación.
+    estado->abierto = false;
     if (estado->panel && IsWindow(estado->panel)) {
         KillTimer(estado->panel, 101);
-        DestroyWindow(estado->panel);
-        estado->panel = nullptr;
-    }
-
-    if (estado->parent && IsWindow(estado->parent)) {
-        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
-    }
-
-    if (estado->tab && IsWindow(estado->tab)) {
-        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     if (quitarDelMapa) {
@@ -5449,6 +5620,26 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
                 ++it;
             }
         }
+    }
+
+    LiberarBufferMemoria(estado);
+
+    if (estado->vistaContenido) {
+        estado->vistaContenido->Liberar();
+        estado->vistaContenido.reset();
+    }
+
+    if (estado->panel && IsWindow(estado->panel)) {
+        DestroyWindow(estado->panel);
+        estado->panel = nullptr;
+    }
+
+    if (estado->parent && IsWindow(estado->parent)) {
+        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
+    }
+
+    if (estado->tab && IsWindow(estado->tab)) {
+        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     delete estado;
@@ -5666,6 +5857,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     if (estado && estado->vistaContenido) {
+        try {
         if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS &&
             estado->comparadorArchivosActivo) {
             estado->vistaContenido->Liberar();
@@ -5696,7 +5888,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                 DisponerPanel(estado);
             }
-            estado->vistaContenido->ActualizarConfiguracion();
+            if (estado->vistaContenido) estado->vistaContenido->ActualizarConfiguracion();
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -5725,6 +5917,10 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 return 0;
             }
         }
+        } catch (...) {
+            Wh_Log(L"[UsefulSideView] Excepción contenida en el procedimiento del panel");
+            return 0;
+        }
     }
 
     switch (msg) {
@@ -5738,6 +5934,8 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             return 1; // Manejado completamente por el doble buffer
 
         case WM_TIMER: {
+            IShellView* vistaPendiente = nullptr;
+            try {
             if (wParam == 101 && estado && estado->abierto) {
                 HWND frente = GetForegroundWindow();
                 if (frente && frente != estado->top && GetAncestor(frente, GA_ROOT) != estado->top) {
@@ -5746,12 +5944,11 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 // Actualizar selección periódicamente si el panel está visible
                 AmbitoComV2 com;
                 if (!com.Disponible()) return 0;
-                IShellView* vista = nullptr;
                 HWND tab = nullptr;
-                vista = ObtenerShellViewActivo(estado->top, &tab);
-                if (vista) {
+                vistaPendiente = ObtenerShellViewActivo(estado->top, &tab);
+                if (vistaPendiente) {
                     std::wstring carpeta;
-                    auto seleccion = ObtenerRutasSeleccionadasDeVista(vista, &carpeta);
+                    auto seleccion = ObtenerRutasSeleccionadasDeVista(vistaPendiente, &carpeta);
                     if (seleccion != estado->archivosSeleccionados || carpeta != estado->carpetaContenedora) {
                         TipoVistaContenido tipoPrevio = ClasificarSeleccion(
                             estado->archivosSeleccionados, estado->carpetaContenedora);
@@ -5784,8 +5981,13 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
                         InvalidateRect(hwnd, nullptr, FALSE);
                     }
-                    vista->Release();
+                    vistaPendiente->Release();
+                    vistaPendiente = nullptr;
                 }
+            }
+            } catch (...) {
+                if (vistaPendiente) vistaPendiente->Release();
+                Wh_Log(L"[UsefulSideView] Excepción contenida durante WM_TIMER");
             }
             return 0;
         }
@@ -5801,7 +6003,21 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             if (ancho > 0 && alto > 0 && estado) {
                 if (AsegurarBufferMemoria(estado, hdcPantalla, ancho, alto)) {
                     if (estado->vistaContenido) {
-                        estado->vistaContenido->Renderizar(estado->dcMemoria, rectCliente, estado->tema);
+                        try {
+                            estado->vistaContenido->Renderizar(
+                                estado->dcMemoria, rectCliente, estado->tema);
+                        } catch (...) {
+                            Wh_Log(L"[UsefulSideView] Excepción contenida durante WM_PAINT");
+                            HBRUSH fondo = CreateSolidBrush(estado->tema.fondo);
+                            FillRect(estado->dcMemoria, &rectCliente, fondo);
+                            DeleteObject(fondo);
+                            SetBkMode(estado->dcMemoria, TRANSPARENT);
+                            SetTextColor(estado->dcMemoria, estado->tema.textoSecundario);
+                            DrawTextW(estado->dcMemoria,
+                                      L"Useful Side View no pudo dibujar esta vista.", -1,
+                                      &rectCliente,
+                                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                        }
                     }
                     BitBlt(hdcPantalla, 0, 0, ancho, alto, estado->dcMemoria, 0, 0, SRCCOPY);
                 }
@@ -5858,7 +6074,11 @@ inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM w
 inline LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                 DWORD_PTR) {
     if (msg == WM_SIDEVIEW_TOGGLE) {
-        AlternarSideView(hwnd);
+        try {
+            AlternarSideView(hwnd);
+        } catch (...) {
+            Wh_Log(L"[UsefulSideView] Excepción contenida al alternar el panel");
+        }
         return 0;
     }
 
@@ -6100,6 +6320,7 @@ namespace SideViewV2 {
 
 using CreateWindowExW_t = decltype(&CreateWindowExW);
 inline CreateWindowExW_t CreateWindowExW_Original = nullptr;
+inline thread_local bool g_dentroHookCreateWindowV2{false};
 
 inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
                                         LPCWSTR lpWindowName, DWORD dwStyle,
@@ -6113,10 +6334,18 @@ inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
         return hwnd;
     }
 
+    // La instalación de una subclase puede provocar creación de ventanas
+    // auxiliares. Evitar reentrada aquí impide encadenar el hook sobre sí
+    // mismo durante la construcción de Explorer.
+    if (g_dentroHookCreateWindowV2) return hwnd;
+    g_dentroHookCreateWindowV2 = true;
+
     if (!IS_INTRESOURCE(lpClassName) && (_wcsicmp(lpClassName, L"CabinetWClass") == 0 ||
                                          _wcsicmp(lpClassName, L"ExploreWClass") == 0)) {
         WindhawkUtils::SetWindowSubclassFromAnyThread(hwnd, ProcedimientoSubclaseTop, 0);
     }
+
+    g_dentroHookCreateWindowV2 = false;
 
     return hwnd;
 }
@@ -6142,9 +6371,11 @@ inline void CargarConfiguracionesV2() {
     PCWSTR atajoStr = Wh_GetStringSetting(L"atajoTeclado");
     if (atajoStr && *atajoStr != L'\0') {
         ConfigurarAtajoDesdeString(atajoStr);
-        Wh_FreeStringSetting(atajoStr);
     } else {
         ConfigurarAtajoDesdeString(L"Ctrl+K");
+    }
+    if (atajoStr) {
+        Wh_FreeStringSetting(atajoStr);
     }
 
     int limite = Wh_GetIntSetting(L"limiteCarpetasPesadas");
@@ -6156,9 +6387,13 @@ inline void CargarConfiguracionesV2() {
     g_comparadorVideosPantallaCompletaV2.store(
         Wh_GetIntSetting(L"comparadorVideosPantallaCompleta") != 0,
         std::memory_order_release);
+    g_mostrarVersionModV2.store(
+        Wh_GetIntSetting(L"mostrarVersionMod") != 0,
+        std::memory_order_release);
 }
 
 inline bool InicializarModV2() {
+    g_descargandoMod.store(false, std::memory_order_release);
     WM_SIDEVIEW_TOGGLE = RegisterWindowMessageW(L"UsefulSideView_WM_Toggle_V2");
     WM_SIDEVIEW_SETTINGS = RegisterWindowMessageW(L"UsefulSideView_WM_Settings_V2");
 
