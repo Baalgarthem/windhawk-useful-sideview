@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.0.2
+// @version         4.0.3
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -44,7 +44,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.0.2)
+# Useful Side View V2 (4.0.3)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -59,6 +59,7 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 - **Persistencia nativa**: Historial de programas de "Abrir con" por categoría, migrado y validado con valores persistentes de Windhawk.
 - **Versión visible**: La vista general puede mostrar la versión actual desde el ajuste correspondiente.
+- **Compatibilidad GPU**: El panel coopera con `gpu-accelerated-explorer-view` usando su overlay visual sin alterar su layout DirectComposition.
 */
 // ==/WindhawkModReadme==
 

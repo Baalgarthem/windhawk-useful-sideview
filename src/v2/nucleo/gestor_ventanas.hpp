@@ -95,6 +95,55 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
     RECT rectCliente{};
     GetClientRect(estado->parent, &rectCliente);
 
+    // El renderer GPU es un hijo directo del frame y el mod de referencia
+    // conserva SHELLDLL_DefView como superficie COM oculta. No se debe
+    // redimensionar el overlay GPU: sus hooks de layout y DirectComposition
+    // volverían a ocupar el área completa y podrían producir una carrera de
+    // geometría. El panel se dibuja encima del sector derecho y el overlay
+    // permanece intacto como superficie de Explorer.
+    if (estado->superficie.gpuAcelerada) {
+        if (!IsWindowVisible(estado->view)) {
+            ShowWindow(estado->panel, SW_HIDE);
+            return;
+        }
+        auto compatibilidad = FabricaVistas::Dependencias().compatibilidadGpu;
+        if (!compatibilidad || !compatibilidad->ActualizarLimites(estado->superficie)) {
+            return;
+        }
+        estado->view = estado->superficie.superficieVisual;
+        estado->parent = estado->superficie.contenedor;
+        estado->viewOriginal = estado->superficie.limites;
+        estado->parentCliente = rectCliente;
+
+        const int anchoVista = estado->viewOriginal.right - estado->viewOriginal.left;
+        const int altoVista = estado->viewOriginal.bottom - estado->viewOriginal.top;
+        if (anchoVista < 1 || altoVista < 1) return;
+
+        if (estado->comparadorArchivosActivo) {
+            SetWindowPos(estado->panel, HWND_TOP, estado->viewOriginal.left,
+                         estado->viewOriginal.top, anchoVista, altoVista,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        } else {
+            const int anchoPanelSolicitado = EscalarDpi(estado->anchoDIP, dpi);
+            const int anchoPanelMaximo = std::max(1, anchoVista - EscalarDpi(200, dpi));
+            const int anchoPanelMinimo = std::min(EscalarDpi(220, dpi), anchoPanelMaximo);
+            const int anchoPanel = std::min(
+                std::max(anchoPanelSolicitado, anchoPanelMinimo), anchoPanelMaximo);
+            const RECT rectPanel{
+                estado->viewOriginal.right - anchoPanel,
+                estado->viewOriginal.top,
+                estado->viewOriginal.right,
+                estado->viewOriginal.bottom
+            };
+            SetWindowPos(estado->panel, HWND_TOP, rectPanel.left, rectPanel.top,
+                         rectPanel.right - rectPanel.left,
+                         rectPanel.bottom - rectPanel.top,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+        InvalidateRect(estado->panel, nullptr, FALSE);
+        return;
+    }
+
     int deltaAncho = rectCliente.right - estado->parentCliente.right;
     int deltaAlto = rectCliente.bottom - estado->parentCliente.bottom;
     if (deltaAncho != 0 || deltaAlto != 0) {
@@ -160,6 +209,10 @@ inline void CerrarEstado(EstadoPanelV2* estado) {
         ShowWindow(estado->panel, SW_HIDE);
     }
 
+    // El overlay GPU nunca se redimensionó: sólo se ocultó nuestro panel.
+    // Restaurarlo aquí provocaría una carrera con el layout del mod GPU.
+    if (estado->superficie.gpuAcelerada) return;
+
     // Restaurar el ancho completo de la vista de archivos
     if (estado->view && IsWindow(estado->view)) {
         int anchoTotal = estado->viewOriginal.right - estado->viewOriginal.left;
@@ -186,8 +239,14 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         return nullptr;
     }
 
-    HWND padre = GetParent(ventanaVista);
-    if (!padre) padre = tab ? tab : top;
+    auto compatibilidad = FabricaVistas::Dependencias().compatibilidadGpu;
+    const SuperficieExploradorV2 superficie = compatibilidad
+        ? compatibilidad->Resolver(top, tab, ventanaVista)
+        : SuperficieExploradorV2{};
+    if (!superficie.EsValida()) {
+        vistaShell->Release();
+        return nullptr;
+    }
 
     HWND clave = tab ? tab : top;
     EstadoPanelV2* estado = nullptr;
@@ -201,7 +260,9 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         }
     }
 
-    if (estado && (estado->view != ventanaVista || estado->parent != padre)) {
+    if (estado && (estado->vistaShell != ventanaVista ||
+                   estado->view != superficie.superficieVisual ||
+                   estado->parent != superficie.contenedor)) {
         DestruirEstado(estado, true);
         estado = nullptr;
     }
@@ -210,19 +271,20 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         estado = new EstadoPanelV2();
         estado->top = top;
         estado->tab = clave;
-        estado->view = ventanaVista;
-        estado->parent = padre;
+        estado->vistaShell = ventanaVista;
+        estado->superficie = superficie;
+        estado->view = superficie.superficieVisual;
+        estado->parent = superficie.contenedor;
         estado->tema = ObtenerTemaActual();
 
-        GetWindowRect(ventanaVista, &estado->viewOriginal);
-        MapWindowPoints(HWND_DESKTOP, padre, reinterpret_cast<POINT*>(&estado->viewOriginal), 2);
-        GetClientRect(padre, &estado->parentCliente);
+        estado->viewOriginal = superficie.limites;
+        GetClientRect(estado->parent, &estado->parentCliente);
 
         HINSTANCE hInst = GetModuleHandleW(nullptr);
         estado->panel = CreateWindowExW(
             0, CLASE_PANEL_V2, L"",
             WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-            0, 0, 10, 10, padre, nullptr, hInst, estado);
+            0, 0, 10, 10, estado->parent, nullptr, hInst, estado);
 
         if (!estado->panel) {
             delete estado;
@@ -230,8 +292,9 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
             return nullptr;
         }
 
-        SetWindowSubclass(padre, ProcedimientoSubclasePadre, 1, reinterpret_cast<DWORD_PTR>(estado));
-        if (tab && tab != padre) {
+        SetWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1,
+                          reinterpret_cast<DWORD_PTR>(estado));
+        if (tab && tab != estado->parent) {
             SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2, reinterpret_cast<DWORD_PTR>(estado));
         }
 
@@ -375,6 +438,12 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             IShellView* vistaPendiente = nullptr;
             try {
             if (wParam == 101 && estado && estado->abierto) {
+                if (estado->superficie.gpuAcelerada) {
+                    // El mod GPU puede rehacer su posición después de un
+                    // cambio de pestaña o tamaño. Reubicar sólo nuestro panel
+                    // mantiene la cooperación sin tocar su superficie.
+                    DisponerPanel(estado);
+                }
                 HWND frente = GetForegroundWindow();
                 if (frente && frente != estado->top && GetAncestor(frente, GA_ROOT) != estado->top) {
                     return 0;

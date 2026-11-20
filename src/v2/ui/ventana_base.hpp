@@ -10,6 +10,7 @@
 #include <vector>
 #include "v2/ui/tema_visual.hpp"
 #include "v2/ui/panel_interfaz.hpp"
+#include "v2/nucleo/servicio_compatibilidad_gpu.hpp"
 
 namespace SideViewV2 {
 
@@ -35,9 +36,11 @@ inline UINT ObtenerDpiVentana(HWND hwnd) {
 struct EstadoPanelV2 {
     HWND top{nullptr};           // CabinetWClass
     HWND tab{nullptr};           // ShellTabWindowClass o fallback
-    HWND view{nullptr};          // SHELLDLL_DefView
-    HWND parent{nullptr};        // Contenedor padre de la vista
+    HWND view{nullptr};          // Superficie visual nativa o overlay GPU
+    HWND parent{nullptr};        // Contenedor de la superficie visual
     HWND panel{nullptr};         // Ventana del panel inyectado
+    HWND vistaShell{nullptr};    // SHELLDLL_DefView usado por COM/selección
+    SuperficieExploradorV2 superficie{};
 
     RECT viewOriginal{};        // Coordenadas completas de la vista antes de reflow
     RECT parentCliente{};       // Tamaño cliente del contenedor
