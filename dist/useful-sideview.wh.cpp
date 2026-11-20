@@ -3,11 +3,11 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         3.0.1-alpha
+// @version         4.0.0
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32
+// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lmfplat -lmfreadwrite -lmfuuid
 // @license         MIT
 // ==/WindhawkMod==
 
@@ -22,6 +22,19 @@
   $name: Cantidad de subcarpetas pesadas
   $description: >-
     Número de subcarpetas más pesadas a visualizar por defecto en la vista de carpetas (ej. 3, 5, 10, 20).
+- mostrarNumerosLinea: true
+  $name: Mostrar números de línea en texto y código
+  $description: Activa o desactiva la numeración de líneas en las vistas de texto, Markdown y código.
+- comparadorVideosExperimental: true
+  $name: Comparador de videos (experimental)
+  $description: >-
+    Activa el comparador de videos y su reproductor Media Foundation en la vista general de carpetas.
+    Si aún no hay dos videos seleccionados, se muestra el flujo visual de preparación.
+- comparadorVideosPantallaCompleta: true
+  $name: Pantalla completa y PiP del comparador
+  $description: >-
+    Muestra los controles para alternar un video a pantalla completa y el otro
+    en Picture in Picture dentro del comparador experimental.
 */
 // ==/WindhawkModSettings==
 
@@ -36,7 +49,8 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Pantalla Tutorial (Walkthrough)**: Se activa automáticamente al presionar el atajo sin archivos seleccionados.
 - **Suite Funcional de Comprimidos & Cómics**: Portadas, árbol de archivos, navegación anterior/siguiente, "Abrir con" y selector de conversión.
 - **Suite Funcional de Inspección de Carpetas**: Árbol jerárquico recursivo, cálculo de peso, Top 4 subcarpetas pesadas, enlaces simbólicos, copia de estructura y limpieza de carpetas vacías.
-- **Vistas Especializadas Modulares**: Texto, Imágenes, Video, Documentos y Código (Marcadas como "En desarrollo").
+- **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes.
 */
 // ==/WindhawkModReadme==
 
@@ -78,9 +92,7 @@ struct TemaVisual {
     COLORREF textoPrincipal{RGB(240, 240, 240)};
     COLORREF textoSecundario{RGB(160, 160, 160)};
     COLORREF acento{RGB(0, 120, 215)};
-    COLORREF acentoHover{RGB(30, 144, 255)};
     COLORREF botonFondo{RGB(50, 50, 50)};
-    COLORREF botonHover{RGB(70, 70, 70)};
 };
 
 inline TemaVisual ObtenerTemaActual() {
@@ -107,7 +119,6 @@ inline TemaVisual ObtenerTemaActual() {
         tema.textoPrincipal = RGB(33, 37, 41);
         tema.textoSecundario = RGB(108, 117, 125);
         tema.botonFondo = RGB(235, 238, 242);
-        tema.botonHover = RGB(220, 224, 230);
     }
 
     return tema;
@@ -124,6 +135,12 @@ inline TemaVisual ObtenerTemaActual() {
 
 namespace SideViewV2 {
 
+inline constexpr UINT WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS = WM_APP + 0x4A2;
+inline constexpr UINT WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS = WM_APP + 0x4A3;
+inline constexpr UINT WM_SIDEVIEW_VIDEO_EVENT_V2 = WM_APP + 0x4A4;
+inline constexpr UINT WM_SIDEVIEW_COMPARADOR_TICK = WM_APP + 0x4A5;
+inline constexpr UINT WM_SIDEVIEW_COMPARADOR_PIP_CLICK = WM_APP + 0x4A6;
+
 class IPanelContenido {
 public:
     virtual ~IPanelContenido() = default;
@@ -133,10 +150,14 @@ public:
 
     // Notificación de cambio de selección en Explorer
     virtual void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) = 0;
+    // Montaje opcional de superficies/recursos inyectados después de crear el panel.
+    virtual void AlActivar(HWND) {}
+    virtual void ActualizarConfiguracion() {}
 
     // Manejo de eventos de ratón/teclado en el panel (retornan true si consumieron el evento)
     virtual bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) { return false; }
     virtual bool ProcesarMensajeTeclado(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) { return false; }
+    virtual bool ProcesarMensajeVentana(UINT, WPARAM, LPARAM, HWND) { return false; }
 
     // Liberación segura de recursos pesados
     virtual void Liberar() {}
@@ -150,6 +171,7 @@ public:
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -157,6 +179,7 @@ public:
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
 
 namespace SideViewV2 {
+
 
 constexpr wchar_t CLASE_PANEL_V2[] = L"UsefulSideView_Panel_V2";
 
@@ -186,8 +209,9 @@ struct EstadoPanelV2 {
     RECT viewOriginal{};        // Coordenadas completas de la vista antes de reflow
     RECT parentCliente{};       // Tamaño cliente del contenedor
     bool abierto{false};
+    bool comparadorVideosActivo{false};
+    std::atomic_bool destruyendo{false};
     int anchoDIP{380};          // Ancho por defecto en DIP
-    bool dockDerecha{true};
 
     // Doble buffer para renderizado sin parpadeo (anti-flicker)
     HDC dcMemoria{nullptr};
@@ -202,8 +226,6 @@ struct EstadoPanelV2 {
     // Proveedor de contenido actual (inyectado)
     std::shared_ptr<IPanelContenido> vistaContenido;
 
-    // Metadatos para el prototipo
-    std::wstring rutaActiva;
     std::vector<std::wstring> archivosSeleccionados;
     std::wstring carpetaContenedora;
 };
@@ -270,13 +292,14 @@ namespace SideViewV2 {
 
 enum class TipoVistaContenido {
     Tutorial,      // Walkthrough Screen (cuando no hay selección)
-    Comprimidos,   // Vista funcional de ZIP, RAR, CBZ, CBR, 7Z, TAR, etc.
-    Texto,         // Vista de TXT, Markdown (en desarrollo)
-    Imagen,        // Vista de PNG, JPG, WebP, GIF, etc. (en desarrollo)
-    Video,         // Vista de MP4, MKV, AVI, etc. (en desarrollo)
+    Comprimidos,   // ZIP, RAR, 7Z, TAR y otros comprimidos comunes.
+    Comics,        // CBZ, CBR, CBX y formatos equivalentes.
+    Texto,         // Vista de TXT, Markdown y formatos de texto
+    Imagen,        // Vista de PNG, JPG, WebP, GIF, etc.
+    Video,         // Vista de MP4, MKV, AVI, etc.
     Documentos,    // Vista de PDF, DOCX, XLSX, etc. (en desarrollo)
-    Codigo,        // Vista de C++, Python, JS, etc. (en desarrollo)
-    Carpetas,      // Vista de inspección de árbol de carpetas (en desarrollo)
+    Codigo,        // Vista de C++, Python, JS, etc.
+    Carpetas,      // Vista de inspección de árbol de carpetas
     Desconocido    // Archivo genérico / visor pendiente (en desarrollo)
 };
 
@@ -307,11 +330,21 @@ inline bool EsExtensionComprimido(const wchar_t* extension) {
     wchar_t ext[32]{};
     NormalizarExtension(extension, ext, ARRAYSIZE(ext));
     static const wchar_t* const EXT_COMPRIMIDOS[] = {
-        L".7z", L".bz2", L".bzip2", L".cbr", L".cbz", L".gz", L".gzip",
+        L".7z", L".bz2", L".bzip2", L".gz", L".gzip",
         L".iso", L".rar", L".tar", L".tbz2", L".tgz", L".txz", L".xz",
         L".z", L".zip", L".zipx"
     };
     return CoincideExtension(ext, EXT_COMPRIMIDOS, ARRAYSIZE(EXT_COMPRIMIDOS));
+}
+
+inline bool EsExtensionComic(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    static const wchar_t* const EXT_COMICS[] = {
+        L".cb7", L".cba", L".cbr", L".cbt", L".cbx", L".cbz"
+    };
+    return CoincideExtension(ext, EXT_COMICS, ARRAYSIZE(EXT_COMICS));
 }
 
 inline bool EsExtensionImagen(const wchar_t* extension) {
@@ -381,6 +414,7 @@ inline TipoVistaContenido ClasificarRuta(const wchar_t* ruta) {
     if (EsRutaCarpeta(ruta)) return TipoVistaContenido::Carpetas;
 
     const wchar_t* ext = PathFindExtensionW(ruta);
+    if (EsExtensionComic(ext)) return TipoVistaContenido::Comics;
     if (EsExtensionComprimido(ext)) return TipoVistaContenido::Comprimidos;
     if (EsExtensionImagen(ext)) return TipoVistaContenido::Imagen;
     if (EsExtensionVideo(ext)) return TipoVistaContenido::Video;
@@ -404,30 +438,31 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
     }
 
     size_t cComprimidos = 0;
+    size_t cComics = 0;
     size_t cImagenes = 0;
     size_t cVideos = 0;
     size_t cTexto = 0;
     size_t cCodigo = 0;
     size_t cDocs = 0;
     size_t cCarpetas = 0;
-    size_t cOtros = 0;
-
     for (const auto& r : seleccion) {
         TipoVistaContenido t = ClasificarRuta(r.c_str());
         switch (t) {
             case TipoVistaContenido::Comprimidos: cComprimidos++; break;
+            case TipoVistaContenido::Comics: cComics++; break;
             case TipoVistaContenido::Imagen: cImagenes++; break;
             case TipoVistaContenido::Video: cVideos++; break;
             case TipoVistaContenido::Texto: cTexto++; break;
             case TipoVistaContenido::Codigo: cCodigo++; break;
             case TipoVistaContenido::Documentos: cDocs++; break;
             case TipoVistaContenido::Carpetas: cCarpetas++; break;
-            default: cOtros++; break;
+            default: break;
         }
     }
 
     size_t total = seleccion.size();
     if (cComprimidos == total) return TipoVistaContenido::Comprimidos;
+    if (cComics == total) return TipoVistaContenido::Comics;
     if (cImagenes == total) return TipoVistaContenido::Imagen;
     if (cVideos == total) return TipoVistaContenido::Video;
     if (cTexto == total) return TipoVistaContenido::Texto;
@@ -437,6 +472,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
 
     // Preferencias prioritarias en selecciones mixtas
     if (cComprimidos > 0) return TipoVistaContenido::Comprimidos;
+    if (cComics > 0) return TipoVistaContenido::Comics;
     if (cImagenes > 0) return TipoVistaContenido::Imagen;
     if (cVideos > 0) return TipoVistaContenido::Video;
     if (cTexto > 0) return TipoVistaContenido::Texto;
@@ -453,12 +489,27 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
 /**** skipping file: v2/ui/ventana_base.hpp ****/
+/**** start inlining v2/nucleo/servicio_enlaces.hpp ****/
+#include <windows.h>
 #include <shellapi.h>
+#include <string>
+namespace SideViewV2 {
+class ServicioEnlacesV2 {
+public:
+    bool Abrir(const std::wstring& destino) const {
+        if (destino.empty()) return false;
+        return reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", destino.c_str(), nullptr, nullptr, SW_SHOWNORMAL)) > 32;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_enlaces.hpp ****/
+#include <memory>
 
 namespace SideViewV2 {
 
 class VistaWalkthrough : public IPanelContenido {
 public:
+    explicit VistaWalkthrough(std::shared_ptr<ServicioEnlacesV2> enlaces) : m_enlaces(std::move(enlaces)) {}
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
         m_carpeta = carpeta;
     }
@@ -467,7 +518,7 @@ public:
         if (msg == WM_LBUTTONDOWN) {
             POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             if (PtInRect(&m_rectLinkGithub, pt)) {
-                ShellExecuteW(nullptr, L"open", m_urlGithub.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                m_enlaces->Abrir(m_urlGithub);
                 return true;
             }
         }
@@ -633,6 +684,7 @@ private:
 
     std::wstring m_carpeta;
     std::wstring m_urlGithub{L"https://github.com/ramonrey/windhawk-useful-sideview"};
+    std::shared_ptr<ServicioEnlacesV2> m_enlaces;
     RECT m_rectLinkGithub{};
 };
 
@@ -642,76 +694,1473 @@ private:
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
 /**** skipping file: v2/ui/ventana_base.hpp ****/
-/**** start inlining v2/nucleo/programas_recordados.hpp ****/
-#include <string>
-#include <vector>
+/**** start inlining v2/nucleo/servicios_vistas.hpp ****/
+/**** start inlining v2/nucleo/servicio_navegacion.hpp ****/
+#include <cstddef>
+namespace SideViewV2 {
+class ServicioNavegacionV2 {
+public:
+    size_t Anterior(size_t actual, size_t total) const {
+        if (total == 0) return 0;
+        if (actual >= total) return total - 1;
+        return actual == 0 ? total - 1 : actual - 1;
+    }
+
+    size_t Siguiente(size_t actual, size_t total) const {
+        if (total == 0) return 0;
+        if (actual >= total - 1) return 0;
+        return actual + 1;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_navegacion.hpp ****/
+/**** start inlining v2/nucleo/servicio_abrir_con.hpp ****/
+
+#include <windows.h>
+#include <commdlg.h>
+#include <shellapi.h>
+#include <windhawk_api.h>
 #include <algorithm>
+#include <cwchar>
+#include <mutex>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace SideViewV2 {
-struct ProgramasRecordadosV2 {
-    std::vector<std::wstring> carpetas{L"code.exe", L"explorer.exe", L"cmd.exe", L"powershell.exe"};
-    std::vector<std::wstring> comprimidos;
-    std::wstring ultimoCarpetas;
-    std::wstring ultimoComprimidos;
+
+class ServicioAbrirConV2 {
+public:
+    ServicioAbrirConV2(std::wstring clavePersistencia,
+                       std::vector<std::wstring> inicial = {})
+        : m_clavePersistencia(std::move(clavePersistencia)),
+          m_programas(std::move(inicial)) {
+        CargarPersistencia();
+    }
+
+    std::vector<std::wstring> Programas() const {
+        std::lock_guard<std::mutex> lock(m_bloqueo);
+        return m_programas;
+    }
+
+    std::wstring ProgramaActual() const {
+        std::lock_guard<std::mutex> lock(m_bloqueo);
+        return m_ultimo.empty() && m_programas.size() == 1 ? m_programas.front() : m_ultimo;
+    }
+
+    void Seleccionar(const std::wstring& ruta) {
+        if (ruta.empty()) return;
+        std::lock_guard<std::mutex> lock(m_bloqueo);
+        bool agregado = false;
+        size_t indiceNuevo = 0;
+        if (std::find_if(m_programas.begin(), m_programas.end(),
+                         [&ruta](const std::wstring& programa) { return EsMismoPrograma(programa, ruta); }) == m_programas.end()) {
+            m_programas.push_back(ruta);
+            agregado = true;
+            indiceNuevo = m_programas.size() - 1;
+        }
+        if (!agregado && EsMismoPrograma(m_ultimo, ruta)) return;
+        m_ultimo = ruta;
+        GuardarPersistenciaBloqueada(agregado ? indiceNuevo : m_programas.size());
+    }
+
+    bool AbrirDialogo(HWND owner) {
+        wchar_t ruta[MAX_PATH]{};
+        OPENFILENAMEW dialogo{};
+        dialogo.lStructSize = sizeof(dialogo);
+        dialogo.hwndOwner = owner;
+        dialogo.lpstrFilter = L"Programas ejecutables (*.exe)\0*.exe\0Todos los archivos (*.*)\0*.*\0";
+        dialogo.lpstrFile = ruta;
+        dialogo.nMaxFile = ARRAYSIZE(ruta);
+        dialogo.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
+        if (!GetOpenFileNameW(&dialogo)) return false;
+        Seleccionar(ruta);
+        return true;
+    }
+
+    bool Ejecutar(const std::vector<std::wstring>& archivos) const {
+        std::wstring programa = ProgramaActual();
+        if (programa.empty()) return false;
+        bool algunoAbierto = false;
+        for (const auto& archivo : archivos) {
+            HINSTANCE resultado = ShellExecuteW(
+                nullptr, L"open", programa.c_str(),
+                (L"\"" + archivo + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
+            if (reinterpret_cast<INT_PTR>(resultado) > 32) algunoAbierto = true;
+        }
+        return algunoAbierto;
+    }
+
+private:
+    static bool EsMismoPrograma(const std::wstring& izquierdo, const std::wstring& derecho) {
+        return _wcsicmp(izquierdo.c_str(), derecho.c_str()) == 0;
+    }
+
+    std::wstring Clave(const wchar_t* sufijo) const {
+        return L"abrirCon.v2." + m_clavePersistencia + L"." + sufijo;
+    }
+
+    static std::wstring LeerCadena(const std::wstring& clave) {
+        size_t capacidad = 512;
+        while (capacidad <= 32768) {
+            std::vector<wchar_t> buffer(capacidad, L'\0');
+            size_t copiados = Wh_GetStringValue(clave.c_str(), buffer.data(), buffer.size());
+            if (copiados > 0 && copiados < buffer.size()) return std::wstring(buffer.data(), copiados);
+            capacidad *= 2;
+        }
+        return {};
+    }
+
+    void CargarPersistencia() {
+        if (m_clavePersistencia.empty()) return;
+        std::wstring textoCantidad = LeerCadena(Clave(L"count").c_str());
+        if (textoCantidad.empty()) return;
+        wchar_t* fin = nullptr;
+        unsigned long long cantidadRaw = wcstoull(textoCantidad.c_str(), &fin, 10);
+        if (fin == textoCantidad.c_str() || *fin != L'\0' || cantidadRaw > 1000000ULL || cantidadRaw > std::numeric_limits<size_t>::max()) return;
+        size_t cantidad = static_cast<size_t>(cantidadRaw);
+        for (size_t i = 0; i < cantidad; ++i) {
+            std::wstring indice = std::to_wstring(i);
+            std::wstring programa = LeerCadena(Clave((L"program." + indice).c_str()));
+            if (!programa.empty() && std::find_if(m_programas.begin(), m_programas.end(),
+                                                  [&programa](const std::wstring& existente) {
+                                                      return EsMismoPrograma(existente, programa);
+                                                  }) == m_programas.end()) {
+                m_programas.push_back(std::move(programa));
+            }
+        }
+        m_ultimo = LeerCadena(Clave(L"last").c_str());
+        if (!m_ultimo.empty() && std::find_if(m_programas.begin(), m_programas.end(),
+                                              [this](const std::wstring& existente) {
+                                                  return EsMismoPrograma(existente, m_ultimo);
+                                              }) == m_programas.end()) {
+            m_programas.push_back(m_ultimo);
+        }
+    }
+
+    void GuardarPersistenciaBloqueada(size_t indiceNuevo) {
+        if (m_clavePersistencia.empty()) return;
+        if (indiceNuevo < m_programas.size()) {
+            std::wstring indice = std::to_wstring(indiceNuevo);
+            std::wstring clavePrograma = Clave((L"program." + indice).c_str());
+            Wh_SetStringValue(clavePrograma.c_str(), m_programas[indiceNuevo].c_str());
+        }
+        std::wstring cantidad = std::to_wstring(m_programas.size());
+        Wh_SetStringValue(Clave(L"count").c_str(), cantidad.c_str());
+        Wh_SetStringValue(Clave(L"last").c_str(), m_ultimo.c_str());
+    }
+
+    std::wstring m_clavePersistencia;
+    std::vector<std::wstring> m_programas;
+    std::wstring m_ultimo;
+    mutable std::mutex m_bloqueo;
 };
-inline ProgramasRecordadosV2 g_programasRecordadosV2;
-inline void RecordarProgramaV2(std::vector<std::wstring>& lista, std::wstring& ultimo, const std::wstring& ruta) {
-    if (ruta.empty()) return;
-    if (std::find(lista.begin(), lista.end(), ruta) == lista.end()) lista.push_back(ruta);
-    ultimo = ruta;
-}
-inline std::wstring ProgramaSeleccionadoV2(const std::vector<std::wstring>& lista, const std::wstring& ultimo) {
-    if (!ultimo.empty()) return ultimo;
-    return lista.size() == 1 ? lista.front() : std::wstring();
-}
-}
-/**** ended inlining v2/nucleo/programas_recordados.hpp ****/
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_abrir_con.hpp ****/
+/**** start inlining v2/nucleo/servicio_extension.hpp ****/
 #include <windows.h>
-#include <shellapi.h>
-#include <shlobj.h>
-#include <shobjidl.h>
+#include <shlwapi.h>
+#include <algorithm>
+#include <string>
+#include <vector>
+namespace SideViewV2 {
+class ServicioExtensionV2 {
+public:
+    size_t Cambiar(const std::vector<std::wstring>& archivos, const std::wstring& extension) const {
+        std::wstring ext = extension;
+        if (ext.empty()) return 0;
+        if (ext.front() != L'.') ext.insert(ext.begin(), L'.');
+        if (ext.size() > 32 || ext.find_first_of(L"\\/:*?\"<>|\r\n") != std::wstring::npos) return 0;
+
+        size_t total = 0;
+        for (const auto& origen : archivos) {
+            DWORD atributos = GetFileAttributesW(origen.c_str());
+            if (atributos == INVALID_FILE_ATTRIBUTES ||
+                (atributos & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT))) {
+                continue;
+            }
+
+            // PathRenameExtensionW escribe sobre el buffer recibido. Reservar
+            // espacio adicional evita desbordamientos si la nueva extensión
+            // es más larga que la original.
+            std::vector<wchar_t> buffer(origen.size() + ext.size() + 2, L'\0');
+            std::copy(origen.begin(), origen.end(), buffer.begin());
+            if (!PathRenameExtensionW(buffer.data(), ext.c_str())) continue;
+            std::wstring destino(buffer.data());
+            if (_wcsicmp(origen.c_str(), destino.c_str()) == 0 ||
+                GetFileAttributesW(destino.c_str()) != INVALID_FILE_ATTRIBUTES) {
+                continue;
+            }
+            if (MoveFileExW(origen.c_str(), destino.c_str(), MOVEFILE_COPY_ALLOWED)) ++total;
+        }
+        return total;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_extension.hpp ****/
+/**** start inlining v2/nucleo/servicios_carpetas.hpp ****/
+
+#include <windows.h>
+#include <atomic>
+#include <string>
+#include <vector>
+#include <thread>
+#include <exception>
+#include <mutex>
+#include <cwchar>
+
+namespace SideViewV2 {
+
+struct ResultadoFusionCarpetasV2 {
+    size_t elementosTransferidos{0};
+    size_t errores{0};
+};
+
+class ServicioFusionCarpetasV2 {
+public:
+    static constexpr UINT WM_FUSION_COMPLETADA = WM_APP + 0x4A1;
+
+    ~ServicioFusionCarpetasV2() { FinalizarTrabajo(); }
+
+    bool EjecutarEnSegundoPlano(const std::vector<std::wstring>& origenes,
+                                const std::wstring& destino,
+                                HWND hwndNotificacion) {
+        std::lock_guard<std::mutex> lock(m_bloqueo);
+        if (m_hilo.joinable()) {
+            if (!m_trabajoTerminado.load(std::memory_order_acquire)) return false;
+            m_hilo.join();
+        }
+        m_cancelar.store(false, std::memory_order_release);
+        m_trabajoTerminado.store(false, std::memory_order_release);
+        try {
+            m_hilo = std::thread([this, origenes, destino, hwndNotificacion]() {
+                ResultadoFusionCarpetasV2 resultado{};
+                try {
+                    resultado = Ejecutar(origenes, destino);
+                } catch (...) {
+                    // Ninguna excepción del trabajo de archivos debe escapar del hilo del mod.
+                    resultado.errores = 1;
+                }
+                {
+                    std::lock_guard<std::mutex> resultadoLock(m_bloqueo);
+                    m_ultimoResultado = resultado;
+                }
+                m_trabajoTerminado.store(true, std::memory_order_release);
+                if (IsWindow(hwndNotificacion)) PostMessageW(hwndNotificacion, WM_FUSION_COMPLETADA, 0, 0);
+            });
+            return true;
+        } catch (const std::exception&) {
+            // La operación queda sin iniciar si el sistema no puede crear el hilo.
+            return false;
+        }
+    }
+
+    ResultadoFusionCarpetasV2 UltimoResultado() const {
+        std::lock_guard<std::mutex> lock(m_bloqueo);
+        return m_ultimoResultado;
+    }
+
+    void FinalizarTrabajo() {
+        m_cancelar.store(true, std::memory_order_release);
+        std::thread trabajo;
+        {
+            std::lock_guard<std::mutex> lock(m_bloqueo);
+            if (!m_hilo.joinable()) return;
+            trabajo = std::move(m_hilo);
+        }
+        if (trabajo.joinable()) trabajo.join();
+    }
+
+    ResultadoFusionCarpetasV2 Ejecutar(const std::vector<std::wstring>& origenes,
+                                       const std::wstring& destino) {
+        ResultadoFusionCarpetasV2 resultado{};
+        if (origenes.empty() || destino.empty()) { resultado.errores = 1; return resultado; }
+        const std::wstring destinoCompleto = RutaCompleta(destino);
+        std::vector<std::wstring> origenesCompletos;
+        origenesCompletos.reserve(origenes.size());
+        for (const auto& origen : origenes) origenesCompletos.push_back(RutaCompleta(origen));
+        for (size_t i = 0; i < origenes.size(); ++i) {
+            if (m_cancelar.load(std::memory_order_acquire)) {
+                resultado.errores = origenes.size();
+                return resultado;
+            }
+            const std::wstring& origenCompleto = origenesCompletos[i];
+            if (EsMismaRutaOContenida(origenCompleto, destinoCompleto)) {
+                resultado.errores = origenes.size();
+                return resultado;
+            }
+            for (size_t j = i + 1; j < origenes.size(); ++j) {
+                const std::wstring& otroOrigen = origenesCompletos[j];
+                if (EsMismaRutaOContenida(origenCompleto, otroOrigen) ||
+                    EsMismaRutaOContenida(otroOrigen, origenCompleto)) {
+                    resultado.errores = origenes.size();
+                    return resultado;
+                }
+            }
+        }
+        DWORD atributos = GetFileAttributesW(destino.c_str());
+        if (atributos != INVALID_FILE_ATTRIBUTES && (!(atributos & FILE_ATTRIBUTE_DIRECTORY) || (atributos & FILE_ATTRIBUTE_REPARSE_POINT))) {
+            resultado.errores = origenes.size();
+            return resultado;
+        }
+        if (atributos == INVALID_FILE_ATTRIBUTES && !CreateDirectoryW(destino.c_str(), nullptr)) {
+            resultado.errores = origenes.size();
+            return resultado;
+        }
+        for (const auto& origen : origenes) {
+            if (m_cancelar.load(std::memory_order_acquire)) {
+                ++resultado.errores;
+                break;
+            }
+            DWORD origenAtributos = GetFileAttributesW(origen.c_str());
+            if (origenAtributos == INVALID_FILE_ATTRIBUTES || !(origenAtributos & FILE_ATTRIBUTE_DIRECTORY) || (origenAtributos & FILE_ATTRIBUTE_REPARSE_POINT)) {
+                ++resultado.errores;
+                continue;
+            }
+            size_t erroresAntes = resultado.errores;
+            Transferir(origen, destino, resultado, 0);
+            if (resultado.errores == erroresAntes && !RemoveDirectoryW(origen.c_str())) ++resultado.errores;
+        }
+        return resultado;
+    }
+
+private:
+    static std::wstring RutaCompleta(const std::wstring& ruta) {
+        DWORD capacidad = MAX_PATH;
+        while (capacidad <= 32768) {
+            std::vector<wchar_t> buffer(capacidad, L'\0');
+            DWORD longitud = GetFullPathNameW(ruta.c_str(), capacidad, buffer.data(), nullptr);
+            if (longitud == 0) return ruta;
+            if (longitud < capacidad) {
+                std::wstring completa(buffer.data(), longitud);
+                while (completa.size() > 3 &&
+                       (completa.back() == L'\\' || completa.back() == L'/')) {
+                    completa.pop_back();
+                }
+                return completa;
+            }
+            capacidad *= 2;
+        }
+        return ruta;
+    }
+
+    static bool EsMismaRutaOContenida(const std::wstring& padre,
+                                      const std::wstring& posibleDescendiente) {
+        if (_wcsicmp(padre.c_str(), posibleDescendiente.c_str()) == 0) return true;
+        if (posibleDescendiente.size() <= padre.size() ||
+            _wcsnicmp(padre.c_str(), posibleDescendiente.c_str(), padre.size()) != 0) {
+            return false;
+        }
+        wchar_t separador = posibleDescendiente[padre.size()];
+        return separador == L'\\' || separador == L'/';
+    }
+
+    void Transferir(const std::wstring& origen, const std::wstring& destinoActual,
+                    ResultadoFusionCarpetasV2& resultado, int profundidad) const {
+        if (profundidad >= 64) { ++resultado.errores; return; }
+        WIN32_FIND_DATAW datos{};
+        HANDLE busqueda = FindFirstFileW((origen + L"\\*").c_str(), &datos);
+        if (busqueda == INVALID_HANDLE_VALUE) { ++resultado.errores; return; }
+        bool enumeracionCompleta = true;
+        do {
+            if (m_cancelar.load(std::memory_order_acquire)) {
+                ++resultado.errores;
+                enumeracionCompleta = false;
+                break;
+            }
+            if (!wcscmp(datos.cFileName, L".") || !wcscmp(datos.cFileName, L"..")) continue;
+            std::wstring origenItem = origen + L"\\" + datos.cFileName;
+            std::wstring destinoItem = destinoActual + L"\\" + datos.cFileName;
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                if (datos.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+                DWORD destinoAtributos = GetFileAttributesW(destinoItem.c_str());
+                if (destinoAtributos != INVALID_FILE_ATTRIBUTES && !(destinoAtributos & FILE_ATTRIBUTE_DIRECTORY)) { ++resultado.errores; continue; }
+                if (destinoAtributos == INVALID_FILE_ATTRIBUTES && !CreateDirectoryW(destinoItem.c_str(), nullptr)) { ++resultado.errores; continue; }
+                size_t erroresAntes = resultado.errores;
+                Transferir(origenItem, destinoItem, resultado, profundidad + 1);
+                if (resultado.errores == erroresAntes && RemoveDirectoryW(origenItem.c_str())) {
+                    ++resultado.elementosTransferidos;
+                }
+            } else if (MoveFileExW(origenItem.c_str(), destinoItem.c_str(), MOVEFILE_COPY_ALLOWED)) {
+                ++resultado.elementosTransferidos;
+            } else {
+                ++resultado.errores;
+            }
+        } while (FindNextFileW(busqueda, &datos));
+        if (enumeracionCompleta && GetLastError() != ERROR_NO_MORE_FILES) ++resultado.errores;
+        FindClose(busqueda);
+    }
+    std::thread m_hilo;
+    std::atomic_bool m_cancelar{false};
+    std::atomic_bool m_trabajoTerminado{false};
+    ResultadoFusionCarpetasV2 m_ultimoResultado{};
+    mutable std::mutex m_bloqueo;
+};
+}
+/**** ended inlining v2/nucleo/servicios_carpetas.hpp ****/
+/**** start inlining v2/nucleo/servicio_texto.hpp ****/
+#include <windows.h>
 #include <commdlg.h>
 #include <string>
 #include <vector>
-#include <map>
 #include <algorithm>
+#include <cstring>
+#include <atomic>
+
+namespace SideViewV2 {
+inline std::atomic_bool g_mostrarNumerosLineaV2{true};
+
+struct DocumentoTextoV2 { std::wstring ruta; std::vector<std::wstring> lineas; std::vector<size_t> indice; };
+
+class ServicioTextoV2 {
+public:
+    DocumentoTextoV2 Cargar(const std::wstring& ruta) const {
+        DocumentoTextoV2 documento; documento.ruta = ruta;
+        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (archivo == INVALID_HANDLE_VALUE) return documento;
+        LARGE_INTEGER tam{}; if (!GetFileSizeEx(archivo, &tam) || tam.QuadPart > 16 * 1024 * 1024) { CloseHandle(archivo); return documento; }
+        std::string bytes(static_cast<size_t>(tam.QuadPart), '\0'); DWORD leidos = 0; size_t totalLeido = 0;
+        while (totalLeido < bytes.size()) { DWORD bloque = 0; if (!ReadFile(archivo, bytes.data() + totalLeido, static_cast<DWORD>(bytes.size() - totalLeido), &bloque, nullptr) || bloque == 0) break; totalLeido += bloque; }
+        leidos = static_cast<DWORD>(totalLeido);
+        CloseHandle(archivo); bytes.resize(leidos);
+        int caracteres = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0);
+        UINT pagina = CP_UTF8;
+        if (caracteres <= 0) { caracteres = MultiByteToWideChar(CP_ACP, 0, bytes.data(), static_cast<int>(bytes.size()), nullptr, 0); pagina = CP_ACP; }
+        std::wstring texto(static_cast<size_t>(std::max(0, caracteres)), L'\0');
+        if (caracteres > 0) MultiByteToWideChar(pagina, 0, bytes.data(), static_cast<int>(bytes.size()), texto.data(), caracteres);
+        if (!texto.empty() && texto.front() == L'\ufeff') texto.erase(texto.begin());
+        size_t inicio = 0;
+        while (inicio <= texto.size()) { size_t fin = texto.find_first_of(L"\r\n", inicio); documento.lineas.push_back(texto.substr(inicio, fin == std::wstring::npos ? fin : fin - inicio)); if (fin == std::wstring::npos) break; inicio = fin + 1; if (texto[fin] == L'\r' && inicio < texto.size() && texto[inicio] == L'\n') ++inicio; }
+        for (size_t i=0;i<documento.lineas.size();++i) if (documento.lineas[i].find_first_not_of(L" \t") != std::wstring::npos && (documento.lineas[i][0] == L'#' || documento.lineas[i].find(L"TODO") != std::wstring::npos)) documento.indice.push_back(i);
+        return documento;
+    }
+    bool Copiar(const std::wstring& texto) const { if(!OpenClipboard(nullptr)) return false; if(!EmptyClipboard()){CloseClipboard();return false;} HGLOBAL h=GlobalAlloc(GMEM_MOVEABLE,(texto.size()+1)*sizeof(wchar_t)); if(!h){CloseClipboard();return false;} void* p=GlobalLock(h); if(!p){GlobalFree(h);CloseClipboard();return false;} memcpy(p,texto.c_str(),(texto.size()+1)*sizeof(wchar_t)); GlobalUnlock(h); if(!SetClipboardData(CF_UNICODETEXT,h)){GlobalFree(h);CloseClipboard();return false;} CloseClipboard(); return true; }
+    bool Renombrar(HWND owner, const std::wstring& actual) const {
+        if (actual.empty()) return false;
+        size_t separador = actual.find_last_of(L"\\/");
+        std::wstring carpeta = separador == std::wstring::npos ? L"" : actual.substr(0, separador);
+        const wchar_t* nombreActual = separador == std::wstring::npos ? actual.c_str() : actual.c_str() + separador + 1;
+
+        std::vector<wchar_t> destino(32768, L'\0');
+        wcsncpy_s(destino.data(), destino.size(), nombreActual, _TRUNCATE);
+        OPENFILENAMEW dialogo{};
+        dialogo.lStructSize = sizeof(dialogo);
+        dialogo.hwndOwner = owner;
+        dialogo.lpstrFile = destino.data();
+        dialogo.nMaxFile = static_cast<DWORD>(destino.size());
+        dialogo.lpstrTitle = L"Renombrar archivo";
+        dialogo.lpstrFilter = L"Todos los archivos (*.*)\0*.*\0";
+        dialogo.Flags = OFN_PATHMUSTEXIST | OFN_NOREADONLYRETURN | OFN_NODEREFERENCELINKS;
+        if (!GetSaveFileNameW(&dialogo)) return false;
+
+        std::wstring nuevoNombre = destino.data();
+        size_t ultimoSeparador = nuevoNombre.find_last_of(L"\\/");
+        if (ultimoSeparador != std::wstring::npos) nuevoNombre = nuevoNombre.substr(ultimoSeparador + 1);
+        if (nuevoNombre.empty() || nuevoNombre == L"." || nuevoNombre == L".." ||
+            nuevoNombre.find_first_of(L"\\/:*?\"<>|\r\n") != std::wstring::npos) {
+            return false;
+        }
+
+        std::wstring nueva = carpeta.empty() ? nuevoNombre : carpeta + L"\\" + nuevoNombre;
+        if (_wcsicmp(actual.c_str(), nueva.c_str()) == 0 ||
+            GetFileAttributesW(nueva.c_str()) != INVALID_FILE_ATTRIBUTES) return false;
+        return MoveFileW(actual.c_str(), nueva.c_str()) != FALSE;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_texto.hpp ****/
+/**** start inlining v2/nucleo/servicio_previsualizacion_media.hpp ****/
+
+#include <windows.h>
+#include <wincodec.h>
+#include <shobjidl.h>
+#include <string>
+/**** start inlining v2/nucleo/servicio_com.hpp ****/
+
+#include <windows.h>
 
 namespace SideViewV2 {
 
+class AmbitoComV2 final {
+public:
+    AmbitoComV2() : m_resultado(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED)) {}
+
+    ~AmbitoComV2() {
+        if (m_resultado == S_OK) CoUninitialize();
+    }
+
+    bool Disponible() const {
+        return SUCCEEDED(m_resultado) || m_resultado == RPC_E_CHANGED_MODE;
+    }
+
+private:
+    HRESULT m_resultado{E_FAIL};
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_com.hpp ****/
+
+namespace SideViewV2 {
+class ServicioPrevisualizacionMediaV2 {
+public:
+    HBITMAP CargarImagen(const std::wstring& ruta) const {
+        AmbitoComV2 com;
+        if (!com.Disponible()) return nullptr;
+        IWICImagingFactory* fabrica = nullptr; IWICBitmapDecoder* decoder = nullptr;
+        IWICBitmapFrameDecode* frame = nullptr; IWICFormatConverter* converter = nullptr;
+        HBITMAP resultado = nullptr;
+        if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&fabrica))) ||
+            FAILED(fabrica->CreateDecoderFromFilename(ruta.c_str(), nullptr, GENERIC_READ, WICDecodeMetadataCacheOnLoad, &decoder)) ||
+            FAILED(decoder->GetFrame(0, &frame)) || FAILED(fabrica->CreateFormatConverter(&converter)) ||
+            FAILED(converter->Initialize(frame, GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
+            if (converter) converter->Release(); if (frame) frame->Release(); if (decoder) decoder->Release(); if (fabrica) fabrica->Release(); return nullptr;
+        }
+        UINT ancho=0, alto=0; converter->GetSize(&ancho,&alto);
+        if (ancho == 0 || alto == 0 || ancho > 8192 || alto > 8192 || static_cast<ULONGLONG>(ancho) * alto > 16ULL * 1024 * 1024) { converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return nullptr; }
+        BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth=static_cast<LONG>(ancho); info.bmiHeader.biHeight=-static_cast<LONG>(alto); info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=24; info.bmiHeader.biCompression=BI_RGB;
+        void* bits=nullptr; HDC dc=GetDC(nullptr); resultado=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0); ReleaseDC(nullptr,dc);
+        UINT stride=((ancho*3+3)/4)*4; if(resultado && bits && FAILED(converter->CopyPixels(nullptr,stride,stride*alto,static_cast<BYTE*>(bits)))) { DeleteObject(resultado); resultado=nullptr; }
+        converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return resultado;
+    }
+
+    HBITMAP CargarMiniatura(const std::wstring& ruta, SIZE size = SIZE{900, 600}) const {
+        AmbitoComV2 com;
+        if (!com.Disponible()) return nullptr;
+        IShellItem* item=nullptr; IShellItemImageFactory* factory=nullptr; HBITMAP bitmap=nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(ruta.c_str(), nullptr, IID_PPV_ARGS(&item))) &&
+            item && SUCCEEDED(item->QueryInterface(IID_PPV_ARGS(&factory))) && factory) {
+            if (FAILED(factory->GetImage(size, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY, &bitmap)) && bitmap) {
+                DeleteObject(bitmap);
+                bitmap = nullptr;
+            }
+        }
+        if(factory) factory->Release(); if(item) item->Release(); return bitmap;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_previsualizacion_media.hpp ****/
+/**** start inlining v2/nucleo/servicio_comprimidos.hpp ****/
+
+#include <windows.h>
+#include <shlwapi.h>
+#include <cstdint>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
 #pragma pack(push, 1)
 struct CabeceraZipLocalV2 {
-    uint32_t firma;
-    uint16_t versionMinima;
-    uint16_t banderaGeneral;
-    uint16_t metodoCompresion;
-    uint16_t horaModificacion;
-    uint16_t fechaModificacion;
-    uint32_t sumaCrc32;
-    uint32_t tamanoComprimido;
-    uint32_t tamanoDescomprimido;
-    uint16_t longitudNombreArchivo;
+    uint32_t firma; uint16_t versionMinima; uint16_t banderaGeneral; uint16_t metodoCompresion;
+    uint16_t horaModificacion; uint16_t fechaModificacion; uint32_t sumaCrc32;
+    uint32_t tamanoComprimido; uint32_t tamanoDescomprimido; uint16_t longitudNombreArchivo;
     uint16_t longitudCampoExtra;
 };
 #pragma pack(pop)
 
 struct EntradaComprimidoV2 {
     std::wstring nombre;
-    std::wstring rutaRelativa;
     bool esDirectorio{false};
     uintmax_t tamanoBytes{0};
 };
 
-class VistaComprimidos : public IPanelContenido {
+class ServicioContenidoComprimidoV2 {
 public:
-    VistaComprimidos() {
-        m_formatosDisponibles = { L"zip", L"cbz", L"7z", L"tar" };
-        m_formatoSeleccionado = L"zip";
-        m_ultimoProgramaUsado = g_programasRecordadosV2.ultimoComprimidos;
+    std::vector<EntradaComprimidoV2> Cargar(const std::wstring& ruta) const {
+        std::vector<EntradaComprimidoV2> entradas;
+        const wchar_t* ext = PathFindExtensionW(ruta.c_str());
+        if (_wcsicmp(ext, L".zip") != 0 && _wcsicmp(ext, L".jar") != 0 && _wcsicmp(ext, L".apk") != 0) return entradas;
+        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (archivo == INVALID_HANDLE_VALUE) return entradas;
+        CabeceraZipLocalV2 cabecera{};
+        while (entradas.size() < 2000 && Leer(archivo,&cabecera,sizeof(cabecera))) {
+            if (cabecera.firma != 0x04034b50 || cabecera.longitudNombreArchivo == 0 || cabecera.longitudNombreArchivo >= 4096) break;
+            std::vector<char> nombre(cabecera.longitudNombreArchivo + 1, 0);
+            if (!Leer(archivo,nombre.data(),cabecera.longitudNombreArchivo)) break;
+            if (cabecera.longitudCampoExtra > 0 && !Saltar(archivo,cabecera.longitudCampoExtra)) break;
+            for (char& caracter : nombre) if (caracter == '/') caracter = '\\';
+            int longitud = MultiByteToWideChar(CP_UTF8, 0, nombre.data(), -1, nullptr, 0);
+            if (longitud <= 0) longitud = MultiByteToWideChar(CP_ACP, 0, nombre.data(), -1, nullptr, 0);
+            if (longitud <= 0) break;
+            std::vector<wchar_t> nombreW(static_cast<size_t>(longitud));
+            UINT pagina = MultiByteToWideChar(CP_UTF8, 0, nombre.data(), -1, nombreW.data(), longitud) > 0 ? CP_UTF8 : CP_ACP;
+            if (pagina == CP_ACP) MultiByteToWideChar(CP_ACP, 0, nombre.data(), -1, nombreW.data(), longitud);
+            std::wstring relativa=nombreW.data(); bool directorio=!relativa.empty() && relativa.back()==L'\\';
+            const wchar_t* solo=PathFindFileNameW(relativa.c_str());
+            entradas.push_back({(solo&&*solo)?solo:relativa,directorio,cabecera.tamanoDescomprimido});
+            if (cabecera.banderaGeneral & 0x0008) break; // descriptor posterior: no es seguro saltar sin leerlo
+            if (!Saltar(archivo,cabecera.tamanoComprimido)) break;
+        }
+        CloseHandle(archivo); return entradas;
+    }
+private:
+    static bool Leer(HANDLE archivo, void* destino, DWORD bytes) {
+        BYTE* salida=static_cast<BYTE*>(destino); DWORD total=0;
+        while (total < bytes) { DWORD leidos=0; if (!ReadFile(archivo,salida+total,bytes-total,&leidos,nullptr) || leidos==0) return false; total+=leidos; }
+        return true;
     }
 
-    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
+    static bool Saltar(HANDLE archivo, DWORD bytes) {
+        LARGE_INTEGER desplazamiento{}; desplazamiento.QuadPart=bytes;
+        return SetFilePointerEx(archivo, desplazamiento, nullptr, FILE_CURRENT) != FALSE;
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_comprimidos.hpp ****/
+/**** skipping file: v2/nucleo/servicio_enlaces.hpp ****/
+/**** start inlining v2/nucleo/servicio_inspeccion_carpetas.hpp ****/
+
+#include <windows.h>
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace SideViewV2 {
+
+struct ItemArbolCarpetaV2 {
+    std::wstring nombre;
+    std::wstring rutaCompleta;
+    bool esDirectorio{false};
+    uintmax_t tamanoBytes{0};
+    int nivelJerarquia{0};
+};
+
+struct CarpetaPesadaV2 {
+    std::wstring nombre;
+    uintmax_t tamanoBytes{0};
+    double porcentaje{0.0};
+};
+
+struct ResultadoInspeccionCarpetaV2 {
+    std::vector<ItemArbolCarpetaV2> elementos;
+    std::vector<CarpetaPesadaV2> pesadas;
+    std::vector<std::wstring> vacias;
+    uintmax_t tamanoTotalBytes{0};
+    size_t totalSubcarpetas{0};
+    size_t totalArchivos{0};
+};
+
+class ServicioInspeccionCarpetasV2 {
+public:
+    ResultadoInspeccionCarpetaV2 Ejecutar(const std::wstring& ruta, size_t limitePesadas) const {
+        ResultadoInspeccionCarpetaV2 resultado;
+        if (ruta.empty()) return resultado;
+        Inspeccionar(ruta, 0, 4, resultado);
+        CalcularPesadas(ruta, limitePesadas, resultado);
+        return resultado;
+    }
+
+private:
+    static constexpr size_t MAX_ELEMENTOS_ARBOL = 500;
+    static constexpr size_t MAX_CARPETAS_VACIAS = 5000;
+    static constexpr size_t MAX_ELEMENTOS_TAMANO = 100000;
+    static constexpr int MAX_PROFUNDIDAD_TAMANO = 64;
+
+    static void Inspeccionar(const std::wstring& ruta, int nivel, int maxNivel,
+                             ResultadoInspeccionCarpetaV2& resultado) {
+        if (nivel >= maxNivel || resultado.elementos.size() >= MAX_ELEMENTOS_ARBOL) return;
+        WIN32_FIND_DATAW datos{};
+        HANDLE busqueda = FindFirstFileW((ruta + L"\\*").c_str(), &datos);
+        if (busqueda == INVALID_HANDLE_VALUE) return;
+        std::vector<ItemArbolCarpetaV2> subcarpetas;
+        std::vector<ItemArbolCarpetaV2> archivos;
+        size_t elementosEnCarpeta = 0;
+        do {
+            if (!wcscmp(datos.cFileName, L".") || !wcscmp(datos.cFileName, L"..")) continue;
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            ++elementosEnCarpeta;
+            ItemArbolCarpetaV2 item;
+            item.nombre = datos.cFileName;
+            item.rutaCompleta = ruta + L"\\" + datos.cFileName;
+            item.esDirectorio = (datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            item.nivelJerarquia = nivel;
+            if (item.esDirectorio) {
+                ++resultado.totalSubcarpetas;
+                ConservarPrimeros(subcarpetas, std::move(item));
+            } else {
+                ++resultado.totalArchivos;
+                item.tamanoBytes = TamanoDeDatos(datos);
+                ConservarPrimeros(archivos, std::move(item));
+            }
+        } while (FindNextFileW(busqueda, &datos));
+        FindClose(busqueda);
+        if (elementosEnCarpeta == 0 && nivel > 0 &&
+            resultado.vacias.size() < MAX_CARPETAS_VACIAS) {
+            resultado.vacias.push_back(ruta);
+        }
+        Ordenar(subcarpetas); Ordenar(archivos);
+        for (const auto& carpeta : subcarpetas) {
+            if (resultado.elementos.size() >= MAX_ELEMENTOS_ARBOL) break;
+            resultado.elementos.push_back(carpeta);
+            if (nivel + 1 < maxNivel) Inspeccionar(carpeta.rutaCompleta, nivel + 1, maxNivel, resultado);
+        }
+        for (const auto& archivo : archivos) {
+            if (resultado.elementos.size() >= MAX_ELEMENTOS_ARBOL) break;
+            resultado.elementos.push_back(archivo);
+        }
+    }
+
+    static void Ordenar(std::vector<ItemArbolCarpetaV2>& elementos) {
+        std::sort(elementos.begin(), elementos.end(), [](const auto& a, const auto& b) {
+            return StrCmpLogicalW(a.nombre.c_str(), b.nombre.c_str()) < 0;
+        });
+    }
+
+    static uintmax_t TamanoDeDatos(const WIN32_FIND_DATAW& datos) {
+        return (static_cast<uintmax_t>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
+    }
+
+    static uintmax_t SumarSaturado(uintmax_t izquierdo, uintmax_t derecho) {
+        const uintmax_t maximo = std::numeric_limits<uintmax_t>::max();
+        return derecho > maximo - izquierdo ? maximo : izquierdo + derecho;
+    }
+
+    static void ConservarPrimeros(std::vector<ItemArbolCarpetaV2>& elementos,
+                                  ItemArbolCarpetaV2 elemento) {
+        if (elementos.size() < MAX_ELEMENTOS_ARBOL) {
+            elementos.push_back(std::move(elemento));
+            return;
+        }
+
+        auto ultimo = std::max_element(elementos.begin(), elementos.end(),
+            [](const auto& izquierdo, const auto& derecho) {
+                return StrCmpLogicalW(izquierdo.nombre.c_str(), derecho.nombre.c_str()) < 0;
+            });
+        if (StrCmpLogicalW(elemento.nombre.c_str(), ultimo->nombre.c_str()) < 0) {
+            *ultimo = std::move(elemento);
+        }
+    }
+
+    static uintmax_t CalcularTamano(const std::wstring& ruta, int profundidad, size_t& visitados) {
+        if (profundidad >= MAX_PROFUNDIDAD_TAMANO || visitados >= MAX_ELEMENTOS_TAMANO) return 0;
+        WIN32_FIND_DATAW datos{};
+        HANDLE busqueda = FindFirstFileW((ruta + L"\\*").c_str(), &datos);
+        if (busqueda == INVALID_HANDLE_VALUE) return 0;
+        uintmax_t total = 0;
+        do {
+            if (!wcscmp(datos.cFileName, L".") || !wcscmp(datos.cFileName, L"..")) continue;
+            if (++visitados >= MAX_ELEMENTOS_TAMANO) break;
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            std::wstring elemento = ruta + L"\\" + datos.cFileName;
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+                total += CalcularTamano(elemento, profundidad + 1, visitados);
+            } else {
+                total = SumarSaturado(total, TamanoDeDatos(datos));
+            }
+        } while (FindNextFileW(busqueda, &datos));
+        FindClose(busqueda);
+        return total;
+    }
+
+    static void CalcularPesadas(const std::wstring& ruta, size_t limite,
+                                ResultadoInspeccionCarpetaV2& resultado) {
+        WIN32_FIND_DATAW datos{};
+        HANDLE busqueda = FindFirstFileW((ruta + L"\\*").c_str(), &datos);
+        if (busqueda == INVALID_HANDLE_VALUE) return;
+        uintmax_t totalCompleto = 0;
+        do {
+            if (!wcscmp(datos.cFileName, L".") || !wcscmp(datos.cFileName, L"..")) continue;
+            if (datos.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
+            if (!(datos.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                totalCompleto = SumarSaturado(totalCompleto, TamanoDeDatos(datos));
+                continue;
+            }
+            size_t visitados = 0;
+            uintmax_t tamano = CalcularTamano(ruta + L"\\" + datos.cFileName, 0, visitados);
+            totalCompleto = SumarSaturado(totalCompleto, tamano);
+            if (tamano > 0 && limite > 0) {
+                resultado.pesadas.push_back({datos.cFileName, tamano, 0.0});
+            }
+        } while (FindNextFileW(busqueda, &datos));
+        FindClose(busqueda);
+        resultado.tamanoTotalBytes = totalCompleto;
+        std::sort(resultado.pesadas.begin(), resultado.pesadas.end(), [](const auto& a, const auto& b) { return a.tamanoBytes > b.tamanoBytes; });
+        if (resultado.pesadas.size() > limite) resultado.pesadas.resize(limite);
+        for (auto& carpeta : resultado.pesadas) {
+            carpeta.porcentaje = totalCompleto > 0
+                ? (static_cast<double>(carpeta.tamanoBytes) / totalCompleto) * 100.0
+                : 0.0;
+        }
+    }
+};
+}
+/**** ended inlining v2/nucleo/servicio_inspeccion_carpetas.hpp ****/
+/**** start inlining v2/nucleo/servicio_comparador_videos.hpp ****/
+
+/**** start inlining v2/nucleo/servicio_reproductor_video.hpp ****/
+
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+#include <windows.h>
+#include <windowsx.h>
+#include <mfapi.h>
+#include <mfmediaengine.h>
+#include <shlwapi.h>
+#include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <cwchar>
+#include <memory>
+#include <mutex>
+#include <new>
+#include <oleauto.h>
+#include <string>
+
+namespace SideViewV2 {
+
+class IReproductorVideoV2 {
+public:
+    virtual ~IReproductorVideoV2() = default;
+    virtual bool Montar(HWND panel, int ranura, const std::wstring& ruta) = 0;
+    virtual void ActualizarRect(const RECT& rect, bool esPip) = 0;
+    virtual bool Reproducir() = 0;
+    virtual void Pausar() = 0;
+    virtual void Buscar(double segundos) = 0;
+    virtual bool EstaListo() const = 0;
+    virtual bool EstaReproduciendo() const = 0;
+    virtual double Posicion() const = 0;
+    virtual double Duracion() const = 0;
+    virtual const std::wstring& Mensaje() const = 0;
+    virtual void Liberar() = 0;
+};
+
+class MediaEngineNotifyV2 final : public IMFMediaEngineNotify {
+public:
+    explicit MediaEngineNotifyV2(HWND destino) : m_destino(destino) {}
+
+    void Desconectar() { m_destino.store(nullptr, std::memory_order_release); }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** salida) override {
+        if (!salida) return E_POINTER;
+        *salida = nullptr;
+        if (IsEqualIID(iid, IID_IUnknown) ||
+            IsEqualIID(iid, IID_IMFMediaEngineNotify)) {
+            *salida = static_cast<IMFMediaEngineNotify*>(this);
+            AddRef();
+            return S_OK;
+        }
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&m_referencias));
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        ULONG restantes = static_cast<ULONG>(InterlockedDecrement(&m_referencias));
+        if (restantes == 0) delete this;
+        return restantes;
+    }
+
+    HRESULT STDMETHODCALLTYPE EventNotify(DWORD evento, DWORD_PTR param1,
+                                           DWORD) override {
+        if (evento == MF_MEDIA_ENGINE_EVENT_NOTIFYSTABLESTATE) {
+            if (param1) SetEvent(reinterpret_cast<HANDLE>(param1));
+            return S_OK;
+        }
+        HWND destino = m_destino.load(std::memory_order_acquire);
+        if (destino) {
+            PostMessageW(destino, WM_SIDEVIEW_VIDEO_EVENT_V2,
+                         static_cast<WPARAM>(evento), static_cast<LPARAM>(param1));
+        }
+        return S_OK;
+    }
+
+private:
+    ~MediaEngineNotifyV2() = default;
+    LONG m_referencias{1};
+    std::atomic<HWND> m_destino{nullptr};
+};
+
+class ReproductorMediaFoundationV2 final : public IReproductorVideoV2 {
+public:
+    ~ReproductorMediaFoundationV2() override { Liberar(); }
+
+    bool Montar(HWND panel, int ranura, const std::wstring& ruta) override {
+        Liberar();
+        m_panel = panel;
+        m_ranura = ranura;
+        m_ruta = ruta;
+        m_mensaje.clear();
+
+        RegistrarClase();
+        m_ventana = CreateWindowExW(
+            0, ClaseVideo(), L"", WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
+            0, 0, 1, 1, panel, nullptr, GetModuleHandleW(nullptr), this);
+        if (!m_ventana) {
+            m_mensaje = L"No se pudo crear el espacio de reproducción.";
+            return false;
+        }
+
+        if (ruta.empty()) {
+            m_mensaje = L"Selecciona dos videos para iniciar la comparación.";
+            return false;
+        }
+
+        DWORD atributos = GetFileAttributesW(ruta.c_str());
+        if (atributos == INVALID_FILE_ATTRIBUTES ||
+            (atributos & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            m_mensaje = L"No se pudo abrir el archivo de video.";
+            return false;
+        }
+
+        HRESULT hr = MFStartup(MF_VERSION);
+        if (FAILED(hr)) {
+            m_mensaje = L"Media Foundation no está disponible en este sistema.";
+            return false;
+        }
+        m_mfIniciado = true;
+
+        MediaEngineNotifyV2* callback = new (std::nothrow) MediaEngineNotifyV2(m_ventana);
+        if (!callback) {
+            m_mensaje = L"No hubo memoria suficiente para iniciar el reproductor.";
+            LiberarMediaFoundation();
+            return false;
+        }
+        m_callback = callback;
+
+        IMFAttributes* atributosMedia = nullptr;
+        IMFMediaEngineClassFactory* fabrica = nullptr;
+        hr = MFCreateAttributes(&atributosMedia, 3);
+        if (SUCCEEDED(hr)) hr = atributosMedia->SetUnknown(MF_MEDIA_ENGINE_CALLBACK, callback);
+        if (SUCCEEDED(hr)) hr = atributosMedia->SetUINT64(
+            MF_MEDIA_ENGINE_PLAYBACK_HWND, reinterpret_cast<UINT64>(m_ventana));
+        if (SUCCEEDED(hr)) hr = CoCreateInstance(
+            CLSID_MFMediaEngineClassFactory, nullptr, CLSCTX_INPROC_SERVER,
+            IID_IMFMediaEngineClassFactory, reinterpret_cast<void**>(&fabrica));
+        if (SUCCEEDED(hr)) hr = fabrica->CreateInstance(
+            0, atributosMedia, &m_engine);
+        if (SUCCEEDED(hr)) hr = m_engine->QueryInterface(
+            IID_IMFMediaEngineEx, reinterpret_cast<void**>(&m_engineEx));
+        if (SUCCEEDED(hr)) hr = m_engine->SetAutoPlay(FALSE);
+        if (SUCCEEDED(hr)) hr = m_engine->SetPreload(MF_MEDIA_ENGINE_PRELOAD_AUTOMATIC);
+
+        if (SUCCEEDED(hr)) {
+            wchar_t url[2048]{};
+            DWORD longitud = ARRAYSIZE(url);
+            hr = UrlCreateFromPathW(ruta.c_str(), url, &longitud, 0);
+            if (hr == E_POINTER && longitud > ARRAYSIZE(url)) {
+                std::wstring urlAmplia(longitud, L'\0');
+                hr = UrlCreateFromPathW(ruta.c_str(), urlAmplia.data(), &longitud, 0);
+                if (SUCCEEDED(hr)) {
+                    BSTR origen = SysAllocString(urlAmplia.c_str());
+                    hr = origen ? m_engine->SetSource(origen) : E_OUTOFMEMORY;
+                    SysFreeString(origen);
+                }
+            } else if (SUCCEEDED(hr)) {
+                BSTR origen = SysAllocString(url);
+                hr = origen ? m_engine->SetSource(origen) : E_OUTOFMEMORY;
+                SysFreeString(origen);
+            }
+        }
+
+        if (atributosMedia) atributosMedia->Release();
+        if (fabrica) fabrica->Release();
+        if (FAILED(hr)) {
+            m_mensaje = L"No se pudo reproducir este formato de video.";
+            LiberarBackend();
+            return false;
+        }
+
+        m_mensaje = L"Cargando video...";
+        return true;
+    }
+
+    void ActualizarRect(const RECT& rect, bool esPip) override {
+        m_esPip = esPip;
+        if (!IsWindow(m_ventana)) return;
+
+        RECT render = rect;
+        render.left += 1;
+        render.right = std::max(render.left + 1, render.right - 1);
+        render.top += 30; // Reserva la franja superior para título y controles.
+        render.bottom = std::max(render.top + 1, render.bottom - 1);
+        SetWindowPos(m_ventana, HWND_TOP, render.left, render.top,
+                     render.right - render.left, render.bottom - render.top,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if (m_engineEx) ActualizarFrame();
+    }
+
+    bool Reproducir() override {
+        m_reproduccionSolicitada = true;
+        if (!m_engine || !m_listo) return false;
+        HRESULT hr = m_engine->Play();
+        if (SUCCEEDED(hr)) {
+            m_reproduciendo = true;
+            SetTimer(m_ventana, kTimerReproductor, 33, nullptr);
+        }
+        return SUCCEEDED(hr);
+    }
+
+    void Pausar() override {
+        m_reproduccionSolicitada = false;
+        m_reproduciendo = false;
+        if (IsWindow(m_ventana)) KillTimer(m_ventana, kTimerReproductor);
+        if (m_engine) m_engine->Pause();
+    }
+
+    void Buscar(double segundos) override {
+        m_posicionPendiente = std::max(0.0, segundos);
+        if (m_engine && m_listo) {
+            m_engine->SetCurrentTime(m_posicionPendiente);
+        }
+    }
+
+    bool EstaListo() const override { return m_listo; }
+    bool EstaReproduciendo() const override { return m_reproduciendo; }
+
+    double Posicion() const override {
+        if (m_engine && m_listo) {
+            double actual = m_engine->GetCurrentTime();
+            if (std::isfinite(actual) && actual >= 0.0) return actual;
+        }
+        return m_posicionPendiente;
+    }
+
+    double Duracion() const override {
+        if (m_engine && m_listo) {
+            double duracion = m_engine->GetDuration();
+            if (std::isfinite(duracion) && duracion > 0.0) return duracion;
+        }
+        return 0.0;
+    }
+
+    const std::wstring& Mensaje() const override { return m_mensaje; }
+
+    void Liberar() override {
+        LiberarBackend();
+        if (IsWindow(m_ventana)) DestroyWindow(m_ventana);
+        m_ventana = nullptr;
+        m_panel = nullptr;
+        m_listo = false;
+        m_reproduciendo = false;
+        m_reproduccionSolicitada = false;
+        m_posicionPendiente = 0.0;
+    }
+
+private:
+    static constexpr UINT_PTR kTimerReproductor = 17;
+
+    static const wchar_t* ClaseVideo() {
+        return L"UsefulSideView_MediaFoundationVideo_V2";
+    }
+
+    static void RegistrarClase() {
+        static std::once_flag unaVez;
+        std::call_once(unaVez, [] {
+            WNDCLASSW clase{};
+            clase.lpfnWndProc = ProcedimientoVideo;
+            clase.hInstance = GetModuleHandleW(nullptr);
+            clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+            clase.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+            clase.lpszClassName = ClaseVideo();
+            RegisterClassW(&clase);
+        });
+    }
+
+    static LRESULT CALLBACK ProcedimientoVideo(HWND hwnd, UINT mensaje,
+                                               WPARAM wParam, LPARAM lParam) {
+        auto* reproductor = reinterpret_cast<ReproductorMediaFoundationV2*>(
+            GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+        if (mensaje == WM_NCCREATE) {
+            auto* crear = reinterpret_cast<CREATESTRUCTW*>(lParam);
+            reproductor = static_cast<ReproductorMediaFoundationV2*>(crear->lpCreateParams);
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(reproductor));
+        }
+        if (!reproductor) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+        if (mensaje == WM_NCDESTROY) {
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+        }
+        switch (mensaje) {
+            case WM_ERASEBKGND:
+                return 1;
+            case WM_SIZE:
+                reproductor->ActualizarFrame();
+                return 0;
+            case WM_TIMER:
+                if (wParam == kTimerReproductor && reproductor->m_reproduciendo &&
+                    reproductor->m_panel) {
+                    PostMessageW(reproductor->m_panel, WM_SIDEVIEW_COMPARADOR_TICK,
+                                 static_cast<WPARAM>(reproductor->m_ranura), 0);
+                    return 0;
+                }
+                break;
+            case WM_LBUTTONDOWN:
+                if (reproductor->m_esPip && reproductor->m_panel) {
+                    PostMessageW(reproductor->m_panel, WM_SIDEVIEW_COMPARADOR_PIP_CLICK,
+                                 static_cast<WPARAM>(reproductor->m_ranura), 0);
+                    return 0;
+                }
+                break;
+            case WM_PAINT: {
+                PAINTSTRUCT ps{};
+                HDC hdc = BeginPaint(hwnd, &ps);
+                if (reproductor->m_listo && reproductor->m_engineEx) {
+                    reproductor->ActualizarFrame();
+                } else {
+                    RECT rect{};
+                    GetClientRect(hwnd, &rect);
+                    FillRect(hdc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
+                    SetBkMode(hdc, TRANSPARENT);
+                    SetTextColor(hdc, RGB(220, 220, 220));
+                    DrawTextW(hdc, reproductor->m_mensaje.c_str(), -1, &rect,
+                              DT_CENTER | DT_VCENTER | DT_SINGLELINE |
+                              DT_END_ELLIPSIS | DT_NOPREFIX);
+                }
+                EndPaint(hwnd, &ps);
+                return 0;
+            }
+            case WM_SIDEVIEW_VIDEO_EVENT_V2:
+                reproductor->ProcesarEvento(static_cast<DWORD>(wParam),
+                                             static_cast<HRESULT>(lParam));
+                return 0;
+        }
+        return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+    }
+
+    void ProcesarEvento(DWORD evento, HRESULT error) {
+        if (!m_engine) return;
+        switch (evento) {
+            case MF_MEDIA_ENGINE_EVENT_ERROR:
+                m_listo = false;
+                m_reproduciendo = false;
+                m_reproduccionSolicitada = false;
+                if (IsWindow(m_ventana)) KillTimer(m_ventana, kTimerReproductor);
+                m_mensaje = L"No se pudo reproducir este archivo: formato no admitido o archivo corrupto.";
+                (void)error;
+                break;
+            case MF_MEDIA_ENGINE_EVENT_LOADEDMETADATA:
+            case MF_MEDIA_ENGINE_EVENT_DURATIONCHANGE:
+                if (m_posicionPendiente > 0.0) m_engine->SetCurrentTime(m_posicionPendiente);
+                break;
+            case MF_MEDIA_ENGINE_EVENT_CANPLAY:
+            case MF_MEDIA_ENGINE_EVENT_CANPLAYTHROUGH:
+                m_listo = true;
+                m_mensaje.clear();
+                if (m_posicionPendiente > 0.0) m_engine->SetCurrentTime(m_posicionPendiente);
+                if (m_reproduccionSolicitada) Reproducir();
+                break;
+            case MF_MEDIA_ENGINE_EVENT_PLAY:
+            case MF_MEDIA_ENGINE_EVENT_PLAYING:
+                m_listo = true;
+                m_reproduciendo = true;
+                m_mensaje.clear();
+                SetTimer(m_ventana, kTimerReproductor, 33, nullptr);
+                break;
+            case MF_MEDIA_ENGINE_EVENT_PAUSE:
+                m_reproduciendo = false;
+                if (IsWindow(m_ventana)) KillTimer(m_ventana, kTimerReproductor);
+                break;
+            case MF_MEDIA_ENGINE_EVENT_ENDED:
+                Pausar();
+                Buscar(0.0);
+                break;
+            default:
+                break;
+        }
+        InvalidateRect(m_ventana, nullptr, FALSE);
+        if (m_panel) PostMessageW(m_panel, WM_SIDEVIEW_COMPARADOR_TICK,
+                                  static_cast<WPARAM>(m_ranura), 0);
+    }
+
+    void ActualizarFrame() {
+        if (!m_engineEx || !IsWindow(m_ventana)) return;
+        RECT destino{};
+        GetClientRect(m_ventana, &destino);
+        MFARGB borde{};
+        borde.rgbAlpha = 255;
+        m_engineEx->UpdateVideoStream(nullptr, &destino, &borde);
+    }
+
+    template <typename T>
+    static void LiberarCom(T*& objeto) {
+        if (objeto) {
+            objeto->Release();
+            objeto = nullptr;
+        }
+    }
+
+    void LiberarMediaFoundation() {
+        if (m_mfIniciado) {
+            MFShutdown();
+            m_mfIniciado = false;
+        }
+    }
+
+    void LiberarBackend() {
+        Pausar();
+        if (m_callback) m_callback->Desconectar();
+        if (m_engine) m_engine->Shutdown();
+        LiberarCom(m_engineEx);
+        LiberarCom(m_engine);
+        if (m_callback) {
+            m_callback->Release();
+            m_callback = nullptr;
+        }
+        LiberarMediaFoundation();
+        m_listo = false;
+        m_reproduciendo = false;
+        m_reproduccionSolicitada = false;
+    }
+
+    HWND m_panel{nullptr};
+    HWND m_ventana{nullptr};
+    int m_ranura{0};
+    bool m_esPip{false};
+    bool m_mfIniciado{false};
+    bool m_listo{false};
+    bool m_reproduciendo{false};
+    bool m_reproduccionSolicitada{false};
+    double m_posicionPendiente{0.0};
+    std::wstring m_ruta;
+    std::wstring m_mensaje;
+    IMFMediaEngine* m_engine{nullptr};
+    IMFMediaEngineEx* m_engineEx{nullptr};
+    MediaEngineNotifyV2* m_callback{nullptr};
+};
+
+class ServicioReproductorVideoV2 {
+public:
+    std::unique_ptr<IReproductorVideoV2> Crear() const {
+        // Punto de sustitución futuro: otro backend puede implementar la misma
+        // interfaz sin cambiar la vista ni el comparador.
+        return std::make_unique<ReproductorMediaFoundationV2>();
+    }
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_reproductor_video.hpp ****/
+#include <propkey.h>
+#include <shobjidl.h>
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <cwchar>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
+
+struct DatosVideoComparacionV2 {
+    std::wstring ruta;
+    std::wstring nombre;
+    std::wstring fps{L"Pendiente"};
+    std::uintmax_t bytes{0};
+};
+
+struct EstadoComparadorVideosV2 {
+    DatosVideoComparacionV2 izquierda;
+    DatosVideoComparacionV2 derecha;
+    double posicionSegundos{0.0};
+    double duracionSegundos{600.0};
+    bool reproduciendo{false};
+    bool simulado{true};
+    bool modoPantallaCompleta{false};
+    int indicePantallaCompleta{0};
+    std::wstring mensaje{L"Selecciona dos videos para iniciar la comparación."};
+};
+
+// Orquesta únicamente el contrato del comparador. Los reproductores reales
+// viven en instancias independientes creadas por ServicioReproductorVideoV2.
+class ServicioComparadorVideosV2 {
+public:
+    explicit ServicioComparadorVideosV2(
+        std::shared_ptr<ServicioReproductorVideoV2> reproductor =
+            std::make_shared<ServicioReproductorVideoV2>())
+        : m_reproductor(std::move(reproductor)) {}
+
+    EstadoComparadorVideosV2 CrearFlujo(
+        const std::vector<std::wstring>& seleccion = {}) const {
+        EstadoComparadorVideosV2 estado;
+        estado.izquierda = CrearVideoDemo(L"VIDEO 1 (simulado)");
+        estado.derecha = CrearVideoDemo(L"VIDEO 2 (simulado)");
+        if (seleccion.size() == 2) {
+            estado.izquierda = LeerDatosVideo(seleccion[0], L"Video 1");
+            estado.derecha = LeerDatosVideo(seleccion[1], L"Video 2");
+            estado.simulado = false;
+            estado.mensaje = L"Sincronización estricta activa.";
+        }
+        return estado;
+    }
+
+    EstadoComparadorVideosV2 CrearFlujoSimulado() const { return CrearFlujo(); }
+
+    std::unique_ptr<IReproductorVideoV2> CrearReproductor() const {
+        return m_reproductor ? m_reproductor->Crear() : nullptr;
+    }
+
+    void AlternarPantallaCompleta(EstadoComparadorVideosV2& estado, int indice) const {
+        if (indice < 0 || indice > 1) return;
+        if (!estado.modoPantallaCompleta) {
+            estado.modoPantallaCompleta = true;
+            estado.indicePantallaCompleta = indice;
+        } else {
+            estado.indicePantallaCompleta = indice;
+        }
+    }
+
+    void IntercambiarPantallaCompleta(EstadoComparadorVideosV2& estado) const {
+        if (estado.modoPantallaCompleta) {
+            estado.indicePantallaCompleta = 1 - estado.indicePantallaCompleta;
+        }
+    }
+
+    void AlternarEstadoReproduccion(EstadoComparadorVideosV2& estado,
+                                    IReproductorVideoV2* izquierda,
+                                    IReproductorVideoV2* derecha) const {
+        const bool reproducir = !estado.reproduciendo;
+        if (reproducir) {
+            if (izquierda) izquierda->Reproducir();
+            if (derecha) derecha->Reproducir();
+        } else {
+            if (izquierda) izquierda->Pausar();
+            if (derecha) derecha->Pausar();
+        }
+        estado.reproduciendo = reproducir;
+    }
+
+    void PausarAmbos(EstadoComparadorVideosV2& estado,
+                     IReproductorVideoV2* izquierda,
+                     IReproductorVideoV2* derecha) const {
+        if (izquierda) izquierda->Pausar();
+        if (derecha) derecha->Pausar();
+        estado.reproduciendo = false;
+    }
+
+    void BuscarAmbos(EstadoComparadorVideosV2& estado, double segundos,
+                     IReproductorVideoV2* izquierda,
+                     IReproductorVideoV2* derecha) const {
+        estado.posicionSegundos = std::clamp(segundos, 0.0, estado.duracionSegundos);
+        if (izquierda) izquierda->Buscar(estado.posicionSegundos);
+        if (derecha) derecha->Buscar(estado.posicionSegundos);
+    }
+
+    std::wstring FormatearTamano(std::uintmax_t bytes) const {
+        static constexpr const wchar_t* unidades[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
+        double valor = static_cast<double>(bytes);
+        std::size_t unidad = 0;
+        constexpr std::size_t cantidadUnidades = sizeof(unidades) / sizeof(unidades[0]);
+        while (valor >= 1024.0 && unidad + 1 < cantidadUnidades) {
+            valor /= 1024.0;
+            ++unidad;
+        }
+        std::wostringstream salida;
+        salida << std::fixed << std::setprecision(
+            unidad == 0 ? 0 : valor < 10.0 ? 2 : 1)
+               << valor << L" " << unidades[unidad];
+        return salida.str();
+    }
+
+    std::wstring FormatearDiferencia(std::uintmax_t izquierda,
+                                     std::uintmax_t derecha) const {
+        const bool negativa = derecha < izquierda;
+        const std::uintmax_t magnitud = negativa ? izquierda - derecha : derecha - izquierda;
+        return std::wstring(negativa ? L"-" : L"+") + FormatearTamano(magnitud);
+    }
+
+    std::wstring FormatearTiempo(double segundos) const {
+        const int total = std::max(0, static_cast<int>(std::lround(segundos)));
+        const int horas = total / 3600;
+        const int minutos = (total % 3600) / 60;
+        const int segundosRestantes = total % 60;
+        wchar_t buffer[32]{};
+        if (horas > 0) {
+            swprintf_s(buffer, L"%02d:%02d:%02d", horas, minutos, segundosRestantes);
+        } else {
+            swprintf_s(buffer, L"%02d:%02d", minutos, segundosRestantes);
+        }
+        return buffer;
+    }
+
+private:
+    DatosVideoComparacionV2 CrearVideoDemo(const wchar_t* nombre) const {
+        DatosVideoComparacionV2 video;
+        video.nombre = nombre;
+        video.fps = L"Pendiente";
+        return video;
+    }
+
+    DatosVideoComparacionV2 LeerDatosVideo(const std::wstring& ruta,
+                                           const wchar_t* etiqueta) const {
+        DatosVideoComparacionV2 video;
+        video.ruta = ruta;
+        const wchar_t* nombre = PathFindFileNameW(ruta.c_str());
+        video.nombre = (nombre && *nombre) ? nombre : etiqueta;
+        WIN32_FILE_ATTRIBUTE_DATA datos{};
+        if (GetFileAttributesExW(ruta.c_str(), GetFileExInfoStandard, &datos)) {
+            ULARGE_INTEGER tamano{};
+            tamano.HighPart = datos.nFileSizeHigh;
+            tamano.LowPart = datos.nFileSizeLow;
+            video.bytes = static_cast<std::uintmax_t>(tamano.QuadPart);
+        }
+        IShellItem2* elemento = nullptr;
+        if (SUCCEEDED(SHCreateItemFromParsingName(
+                ruta.c_str(), nullptr, IID_IShellItem2,
+                reinterpret_cast<void**>(&elemento))) && elemento) {
+            ULONG fpsMil = 0;
+            if (SUCCEEDED(elemento->GetUInt32(PKEY_Video_FrameRate, &fpsMil)) && fpsMil) {
+                wchar_t fps[32]{};
+                swprintf_s(fps, L"%.2f", static_cast<double>(fpsMil) / 1000.0);
+                video.fps = fps;
+            }
+            elemento->Release();
+        }
+        return video;
+    }
+
+    std::shared_ptr<ServicioReproductorVideoV2> m_reproductor;
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_comparador_videos.hpp ****/
+/**** skipping file: v2/nucleo/servicio_reproductor_video.hpp ****/
+#include <memory>
+namespace SideViewV2 {
+struct DependenciasVistaV2 {
+    std::shared_ptr<ServicioNavegacionV2> navegacion{std::make_shared<ServicioNavegacionV2>()};
+    std::shared_ptr<ServicioExtensionV2> extensiones{std::make_shared<ServicioExtensionV2>()};
+    std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
+    std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(L"comprimidos")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(L"imagenes")};
+    std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(L"videos")};
+    std::shared_ptr<ServicioTextoV2> texto{std::make_shared<ServicioTextoV2>()};
+    std::shared_ptr<ServicioContenidoComprimidoV2> contenidoComprimido{std::make_shared<ServicioContenidoComprimidoV2>()};
+    std::shared_ptr<ServicioEnlacesV2> enlaces{std::make_shared<ServicioEnlacesV2>()};
+    std::shared_ptr<ServicioPrevisualizacionMediaV2> previsualizacionMedia{std::make_shared<ServicioPrevisualizacionMediaV2>()};
+    std::shared_ptr<ServicioFusionCarpetasV2> fusionCarpetas{std::make_shared<ServicioFusionCarpetasV2>()};
+    std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccionCarpetas{std::make_shared<ServicioInspeccionCarpetasV2>()};
+    std::shared_ptr<ServicioReproductorVideoV2> reproductorVideo{std::make_shared<ServicioReproductorVideoV2>()};
+    std::shared_ptr<ServicioComparadorVideosV2> comparadorVideos{std::make_shared<ServicioComparadorVideosV2>(reproductorVideo)};
+};
+}
+/**** ended inlining v2/nucleo/servicios_vistas.hpp ****/
+#include <windows.h>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+namespace SideViewV2 {
+
+class VistaComprimidos : public IPanelContenido {
+public:
+    explicit VistaComprimidos(std::shared_ptr<ServicioAbrirConV2> servicio,
+                              std::shared_ptr<ServicioNavegacionV2> navegacion,
+                              std::shared_ptr<ServicioExtensionV2> extensiones,
+                              std::shared_ptr<ServicioContenidoComprimidoV2> contenido)
+        : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
+          m_extensiones(std::move(extensiones)), m_contenido(std::move(contenido)) {
+        m_formatosDisponibles = { L"zip", L"rar", L"7z", L"tar", L"cbz", L"cbr" };
+        m_formatoSeleccionado = L"zip";
+    }
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
         m_archivos = archivos;
-        m_carpeta = carpeta;
         m_indiceArchivo = 0;
         m_desplazamientoScrollY = 0;
         CargarArchivoActual();
@@ -733,7 +2182,7 @@ public:
             // Botón Anterior
             if (PtInRect(&m_rcBotonAnterior, pt)) {
                 if (m_archivos.size() > 1) {
-                    m_indiceArchivo = (m_indiceArchivo == 0) ? (m_archivos.size() - 1) : (m_indiceArchivo - 1);
+                    m_indiceArchivo = m_navegacion->Anterior(m_indiceArchivo, m_archivos.size());
                     CargarArchivoActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -742,7 +2191,7 @@ public:
             // Botón Siguiente
             if (PtInRect(&m_rcBotonSiguiente, pt)) {
                 if (m_archivos.size() > 1) {
-                    m_indiceArchivo = (m_indiceArchivo + 1) % m_archivos.size();
+                    m_indiceArchivo = m_navegacion->Siguiente(m_indiceArchivo, m_archivos.size());
                     CargarArchivoActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -758,8 +2207,8 @@ public:
                 MostrarMenuFormatos(hwndPanel);
                 return true;
             }
-            // Botón Convertir
-            if (PtInRect(&m_rcBotonConvertir, pt)) {
+            // Botón Cambiar extensión
+            if (PtInRect(&m_rcBotonCambiarExtension, pt)) {
                 EjecutarConversion(hwndPanel);
                 return true;
             }
@@ -847,20 +2296,20 @@ public:
         m_rcBotonDesplegableFormato = {m_rcBotonSiguiente.right + 10, yBarra, m_rcBotonSiguiente.right + 85, yBarra + altoBotones};
         DibujarBoton(hdc, m_rcBotonDesplegableFormato, (m_formatoSeleccionado + L" ▾").c_str(), tema, true);
 
-        // Botón Convertir
-        m_rcBotonConvertir = {m_rcBotonDesplegableFormato.right + 6, yBarra, rect.right - margen, yBarra + altoBotones};
-        DibujarBoton(hdc, m_rcBotonConvertir, L"Convertir", tema, true);
+        // Operación de cambio de extensión
+        m_rcBotonCambiarExtension = {m_rcBotonDesplegableFormato.right + 6, yBarra, rect.right - margen, yBarra + altoBotones};
+        DibujarBoton(hdc, m_rcBotonCambiarExtension, L"Cambiar extensión", tema, true);
 
         int yAbrir = rect.bottom - margen - altoBotones;
         m_rcBotonAbrirCon = {rect.left + margen, yAbrir, rect.right - margen, yAbrir + altoBotones};
-        std::wstring programa = ProgramaSeleccionadoV2(g_programasRecordadosV2.comprimidos, m_ultimoProgramaUsado);
+        std::wstring programa = m_servicio->ProgramaActual();
         std::wstring etiqueta = L"Abrir con: ";
         etiqueta += programa.empty() ? L"(click para seleccionar programa) ▾" : PathFindFileNameW(programa.c_str());
         DibujarBoton(hdc, m_rcBotonAbrirCon, etiqueta.c_str(), tema, true);
 
         // Área de Contenido: Árbol de archivos comprimidos
         int topLista = yBarra + altoBotones + 14;
-        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, rect.bottom - margen};
+        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yAbrir - 12};
         DibujarContenedor(hdc, rcContenedorLista, tema);
 
         // Header de la lista
@@ -916,55 +2365,7 @@ private:
     void CargarArchivoActual() {
         m_entradas.clear();
         if (m_archivos.empty() || m_indiceArchivo >= m_archivos.size()) return;
-
-        const std::wstring& ruta = m_archivos[m_indiceArchivo];
-        const wchar_t* ext = PathFindExtensionW(ruta.c_str());
-
-        // Parseo ligero directo de archivos ZIP / JAR / APK
-        if (_wcsicmp(ext, L".zip") == 0 || _wcsicmp(ext, L".cbz") == 0 ||
-            _wcsicmp(ext, L".jar") == 0 || _wcsicmp(ext, L".apk") == 0) {
-            HANDLE hFile = CreateFileW(ruta.c_str(), GENERIC_READ,
-                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                CabeceraZipLocalV2 hdr{};
-                DWORD leidos = 0;
-                while (ReadFile(hFile, &hdr, sizeof(hdr), &leidos, nullptr) && leidos == sizeof(hdr)) {
-                    if (hdr.firma != 0x04034b50) break;
-                    if (hdr.longitudNombreArchivo > 0 && hdr.longitudNombreArchivo < 4096) {
-                        std::vector<char> bufName(hdr.longitudNombreArchivo + 1, 0);
-                        if (!ReadFile(hFile, bufName.data(), hdr.longitudNombreArchivo, &leidos, nullptr) ||
-                            leidos != hdr.longitudNombreArchivo) break;
-
-                        if (hdr.longitudCampoExtra > 0) {
-                            SetFilePointer(hFile, hdr.longitudCampoExtra, nullptr, FILE_CURRENT);
-                        }
-
-                        std::string nombreU8(bufName.data());
-                        for (char& c : nombreU8) if (c == '/') c = '\\';
-
-                        int lenW = MultiByteToWideChar(CP_UTF8, 0, nombreU8.c_str(), -1, nullptr, 0);
-                        if (lenW > 0) {
-                            std::vector<wchar_t> wbuf(lenW);
-                            MultiByteToWideChar(CP_UTF8, 0, nombreU8.c_str(), -1, wbuf.data(), lenW);
-                            std::wstring rRelativa = wbuf.data();
-                            bool esDir = (!rRelativa.empty() && rRelativa.back() == L'\\');
-                            const wchar_t* pSoloNombre = PathFindFileNameW(rRelativa.c_str());
-
-                            EntradaComprimidoV2 e;
-                            e.nombre = (pSoloNombre && *pSoloNombre) ? pSoloNombre : rRelativa;
-                            e.rutaRelativa = rRelativa;
-                            e.esDirectorio = esDir;
-                            e.tamanoBytes = hdr.tamanoDescomprimido;
-                            m_entradas.push_back(e);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                CloseHandle(hFile);
-            }
-        }
+        m_entradas = m_contenido->Cargar(m_archivos[m_indiceArchivo]);
     }
 
     void DibujarBoton(HDC hdc, const RECT& rc, const wchar_t* texto, const TemaVisual& tema, bool habilitado) {
@@ -1014,31 +2415,14 @@ private:
     }
 
     void EjecutarAbrirCon(HWND hwndPadre) {
-        m_ultimoProgramaUsado = ProgramaSeleccionadoV2(g_programasRecordadosV2.comprimidos, m_ultimoProgramaUsado);
-        if (!m_ultimoProgramaUsado.empty()) {
-            for (const auto& archivo : m_archivos) {
-                ShellExecuteW(nullptr, L"open", m_ultimoProgramaUsado.c_str(),
-                              (L"\"" + archivo + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-            }
+        std::wstring programa = m_servicio->ProgramaActual();
+        if (!programa.empty()) {
+            m_servicio->Seleccionar(programa);
+            m_servicio->Ejecutar(m_archivos);
             return;
         }
-        // Selector de archivo ejecutable de Windows
-        wchar_t rutaProg[MAX_PATH] = L"";
-        OPENFILENAMEW ofn{};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwndPadre;
-        ofn.lpstrFilter = L"Programas Ejecutables (*.exe)\0*.exe\0Todos los archivos (*.*)\0*.*\0";
-        ofn.lpstrFile = rutaProg;
-        ofn.nMaxFile = MAX_PATH;
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-        if (GetOpenFileNameW(&ofn)) {
-            RecordarProgramaV2(g_programasRecordadosV2.comprimidos, g_programasRecordadosV2.ultimoComprimidos, rutaProg);
-            m_ultimoProgramaUsado = rutaProg;
-            for (const auto& archivo : m_archivos) {
-                ShellExecuteW(nullptr, L"open", m_ultimoProgramaUsado.c_str(),
-                              (L"\"" + archivo + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-            }
+        if (m_servicio->AbrirDialogo(hwndPadre)) {
+            m_servicio->Ejecutar(m_archivos);
         }
     }
 
@@ -1064,27 +2448,28 @@ private:
     }
 
     void EjecutarConversion(HWND hwndPadre) {
-        std::wstring mensaje = L"Iniciando conversión de " + std::to_wstring(m_archivos.size()) +
-                               L" archivo(s) al formato: ." + m_formatoSeleccionado +
-                               L"\n\n(Lógica de compresión ejecutada en segundo plano)";
-        MessageBoxW(hwndPadre, mensaje.c_str(), L"Useful Side View - Conversión", MB_OK | MB_ICONINFORMATION);
+        size_t cantidad = m_extensiones->Cambiar(m_archivos, m_formatoSeleccionado);
+        std::wstring mensaje = L"Se cambiaron " + std::to_wstring(cantidad) + L" archivo(s) a ." + m_formatoSeleccionado + L".";
+        MessageBoxW(hwndPadre, mensaje.c_str(), L"Cambiar extensión", MB_OK | MB_ICONINFORMATION);
     }
 
     std::vector<std::wstring> m_archivos;
-    std::wstring m_carpeta;
     size_t m_indiceArchivo{0};
     int m_desplazamientoScrollY{0};
     std::vector<EntradaComprimidoV2> m_entradas;
 
     std::wstring m_formatoSeleccionado;
     std::vector<std::wstring> m_formatosDisponibles;
-    std::wstring m_ultimoProgramaUsado;
+    std::shared_ptr<ServicioAbrirConV2> m_servicio;
+    std::shared_ptr<ServicioNavegacionV2> m_navegacion;
+    std::shared_ptr<ServicioExtensionV2> m_extensiones;
+    std::shared_ptr<ServicioContenidoComprimidoV2> m_contenido;
 
     RECT m_rcBotonAnterior{};
     RECT m_rcBotonSiguiente{};
     RECT m_rcBotonAbrirCon{};
     RECT m_rcBotonDesplegableFormato{};
-    RECT m_rcBotonConvertir{};
+    RECT m_rcBotonCambiarExtension{};
 };
 
 } // namespace SideViewV2
@@ -1093,7 +2478,29 @@ private:
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
 /**** skipping file: v2/ui/ventana_base.hpp ****/
-/**** skipping file: v2/nucleo/programas_recordados.hpp ****/
+/**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
+/**** skipping file: v2/nucleo/servicio_com.hpp ****/
+/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
+
+#include <atomic>
+
+namespace SideViewV2 {
+
+// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
+// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
+inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
+inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
+
+inline bool ComparadorVideosExperimentalDisponibleV2() {
+    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
+}
+
+inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
+    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
+}
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -1103,45 +2510,128 @@ private:
 #include <vector>
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 
 namespace SideViewV2 {
 
 inline std::atomic<int> g_limiteCarpetasPesadasConfig{3};
 
-struct ItemArbolCarpetaV2 {
-    std::wstring nombre;
-    std::wstring rutaCompleta;
-    bool esDirectorio{false};
-    uintmax_t tamanoBytes{0};
-    int nivelJerarquia{0};
+struct PromptNombreCarpetaV2 {
+    HWND ventanaPadre{nullptr};
+    HWND campoTexto{nullptr};
+    std::wstring resultado;
+    bool terminado{false};
 };
 
-struct CarpetaPesadaV2 {
-    std::wstring nombre;
-    uintmax_t tamanoBytes{0};
-    double porcentaje{0.0};
-};
+inline LRESULT CALLBACK ProcedimientoPromptNombreCarpetaV2(HWND hwnd, UINT mensaje,
+                                                           WPARAM wParam, LPARAM lParam) {
+    auto* estado = reinterpret_cast<PromptNombreCarpetaV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+    if (mensaje == WM_NCCREATE) {
+        auto* crear = reinterpret_cast<CREATESTRUCTW*>(lParam);
+        estado = reinterpret_cast<PromptNombreCarpetaV2*>(crear->lpCreateParams);
+        SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(estado));
+    }
+    if (!estado) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+    if (mensaje == WM_CREATE) {
+        CreateWindowW(L"STATIC", L"Nombre de la carpeta unificada:", WS_CHILD | WS_VISIBLE,
+                      14, 12, 280, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+        estado->campoTexto = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"Carpeta unificada",
+                                             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
+                                             14, 36, 280, 24, hwnd, reinterpret_cast<HMENU>(101),
+                                             GetModuleHandleW(nullptr), nullptr);
+        CreateWindowW(L"BUTTON", L"Aceptar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
+                      134, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDOK),
+                      GetModuleHandleW(nullptr), nullptr);
+        CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE,
+                      218, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDCANCEL),
+                      GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(estado->campoTexto, EM_SETSEL, 0, -1);
+        SetFocus(estado->campoTexto);
+        return 0;
+    }
+    if (mensaje == WM_COMMAND && (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL)) {
+        if (LOWORD(wParam) == IDOK) {
+            wchar_t texto[MAX_PATH]{};
+            GetWindowTextW(estado->campoTexto, texto, ARRAYSIZE(texto));
+            estado->resultado = texto;
+            if (estado->resultado.empty()) return 0;
+        }
+        estado->terminado = true;
+        EnableWindow(estado->ventanaPadre, TRUE);
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    if (mensaje == WM_CLOSE) {
+        estado->terminado = true;
+        EnableWindow(estado->ventanaPadre, TRUE);
+        DestroyWindow(hwnd);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+}
+
+inline std::wstring SolicitarNombreCarpetaV2(HWND padre) {
+    static std::once_flag registroClase;
+    std::call_once(registroClase, [] {
+        WNDCLASSW clase{};
+        clase.lpfnWndProc = ProcedimientoPromptNombreCarpetaV2;
+        clase.hInstance = GetModuleHandleW(nullptr);
+        clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+        clase.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        clase.lpszClassName = L"UsefulSideView_PromptNombreCarpeta_V2";
+        RegisterClassW(&clase);
+    });
+    PromptNombreCarpetaV2 estado{padre};
+    EnableWindow(padre, FALSE);
+    HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UsefulSideView_PromptNombreCarpeta_V2",
+                                   L"Fusionar carpetas", WS_CAPTION | WS_SYSMENU,
+                                   CW_USEDEFAULT, CW_USEDEFAULT, 320, 132, padre, nullptr,
+                                   GetModuleHandleW(nullptr), &estado);
+    if (!ventana) { EnableWindow(padre, TRUE); return {}; }
+    RECT rcPadre{}, rcVentana{};
+    GetWindowRect(padre, &rcPadre); GetWindowRect(ventana, &rcVentana);
+    SetWindowPos(ventana, nullptr,
+                 rcPadre.left + ((rcPadre.right - rcPadre.left) - (rcVentana.right - rcVentana.left)) / 2,
+                 rcPadre.top + ((rcPadre.bottom - rcPadre.top) - (rcVentana.bottom - rcVentana.top)) / 2,
+                 0, 0, SWP_NOSIZE | SWP_NOZORDER);
+    ShowWindow(ventana, SW_SHOW); UpdateWindow(ventana);
+    MSG mensaje{};
+    while (!estado.terminado && GetMessageW(&mensaje, nullptr, 0, 0) > 0) {
+        if (!IsDialogMessageW(ventana, &mensaje)) { TranslateMessage(&mensaje); DispatchMessageW(&mensaje); }
+    }
+    EnableWindow(padre, TRUE); SetForegroundWindow(padre);
+    return estado.resultado;
+}
 
 class VistaCarpetas : public IPanelContenido {
 public:
-    VistaCarpetas() {
-        m_programasRecordados = g_programasRecordadosV2.carpetas;
-        m_ultimoProgramaUsado = g_programasRecordadosV2.ultimoCarpetas;
-        m_limiteCarpetasPesadas = g_limiteCarpetasPesadasConfig.load();
-        if (m_limiteCarpetasPesadas < 1) m_limiteCarpetasPesadas = 3;
+    explicit VistaCarpetas(std::shared_ptr<ServicioAbrirConV2> servicio,
+                           std::shared_ptr<ServicioNavegacionV2> navegacion,
+                           std::shared_ptr<ServicioFusionCarpetasV2> fusion,
+                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
+                           std::shared_ptr<ServicioComparadorVideosV2> comparadorVideos)
+        : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
+          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
+          m_comparadorVideos(std::move(comparadorVideos)) {
+        m_programasRecordados = m_servicio->Programas();
+        m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
     }
 
-    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
         m_carpetasSeleccionadas = archivos;
-        m_carpetaContenedora = carpeta;
         m_indiceCarpeta = 0;
         m_desplazamientoScrollY = 0;
         m_scrollPesadasY = 0;
         m_nivelExpansionMax = 1; // 1 = Raíz, 2 = Nivel 1, 3 = Nivel 2, 4 = Todo
-        m_limiteCarpetasPesadas = g_limiteCarpetasPesadasConfig.load();
-        if (m_limiteCarpetasPesadas < 1) m_limiteCarpetasPesadas = 3;
+        m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
 
         CargarCarpetaActual();
+    }
+
+    void ActualizarConfiguracion() override {
+        int limiteAnterior = m_limiteCarpetasPesadas;
+        m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
+        if (limiteAnterior != m_limiteCarpetasPesadas) CargarCarpetaActual();
     }
 
     bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) override {
@@ -1187,10 +2677,14 @@ public:
         }
 
         if (msg == WM_LBUTTONDOWN) {
+            if (m_fusionEnCurso &&
+                (PtInRect(&m_rcBotonFusionCarpetas, pt) || PtInRect(&m_rcBotonEliminarVacias, pt))) {
+                return true;
+            }
             // Botón Anterior
             if (PtInRect(&m_rcBotonAnterior, pt)) {
                 if (m_carpetasSeleccionadas.size() > 1) {
-                    m_indiceCarpeta = (m_indiceCarpeta == 0) ? (m_carpetasSeleccionadas.size() - 1) : (m_indiceCarpeta - 1);
+                    m_indiceCarpeta = m_navegacion->Anterior(m_indiceCarpeta, m_carpetasSeleccionadas.size());
                     CargarCarpetaActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -1199,7 +2693,7 @@ public:
             // Botón Siguiente
             if (PtInRect(&m_rcBotonSiguiente, pt)) {
                 if (m_carpetasSeleccionadas.size() > 1) {
-                    m_indiceCarpeta = (m_indiceCarpeta + 1) % m_carpetasSeleccionadas.size();
+                    m_indiceCarpeta = m_navegacion->Siguiente(m_indiceCarpeta, m_carpetasSeleccionadas.size());
                     CargarCarpetaActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -1209,7 +2703,6 @@ public:
             if (PtInRect(&m_rcBotonExpansion, pt)) {
                 m_nivelExpansionMax = (m_nivelExpansionMax >= 4) ? 1 : (m_nivelExpansionMax + 1);
                 m_desplazamientoScrollY = 0;
-                CargarCarpetaActual();
                 InvalidateRect(hwndPanel, nullptr, FALSE);
                 return true;
             }
@@ -1238,6 +2731,17 @@ public:
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
             }
+            // El comparador sólo se expone en la vista general, sin carpetas
+            // seleccionadas. El flujo real queda aislado detrás del servicio.
+            if (m_carpetasSeleccionadas.empty() &&
+                PtInRect(&m_rcBotonCompararVideos, pt) &&
+                ComparadorVideosExperimentalDisponibleV2()) {
+                if (m_comparadorVideos &&
+                    !m_comparadorVideos->CrearFlujoSimulado().izquierda.nombre.empty()) {
+                    PostMessageW(hwndPanel, WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS, 0, 0);
+                }
+                return true;
+            }
             // Botón Fusionar Carpetas (si hay múltiples seleccionadas)
             if (m_carpetasSeleccionadas.size() > 1 && PtInRect(&m_rcBotonFusionCarpetas, pt)) {
                 EjecutarFusionCarpetas(hwndPanel);
@@ -1251,6 +2755,28 @@ public:
         }
 
         return false;
+    }
+
+    bool ProcesarMensajeVentana(UINT msg, WPARAM, LPARAM, HWND hwndPanel) override {
+        if (msg != ServicioFusionCarpetasV2::WM_FUSION_COMPLETADA) return false;
+        m_fusion->FinalizarTrabajo();
+        ResultadoFusionCarpetasV2 resultado = m_fusion->UltimoResultado();
+        m_fusionEnCurso = false;
+        if (resultado.errores == 0 && !m_destinoFusion.empty()) {
+            m_carpetasSeleccionadas = {m_destinoFusion};
+            m_indiceCarpeta = 0;
+            CargarCarpetaActual();
+            std::wstring mensaje = L"La fusión terminó correctamente. Se transfirieron " +
+                std::to_wstring(resultado.elementosTransferidos) + L" elementos.";
+            MessageBoxW(hwndPanel, mensaje.c_str(), L"Fusión completada", MB_OK | MB_ICONINFORMATION);
+        } else {
+            std::wstring mensaje = L"La fusión terminó con " + std::to_wstring(resultado.errores) +
+                L" error(es) y transfirió " + std::to_wstring(resultado.elementosTransferidos) +
+                L" elemento(s). Las carpetas de origen se conservaron cuando no fue posible completar una transferencia.";
+            MessageBoxW(hwndPanel, mensaje.c_str(), L"Fusión incompleta", MB_OK | MB_ICONWARNING);
+        }
+        InvalidateRect(hwndPanel, nullptr, FALSE);
+        return true;
     }
 
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
@@ -1335,6 +2861,9 @@ public:
 
         int margen = 16;
         int yCursor = rect.top + altoCabecera + 14;
+        m_rcBotonCompararVideos = {};
+        m_rcBotonFusionCarpetas = {};
+        m_rcBotonEliminarVacias = {};
 
         // 3. SECCIÓN ESTRUCTURA DE ARCHIVOS (Árbol Jerárquico)
         SelectObject(hdc, fuentePequena);
@@ -1428,7 +2957,7 @@ public:
         m_rcSelectorPrograma = {rect.left + margen, yCursor, rect.left + margen + anchoSelector, yCursor + 30};
         m_rcBotonEjecutarAbrir = {m_rcSelectorPrograma.right + 10, yCursor, rect.right - margen, yCursor + 30};
 
-        std::wstring seleccionado = ProgramaSeleccionadoV2(m_programasRecordados, m_ultimoProgramaUsado);
+        std::wstring seleccionado = m_servicio->ProgramaActual();
         std::wstring strProg = seleccionado.empty() ? L"(click para seleccionar programa)" : PathFindFileNameW(seleccionado.c_str());
         DibujarBoton(hdc, m_rcSelectorPrograma, (strProg + L"  ▾").c_str(), tema, true);
 
@@ -1459,6 +2988,17 @@ public:
         DibujarBoton(hdc, m_rcBotonCopiarContenido, L"📋 Copiar contenido", tema, true);
 
         yCursor += 38;
+
+        // Activador experimental: sólo existe en el estado general de
+        // carpetas. Al desactivarlo desaparece también su zona de interacción.
+        if (m_carpetasSeleccionadas.empty() &&
+            ComparadorVideosExperimentalDisponibleV2()) {
+            m_rcBotonCompararVideos = {rect.left + margen, yCursor,
+                                       rect.right - margen, yCursor + 32};
+            DibujarBoton(hdc, m_rcBotonCompararVideos,
+                         L"Comparador de videos · experimental", tema, true);
+            yCursor += 40;
+        }
 
         // 6. OPERACIONES CON CARPETA (Fusión o Eliminación de vacías)
         if (m_carpetasSeleccionadas.size() > 1) {
@@ -1570,118 +3110,13 @@ private:
         if (m_carpetasSeleccionadas.empty() || m_indiceCarpeta >= m_carpetasSeleccionadas.size()) return;
 
         const std::wstring& ruta = m_carpetasSeleccionadas[m_indiceCarpeta];
-        InspeccionarRecursivo(ruta, 0, 4);
-
-        // Calcular las carpetas más pesadas
-        CalcularCarpetasPesadas(ruta);
-    }
-
-    void InspeccionarRecursivo(const std::wstring& ruta, int nivel, int maxNivel) {
-        if (nivel >= maxNivel || m_elementosArbol.size() > 500) return;
-
-        std::wstring patron = ruta + L"\\*";
-        WIN32_FIND_DATAW fd{};
-        HANDLE hFind = FindFirstFileW(patron.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return;
-
-        std::vector<ItemArbolCarpetaV2> subcarpetas;
-        std::vector<ItemArbolCarpetaV2> archivos;
-        size_t elementosEnCarpeta = 0;
-
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) continue;
-
-            elementosEnCarpeta++;
-            std::wstring rCompleta = ruta + L"\\" + fd.cFileName;
-            bool esDir = (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-
-            ItemArbolCarpetaV2 item;
-            item.nombre = fd.cFileName;
-            item.rutaCompleta = rCompleta;
-            item.esDirectorio = esDir;
-            item.nivelJerarquia = nivel;
-
-            if (esDir) {
-                m_totalSubcarpetas++;
-                item.tamanoBytes = 0;
-                subcarpetas.push_back(item);
-            } else {
-                m_totalArchivos++;
-                uintmax_t tam = (static_cast<uintmax_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-                item.tamanoBytes = tam;
-                m_tamanoTotalBytes += tam;
-                archivos.push_back(item);
-            }
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
-
-        if (elementosEnCarpeta == 0 && nivel > 0) {
-            m_carpetasVaciasDetectadas.push_back(ruta);
-        }
-
-        std::sort(subcarpetas.begin(), subcarpetas.end(), [](const ItemArbolCarpetaV2& a, const ItemArbolCarpetaV2& b) {
-            return StrCmpLogicalW(a.nombre.c_str(), b.nombre.c_str()) < 0;
-        });
-        std::sort(archivos.begin(), archivos.end(), [](const ItemArbolCarpetaV2& a, const ItemArbolCarpetaV2& b) {
-            return StrCmpLogicalW(a.nombre.c_str(), b.nombre.c_str()) < 0;
-        });
-
-        for (const auto& dir : subcarpetas) {
-            m_elementosArbol.push_back(dir);
-            if (nivel + 1 < maxNivel && m_elementosArbol.size() < 500) {
-                InspeccionarRecursivo(dir.rutaCompleta, nivel + 1, maxNivel);
-            }
-        }
-
-        for (const auto& arch : archivos) {
-            m_elementosArbol.push_back(arch);
-        }
-    }
-
-    uintmax_t CalcularTamanoDirectorio(const std::wstring& rutaDirectorio) {
-        uintmax_t acumulado = 0;
-        std::wstring patron = rutaDirectorio + L"\\*";
-        WIN32_FIND_DATAW fd;
-        HANDLE hFind = FindFirstFileW(patron.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return 0;
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                acumulado += CalcularTamanoDirectorio(rutaDirectorio + L"\\" + fd.cFileName);
-            } else {
-                acumulado += (static_cast<uintmax_t>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
-            }
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
-        return acumulado;
-    }
-
-    void CalcularCarpetasPesadas(const std::wstring& rutaRaiz) {
-        m_topCarpetasPesadas.clear();
-        std::wstring patron = rutaRaiz + L"\\*";
-        WIN32_FIND_DATAW fd;
-        HANDLE hFind = FindFirstFileW(patron.c_str(), &fd);
-        if (hFind == INVALID_HANDLE_VALUE) return;
-
-        do {
-            if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0) continue;
-            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-                uintmax_t tam = CalcularTamanoDirectorio(rutaRaiz + L"\\" + fd.cFileName);
-                if (tam > 0) {
-                    CarpetaPesadaV2 cp;
-                    cp.nombre = fd.cFileName;
-                    cp.tamanoBytes = tam;
-                    cp.porcentaje = (m_tamanoTotalBytes > 0) ? (static_cast<double>(tam) / m_tamanoTotalBytes) * 100.0 : 0.0;
-                    m_topCarpetasPesadas.push_back(cp);
-                }
-            }
-        } while (FindNextFileW(hFind, &fd));
-        FindClose(hFind);
-
-        std::sort(m_topCarpetasPesadas.begin(), m_topCarpetasPesadas.end(), [](const CarpetaPesadaV2& a, const CarpetaPesadaV2& b) {
-            return a.tamanoBytes > b.tamanoBytes;
-        });
+        ResultadoInspeccionCarpetaV2 resultado = m_inspeccion->Ejecutar(ruta, static_cast<size_t>(m_limiteCarpetasPesadas));
+        m_elementosArbol = std::move(resultado.elementos);
+        m_topCarpetasPesadas = std::move(resultado.pesadas);
+        m_carpetasVaciasDetectadas = std::move(resultado.vacias);
+        m_tamanoTotalBytes = resultado.tamanoTotalBytes;
+        m_totalSubcarpetas = resultado.totalSubcarpetas;
+        m_totalArchivos = resultado.totalArchivos;
     }
 
     void DibujarBoton(HDC hdc, const RECT& rc, const wchar_t* texto, const TemaVisual& tema, bool habilitado) {
@@ -1762,6 +3197,7 @@ private:
     }
 
     void MostrarMenuDesplegableProgramas(HWND hwndPadre) {
+        m_programasRecordados = m_servicio->Programas();
         HMENU hMenu = CreatePopupMenu();
         for (size_t i = 0; i < m_programasRecordados.size(); ++i) {
             AppendMenuW(hMenu, MF_STRING, i + 1, m_programasRecordados[i].c_str());
@@ -1775,38 +3211,25 @@ private:
         DestroyMenu(hMenu);
 
         if (cmd == 100) {
-            wchar_t rutaProg[MAX_PATH] = L"";
-            OPENFILENAMEW ofn{};
-            ofn.lStructSize = sizeof(ofn);
-            ofn.hwndOwner = hwndPadre;
-            ofn.lpstrFilter = L"Programas Ejecutables (*.exe)\0*.exe\0Todos los archivos (*.*)\0*.*\0";
-            ofn.lpstrFile = rutaProg;
-            ofn.nMaxFile = MAX_PATH;
-            ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-            if (GetOpenFileNameW(&ofn)) {
-                RecordarProgramaV2(g_programasRecordadosV2.carpetas, g_programasRecordadosV2.ultimoCarpetas, rutaProg);
-                m_programasRecordados = g_programasRecordadosV2.carpetas;
-                m_ultimoProgramaUsado = g_programasRecordadosV2.ultimoCarpetas;
+            if (m_servicio->AbrirDialogo(hwndPadre)) {
+                m_programasRecordados = m_servicio->Programas();
                 InvalidateRect(hwndPadre, nullptr, FALSE);
             }
         } else if (cmd > 0 && cmd <= static_cast<int>(m_programasRecordados.size())) {
-            m_ultimoProgramaUsado = m_programasRecordados[cmd - 1];
-            g_programasRecordadosV2.ultimoCarpetas = m_ultimoProgramaUsado;
+            m_servicio->Seleccionar(m_programasRecordados[cmd - 1]);
             InvalidateRect(hwndPadre, nullptr, FALSE);
         }
     }
 
     void EjecutarAbrirCon(HWND hwndPadre) {
-        m_ultimoProgramaUsado = ProgramaSeleccionadoV2(m_programasRecordados, m_ultimoProgramaUsado);
-        if (m_ultimoProgramaUsado.empty()) {
+        std::wstring programa = m_servicio->ProgramaActual();
+        if (programa.empty()) {
             MostrarMenuDesplegableProgramas(hwndPadre);
-            if (m_ultimoProgramaUsado.empty()) return;
+            programa = m_servicio->ProgramaActual();
+            if (programa.empty()) return;
         }
-        for (const auto& carpeta : m_carpetasSeleccionadas) {
-            ShellExecuteW(nullptr, L"open", m_ultimoProgramaUsado.c_str(),
-                          (L"\"" + carpeta + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-        }
+        m_servicio->Seleccionar(programa);
+        m_servicio->Ejecutar(m_carpetasSeleccionadas);
     }
 
     void CopiarListaAlPortapapeles(HWND hwndPadre) {
@@ -1824,24 +3247,31 @@ private:
         }
 
         if (OpenClipboard(hwndPadre)) {
-            EmptyClipboard();
+            bool copiado = EmptyClipboard();
             size_t bytes = (textoAcumulado.size() + 1) * sizeof(wchar_t);
-            HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes);
+            HGLOBAL hMem = copiado ? GlobalAlloc(GMEM_MOVEABLE, bytes) : nullptr;
+            if (copiado && !hMem) copiado = false;
             if (hMem) {
                 void* pMem = GlobalLock(hMem);
                 if (pMem) {
                     memcpy(pMem, textoAcumulado.c_str(), bytes);
                     GlobalUnlock(hMem);
-                    SetClipboardData(CF_UNICODETEXT, hMem);
+                    copiado = SetClipboardData(CF_UNICODETEXT, hMem) != nullptr;
+                    if (!copiado) GlobalFree(hMem);
+                } else {
+                    GlobalFree(hMem);
+                    copiado = false;
                 }
             }
             CloseClipboard();
-            MessageBoxW(hwndPadre, L"¡Estructura de la carpeta copiada al portapapeles!", L"Useful Side View", MB_OK | MB_ICONINFORMATION);
+            MessageBoxW(hwndPadre, copiado ? L"¡Estructura de la carpeta copiada al portapapeles!" : L"No fue posible copiar la estructura al portapapeles.", L"Useful Side View", MB_OK | (copiado ? MB_ICONINFORMATION : MB_ICONWARNING));
         }
     }
 
     void CrearEnlaceSimbolico(HWND hwndPadre) {
         if (m_carpetasSeleccionadas.empty() || m_indiceCarpeta >= m_carpetasSeleccionadas.size()) return;
+        AmbitoComV2 com;
+        if (!com.Disponible()) return;
         const std::wstring& rutaOrigen = m_carpetasSeleccionadas[m_indiceCarpeta];
 
         wchar_t rutaDestino[MAX_PATH] = L"";
@@ -1861,13 +3291,15 @@ private:
             }
 
             IShellLinkW* psl = nullptr;
-            if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void**>(&psl)))) {
-                psl->SetPath(rutaOrigen.c_str());
+            if (SUCCEEDED(CoCreateInstance(CLSID_ShellLink, nullptr, CLSCTX_INPROC_SERVER, IID_IShellLinkW, reinterpret_cast<void**>(&psl))) &&
+                SUCCEEDED(psl->SetPath(rutaOrigen.c_str()))) {
                 IPersistFile* ppf = nullptr;
-                if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf)))) {
-                    ppf->Save(destinoStr.c_str(), TRUE);
+                if (SUCCEEDED(psl->QueryInterface(IID_IPersistFile, reinterpret_cast<void**>(&ppf))) && ppf) {
+                    HRESULT guardado = ppf->Save(destinoStr.c_str(), TRUE);
                     ppf->Release();
+                    if (SUCCEEDED(guardado)) {
                     MessageBoxW(hwndPadre, L"Enlace creado exitosamente.", L"Useful Side View", MB_OK | MB_ICONINFORMATION);
+                    }
                 }
                 psl->Release();
             }
@@ -1875,11 +3307,52 @@ private:
     }
 
     void EjecutarFusionCarpetas(HWND hwndPadre) {
-        std::wstring mensaje = L"Se fusionarán " + std::to_wstring(m_carpetasSeleccionadas.size()) +
-                               L" carpetas en una única carpeta consolidada.\n\n¿Deseas continuar?";
-        if (MessageBoxW(hwndPadre, mensaje.c_str(), L"Useful Side View - Fusión", MB_YESNO | MB_ICONQUESTION) == IDYES) {
-            MessageBoxW(hwndPadre, L"Operación de fusión iniciada en segundo plano.", L"Useful Side View", MB_OK | MB_ICONINFORMATION);
+        if (m_carpetasSeleccionadas.size() < 2) return;
+        if (m_fusionEnCurso) return;
+        std::wstring confirmacion = L"Se fusionarán " + std::to_wstring(m_carpetasSeleccionadas.size()) +
+            L" carpetas.\n\nLa operación combinará todo su contenido en una sola carpeta y eliminará las carpetas de origen cuando la transferencia termine correctamente.\n\n¿Deseas continuar?";
+        if (MessageBoxW(hwndPadre, confirmacion.c_str(), L"Useful Side View - Fusión", MB_YESNO | MB_ICONQUESTION) != IDYES) return;
+
+        wchar_t padreBuffer[MAX_PATH]{};
+        wcsncpy_s(padreBuffer, m_carpetasSeleccionadas.front().c_str(), _TRUNCATE);
+        PathRemoveFileSpecW(padreBuffer);
+        std::wstring nombre = SolicitarNombreCarpetaV2(hwndPadre);
+        if (nombre.empty()) return;
+        if (nombre.find_first_of(L"\\/:*?\"<>|") != std::wstring::npos || nombre == L"." || nombre == L"..") {
+            MessageBoxW(hwndPadre, L"El nombre contiene caracteres no válidos.", L"Fusión no válida", MB_OK | MB_ICONWARNING);
+            return;
         }
+        std::wstring destino = std::wstring(padreBuffer) + L"\\" + nombre;
+        for (const auto& origen : m_carpetasSeleccionadas) {
+            std::wstring prefijo = origen;
+            if (!prefijo.empty() && prefijo.back() != L'\\') prefijo += L'\\';
+            if (_wcsicmp(destino.c_str(), origen.c_str()) == 0 ||
+                (destino.size() > prefijo.size() && _wcsnicmp(destino.c_str(), prefijo.c_str(), prefijo.size()) == 0)) {
+                MessageBoxW(hwndPadre, L"La carpeta destino no puede ser una carpeta de origen ni estar dentro de ella.", L"Fusión no válida", MB_OK | MB_ICONWARNING);
+                return;
+            }
+        }
+
+        DWORD atributosDestino = GetFileAttributesW(destino.c_str());
+        if (atributosDestino != INVALID_FILE_ATTRIBUTES && !(atributosDestino & FILE_ATTRIBUTE_DIRECTORY)) {
+            MessageBoxW(hwndPadre, L"La ruta elegida ya corresponde a un archivo.", L"Fusión no válida", MB_OK | MB_ICONWARNING);
+            return;
+        }
+        if (atributosDestino == INVALID_FILE_ATTRIBUTES && !CreateDirectoryW(destino.c_str(), nullptr)) {
+            MessageBoxW(hwndPadre, L"No fue posible crear la carpeta unificada.", L"Fusión fallida", MB_OK | MB_ICONERROR);
+            return;
+        }
+
+        m_fusionEnCurso = true;
+        m_destinoFusion = destino;
+        if (!m_fusion->EjecutarEnSegundoPlano(m_carpetasSeleccionadas, destino, hwndPadre)) {
+            m_fusionEnCurso = false;
+            MessageBoxW(hwndPadre, L"No fue posible iniciar la fusión en segundo plano.", L"Fusión fallida", MB_OK | MB_ICONERROR);
+            return;
+        }
+        MessageBoxW(hwndPadre,
+            L"La fusión se ejecutará en segundo plano para evitar congelar Explorer.\n\nPuedes seguir usando la ventana; el contenido se actualizará al finalizar.",
+            L"Fusión iniciada", MB_OK | MB_ICONINFORMATION);
     }
 
     void EliminarCarpetasVacias(HWND hwndPadre) {
@@ -1897,7 +3370,6 @@ private:
     }
 
     std::vector<std::wstring> m_carpetasSeleccionadas;
-    std::wstring m_carpetaContenedora;
     size_t m_indiceCarpeta{0};
     int m_desplazamientoScrollY{0};
     int m_scrollPesadasY{0};
@@ -1905,15 +3377,21 @@ private:
     int m_limiteCarpetasPesadas{3};
 
     uintmax_t m_tamanoTotalBytes{0};
-    int m_totalSubcarpetas{0};
-    int m_totalArchivos{0};
+    size_t m_totalSubcarpetas{0};
+    size_t m_totalArchivos{0};
 
     std::vector<ItemArbolCarpetaV2> m_elementosArbol;
     std::vector<CarpetaPesadaV2> m_topCarpetasPesadas;
     std::vector<std::wstring> m_carpetasVaciasDetectadas;
 
     std::vector<std::wstring> m_programasRecordados;
-    std::wstring m_ultimoProgramaUsado;
+    std::shared_ptr<ServicioAbrirConV2> m_servicio;
+    std::shared_ptr<ServicioNavegacionV2> m_navegacion;
+    std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
+    std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
+    std::shared_ptr<ServicioComparadorVideosV2> m_comparadorVideos;
+    bool m_fusionEnCurso{false};
+    std::wstring m_destinoFusion;
 
     RECT m_rcBotonAnterior{};
     RECT m_rcBotonSiguiente{};
@@ -1923,6 +3401,7 @@ private:
     RECT m_rcBotonEjecutarAbrir{};
     RECT m_rcBotonCrearEnlace{};
     RECT m_rcBotonCopiarContenido{};
+    RECT m_rcBotonCompararVideos{};
     RECT m_rcBotonFusionCarpetas{};
     RECT m_rcBotonEliminarVacias{};
     RECT m_rcBotonLimitePesadas{};
@@ -2087,8 +3566,920 @@ private:
 /**** skipping file: v2/nucleo/enrutador_vistas.hpp ****/
 /**** skipping file: v2/vistas/vista_walkthrough.hpp ****/
 /**** skipping file: v2/vistas/vista_comprimidos.hpp ****/
+/**** start inlining v2/vistas/vista_comics.hpp ****/
+
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/ui/ventana_base.hpp ****/
+/**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
+#include <windows.h>
+#include <windowsx.h>
+#include <shlwapi.h>
+#include <string>
+#include <vector>
+#include <algorithm>
+
+namespace SideViewV2 {
+
+class VistaComics : public IPanelContenido {
+public:
+    explicit VistaComics(std::shared_ptr<ServicioExtensionV2> extensiones,
+                         std::shared_ptr<ServicioNavegacionV2> navegacion,
+                         std::shared_ptr<ServicioPrevisualizacionMediaV2> previsualizacion)
+        : m_extensiones(std::move(extensiones)), m_navegacion(std::move(navegacion)), m_previsualizacion(std::move(previsualizacion)) {}
+
+    ~VistaComics() override { Liberar(); }
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring&) override {
+        m_archivos = archivos;
+        m_indice = 0;
+        CargarPortadas();
+    }
+
+    void Liberar() override {
+        for (HBITMAP portada : m_portadas) if (portada) DeleteObject(portada);
+        m_portadas.clear();
+    }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam, HWND hwnd) override {
+        if (msg != WM_LBUTTONDOWN) return false;
+        POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (PtInRect(&m_rcAnterior, pt) && m_archivos.size() > 1) {
+            m_indice = m_navegacion->Anterior(m_indice, m_archivos.size());
+            InvalidateRect(hwnd, nullptr, FALSE); return true;
+        }
+        if (PtInRect(&m_rcSiguiente, pt) && m_archivos.size() > 1) {
+            m_indice = m_navegacion->Siguiente(m_indice, m_archivos.size());
+            InvalidateRect(hwnd, nullptr, FALSE); return true;
+        }
+        if (PtInRect(&m_rcCambiarExtension, pt)) {
+            MostrarMenuExtensiones(hwnd); return true;
+        }
+        return false;
+    }
+
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        if (!hdc || rect.right <= rect.left || rect.bottom <= rect.top) return;
+        if (m_indice >= m_archivos.size()) m_indice = 0;
+        HBRUSH fondo = CreateSolidBrush(tema.fondo); FillRect(hdc, &rect, fondo); DeleteObject(fondo);
+        SetBkMode(hdc, TRANSPARENT);
+        HFONT titulo = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+                                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                   CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Display");
+        HFONT texto = CreateFontW(-12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                                  CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI Variable Text");
+        HFONT anterior = static_cast<HFONT>(SelectObject(hdc, titulo));
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT rcTitulo{rect.left + 16, rect.top + 10, rect.right - 16, rect.top + 35};
+        std::wstring nombre = m_archivos.empty() ? L"Sin comics seleccionados" :
+            L"📚 " + std::wstring(PathFindFileNameW(m_archivos[m_indice].c_str()));
+        DrawTextW(hdc, nombre.c_str(), -1, &rcTitulo, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SelectObject(hdc, texto); SetTextColor(hdc, tema.textoSecundario);
+        RECT rcSub{rect.left + 16, rect.top + 36, rect.right - 16, rect.top + 58};
+        std::wstring sub = std::to_wstring(m_archivos.size()) + L" comic(s) · Cover de la primera página";
+        DrawTextW(hdc, sub.c_str(), -1, &rcSub, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+
+        int yBoton = rect.top + 72;
+        m_rcAnterior = {rect.left + 16, yBoton, rect.left + 50, yBoton + 30};
+        m_rcSiguiente = {rect.left + 56, yBoton, rect.left + 90, yBoton + 30};
+        DibujarBoton(hdc, m_rcAnterior, L"◀", tema, m_archivos.size() > 1);
+        DibujarBoton(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
+        m_rcCambiarExtension = {rect.right - 170, yBoton, rect.right - 16, yBoton + 30};
+        DibujarBoton(hdc, m_rcCambiarExtension, L"Cambiar extensión", tema, true);
+
+        // Contenedor cuadrado con grid fijo 2x2. Evita que los covers se
+        // conviertan en una fila horizontal y mantiene una composición
+        // estable con una, dos, tres o cuatro selecciones.
+        int top = yBoton + 48;
+        int bottom = rect.bottom - 18;
+        int anchoDisponible = rect.right - rect.left - 32;
+        int altoDisponible = bottom - top - 30;
+        int ladoContenedor = std::max(160, std::min(anchoDisponible, altoDisponible));
+        ladoContenedor = std::min(ladoContenedor, std::max(160, anchoDisponible));
+        int gridLeft = rect.left + ((rect.right - rect.left) - ladoContenedor) / 2;
+        int gridTop = top + std::max(0, (altoDisponible - ladoContenedor) / 2);
+        RECT contenedorGrid{gridLeft, gridTop, gridLeft + ladoContenedor, gridTop + ladoContenedor};
+        HBRUSH fondoGrid = CreateSolidBrush(tema.fondoTarjeta);
+        FillRect(hdc, &contenedorGrid, fondoGrid);
+        DeleteObject(fondoGrid);
+        HPEN bordeGrid = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anteriorGrid = static_cast<HPEN>(SelectObject(hdc, bordeGrid));
+        HBRUSH sinRelleno = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorRelleno = static_cast<HBRUSH>(SelectObject(hdc, sinRelleno));
+        RoundRect(hdc, contenedorGrid.left, contenedorGrid.top, contenedorGrid.right,
+                  contenedorGrid.bottom, 10, 10);
+        SelectObject(hdc, anteriorRelleno);
+        SelectObject(hdc, anteriorGrid);
+        DeleteObject(bordeGrid);
+
+        int separacion = 8;
+        int ladoCelda = (ladoContenedor - separacion * 3) / 2;
+        size_t cantidad = std::min<size_t>(4, m_archivos.size());
+        for (size_t i = 0; i < cantidad; ++i) {
+            int fila = static_cast<int>(i / 2);
+            int columna = static_cast<int>(i % 2);
+            int tileLeft = contenedorGrid.left + separacion + columna * (ladoCelda + separacion);
+            int tileTop = contenedorGrid.top + separacion + fila * (ladoCelda + separacion);
+            RECT tile{tileLeft, tileTop, tileLeft + ladoCelda, tileTop + ladoCelda};
+            HBRUSH tarjeta = CreateSolidBrush(tema.fondoCabecera); FillRect(hdc, &tile, tarjeta); DeleteObject(tarjeta);
+            if (i < m_portadas.size() && m_portadas[i]) {
+                BITMAP bm{};
+                if (GetObjectW(m_portadas[i], sizeof(bm), &bm) != sizeof(bm) ||
+                    bm.bmWidth <= 0 || bm.bmHeight == 0) {
+                    continue;
+                }
+                HDC mem = CreateCompatibleDC(hdc); if (!mem) continue; HGDIOBJ old = SelectObject(mem, m_portadas[i]); if (!old || old == HGDI_ERROR) { DeleteDC(mem); continue; }
+                int margen = 8; int destinoAncho = ladoCelda - margen * 2;
+                int anchoBitmap = std::max(1, static_cast<int>(bm.bmWidth));
+                int altoDisponiblePortada = ladoCelda - margen * 2;
+                int altoPortada = MulDiv(static_cast<int>(bm.bmHeight), destinoAncho, anchoBitmap);
+                int destinoAlto = std::min(altoDisponiblePortada, altoPortada);
+                int destinoX = tile.left + (ladoCelda - destinoAncho) / 2;
+                int destinoY = tile.top + (ladoCelda - destinoAlto) / 2;
+                int modoAnterior = SetStretchBltMode(hdc, HALFTONE);
+                SetBrushOrgEx(hdc, 0, 0, nullptr);
+                StretchBlt(hdc, destinoX, destinoY, destinoAncho, destinoAlto,
+                           mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+                SetStretchBltMode(hdc, modoAnterior);
+                SelectObject(mem, old); DeleteDC(mem);
+            } else {
+                SetTextColor(hdc, tema.acento);
+                DrawTextW(hdc, L"COVER\nno disponible", -1, &tile, DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+            }
+        }
+        if (m_archivos.size() > 4) {
+            RECT contador{contenedorGrid.left, contenedorGrid.bottom + 4,
+                          contenedorGrid.right, bottom};
+            SetTextColor(hdc, tema.textoSecundario);
+            std::wstring extra = L"+" + std::to_wstring(m_archivos.size() - 4) + L" comics adicionales";
+            DrawTextW(hdc, extra.c_str(), -1, &contador,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SelectObject(hdc, anterior); DeleteObject(titulo); DeleteObject(texto);
+    }
+
+private:
+    void DibujarBoton(HDC hdc, const RECT& rc, const wchar_t* texto,
+                      const TemaVisual& tema, bool habilitado) {
+        HBRUSH fondo = CreateSolidBrush(habilitado ? tema.botonFondo : tema.fondoCabecera);
+        FillRect(hdc, &rc, fondo); DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anteriorPen = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH transparente = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrush = static_cast<HBRUSH>(SelectObject(hdc, transparente));
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+        SelectObject(hdc, anteriorBrush); SelectObject(hdc, anteriorPen); DeleteObject(borde);
+        SetTextColor(hdc, habilitado ? tema.textoPrincipal : tema.textoSecundario);
+        RECT textoRect = rc;
+        DrawTextW(hdc, texto, -1, &textoRect, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+    }
+
+    void CargarPortadas() {
+        Liberar();
+        size_t cantidad = std::min<size_t>(4, m_archivos.size());
+        for (size_t i = 0; i < cantidad; ++i) {
+            HBITMAP bitmap = m_previsualizacion->CargarMiniatura(m_archivos[i], SIZE{420, 620});
+            // Conservamos una entrada por celda; un thumbnail ausente se
+            // representa como fallback visual y nunca se usa como bitmap.
+            m_portadas.push_back(bitmap);
+        }
+    }
+
+    void MostrarMenuExtensiones(HWND hwnd) {
+        HMENU menu = CreatePopupMenu();
+        const wchar_t* opciones[] = {L".cbz", L".cbr", L".cb7", L".cbt", L".cba", L".zip", L".rar"};
+        for (UINT i = 0; i < ARRAYSIZE(opciones); ++i) AppendMenuW(menu, MF_STRING, i + 1, opciones[i]);
+        POINT p{m_rcCambiarExtension.left, m_rcCambiarExtension.bottom}; ClientToScreen(hwnd, &p);
+        UINT cmd = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, p.x, p.y, 0, hwnd, nullptr);
+        DestroyMenu(menu);
+        if (cmd >= 1 && cmd <= ARRAYSIZE(opciones)) {
+            size_t cantidad = m_extensiones->Cambiar(m_archivos, opciones[cmd - 1]);
+            MessageBoxW(hwnd, (L"Se cambiaron " + std::to_wstring(cantidad) + L" archivo(s)." ).c_str(), L"Cambiar extensión", MB_OK | MB_ICONINFORMATION);
+        }
+    }
+
+    std::vector<std::wstring> m_archivos;
+    std::vector<HBITMAP> m_portadas;
+    std::shared_ptr<ServicioExtensionV2> m_extensiones;
+    std::shared_ptr<ServicioNavegacionV2> m_navegacion;
+    std::shared_ptr<ServicioPrevisualizacionMediaV2> m_previsualizacion;
+    size_t m_indice{0};
+    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcCambiarExtension{};
+};
+}
+/**** ended inlining v2/vistas/vista_comics.hpp ****/
 /**** skipping file: v2/vistas/vista_carpetas.hpp ****/
 /**** skipping file: v2/vistas/vista_en_desarrollo.hpp ****/
+/**** start inlining v2/vistas/vista_medios.hpp ****/
+
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
+#include <windows.h>
+#include <windowsx.h>
+#include <shlwapi.h>
+#include <string>
+#include <vector>
+#include <memory>
+
+namespace SideViewV2 {
+
+inline void DibujarBotonMediaV2(HDC hdc, const RECT& rc, const wchar_t* texto,
+                                const TemaVisual& tema, bool activo = true) {
+    HBRUSH fondo = CreateSolidBrush(activo ? tema.botonFondo : tema.fondoCabecera);
+    FillRect(hdc, &rc, fondo); DeleteObject(fondo);
+    SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, activo ? tema.textoPrincipal : tema.textoSecundario);
+    RECT textoRect = rc;
+    DrawTextW(hdc, texto, -1, &textoRect, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+}
+
+inline std::wstring TamanoMediaV2(const std::wstring& ruta) {
+    WIN32_FILE_ATTRIBUTE_DATA datos{};
+    if (!GetFileAttributesExW(ruta.c_str(), GetFileExInfoStandard, &datos)) return L"Tamaño no disponible";
+    ULONGLONG bytes = (static_cast<ULONGLONG>(datos.nFileSizeHigh) << 32) | datos.nFileSizeLow;
+    if (bytes < 1024) return std::to_wstring(bytes) + L" B";
+    if (bytes < 1024 * 1024) return std::to_wstring(bytes / 1024) + L" KB";
+    if (bytes < 1024ULL * 1024 * 1024) return std::to_wstring(bytes / (1024 * 1024)) + L" MB";
+    return std::to_wstring(bytes / (1024ULL * 1024 * 1024)) + L" GB";
+}
+
+class VistaMediaV2 : public IPanelContenido {
+protected:
+    VistaMediaV2(std::shared_ptr<ServicioNavegacionV2> navegacion,
+                 std::shared_ptr<ServicioAbrirConV2> abrirCon,
+                 std::shared_ptr<ServicioPrevisualizacionMediaV2> previsualizacion)
+        : m_navegacion(std::move(navegacion)), m_abrirCon(std::move(abrirCon)),
+          m_previsualizacion(std::move(previsualizacion)) {}
+
+    bool ProcesarNavegacion(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwnd) {
+        if (msg == WM_KEYDOWN && (wParam == VK_LEFT || wParam == VK_RIGHT)) {
+            CambiarIndice(wParam == VK_LEFT ? -1 : 1); InvalidateRect(hwnd, nullptr, FALSE); return true;
+        }
+        if (msg != WM_LBUTTONDOWN) return false;
+        POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (PtInRect(&m_rcAnterior, pt)) { CambiarIndice(-1); InvalidateRect(hwnd, nullptr, FALSE); return true; }
+        if (PtInRect(&m_rcSiguiente, pt)) { CambiarIndice(1); InvalidateRect(hwnd, nullptr, FALSE); return true; }
+        if (PtInRect(&m_rcAbrirCon, pt)) {
+            if (m_archivos.empty()) return true;
+            if (m_abrirCon->ProgramaActual().empty()) m_abrirCon->AbrirDialogo(hwnd);
+            m_abrirCon->Ejecutar({m_archivos[m_indice]}); return true;
+        }
+        return false;
+    }
+
+    void DibujarCabecera(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                         const wchar_t* titulo, const std::wstring& nombre) {
+        SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, tema.textoPrincipal);
+        RECT rTitulo{rect.left + 16, rect.top + 10, rect.right - 16, rect.top + 36};
+        DrawTextW(hdc, titulo, -1, &rTitulo, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT rNombre{rect.left + 16, rect.top + 38, rect.right - 16, rect.top + 60};
+        std::wstring detalle = nombre;
+        if (!m_archivos.empty()) detalle += L"  ·  " + TamanoMediaV2(m_archivos[m_indice]);
+        DrawTextW(hdc, detalle.c_str(), -1, &rNombre, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+        int y = rect.top + 72;
+        m_rcAnterior = {rect.left + 16, y, rect.left + 52, y + 30};
+        m_rcSiguiente = {rect.left + 58, y, rect.left + 94, y + 30};
+        m_rcAbrirCon = {rect.right - 140, y, rect.right - 16, y + 30};
+        DibujarBotonMediaV2(hdc, m_rcAnterior, L"◀", tema, m_archivos.size() > 1);
+        DibujarBotonMediaV2(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
+        DibujarBotonMediaV2(hdc, m_rcAbrirCon, L"Abrir con", tema);
+    }
+
+    void DibujarPreview(HDC hdc, const RECT& rect, const TemaVisual& tema, HBITMAP bitmap) {
+        RECT contenedor{rect.left + 16, rect.top + 118, rect.right - 16, rect.bottom - 16};
+        HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta); FillRect(hdc, &contenedor, fondo); DeleteObject(fondo);
+        if (!bitmap) { SetTextColor(hdc, tema.textoSecundario); DrawTextW(hdc, L"Vista previa no disponible", -1, &contenedor, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX); return; }
+        BITMAP bm{};
+        if (GetObjectW(bitmap, sizeof(bm), &bm) != sizeof(bm) || bm.bmWidth <= 0 || bm.bmHeight == 0) {
+            SetTextColor(hdc, tema.textoSecundario);
+            DrawTextW(hdc, L"Vista previa no disponible", -1, &contenedor,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            return;
+        }
+        int w = contenedor.right - contenedor.left - 24, h = contenedor.bottom - contenedor.top - 24;
+        int pw = w, ph = MulDiv(static_cast<int>(bm.bmHeight), w, std::max(1, static_cast<int>(bm.bmWidth)));
+        if (ph > h) { ph = h; pw = MulDiv(static_cast<int>(bm.bmWidth), h, std::max(1, static_cast<int>(bm.bmHeight))); }
+        HDC mem = CreateCompatibleDC(hdc); if (!mem) return; HGDIOBJ old = SelectObject(mem, bitmap); if (!old || old == HGDI_ERROR) { DeleteDC(mem); return; }
+        int modoAnterior = SetStretchBltMode(hdc, HALFTONE);
+        SetBrushOrgEx(hdc, 0, 0, nullptr);
+        StretchBlt(hdc, contenedor.left + (w - pw) / 2 + 12, contenedor.top + (h - ph) / 2 + 12, pw, ph, mem, 0, 0, bm.bmWidth, bm.bmHeight, SRCCOPY);
+        SetStretchBltMode(hdc, modoAnterior);
+        SelectObject(mem, old); DeleteDC(mem);
+    }
+
+    void CambiarIndice(int delta) {
+        if (m_archivos.size() < 2) return;
+        m_indice = delta < 0 ? m_navegacion->Anterior(m_indice, m_archivos.size()) : m_navegacion->Siguiente(m_indice, m_archivos.size());
+        CargarActual();
+    }
+
+    void ReemplazarPreview(HBITMAP nuevo) {
+        if (m_preview && m_preview != nuevo) DeleteObject(m_preview);
+        m_preview = nuevo;
+    }
+
+    virtual void CargarActual() = 0;
+    std::vector<std::wstring> m_archivos; size_t m_indice{0}; HBITMAP m_preview{nullptr};
+    std::shared_ptr<ServicioNavegacionV2> m_navegacion;
+    std::shared_ptr<ServicioAbrirConV2> m_abrirCon;
+    std::shared_ptr<ServicioPrevisualizacionMediaV2> m_previsualizacion;
+    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcAbrirCon{};
+};
+
+class VistaImagenes final : public VistaMediaV2 {
+public:
+    VistaImagenes(std::shared_ptr<ServicioNavegacionV2> n, std::shared_ptr<ServicioAbrirConV2> a, std::shared_ptr<ServicioPrevisualizacionMediaV2> p) : VistaMediaV2(std::move(n), std::move(a), std::move(p)) {}
+    ~VistaImagenes() override { Liberar(); }
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
+    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin imágenes":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🖼 Imágenes",n); DibujarPreview(hdc,rect,tema,m_preview); }
+private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarImagen(m_archivos[m_indice])); }
+};
+
+class VistaVideos final : public VistaMediaV2 {
+public:
+    VistaVideos(std::shared_ptr<ServicioNavegacionV2> n, std::shared_ptr<ServicioAbrirConV2> a, std::shared_ptr<ServicioPrevisualizacionMediaV2> p) : VistaMediaV2(std::move(n), std::move(a), std::move(p)) {}
+    ~VistaVideos() override { Liberar(); }
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
+    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
+private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
+};
+}
+/**** ended inlining v2/vistas/vista_medios.hpp ****/
+/**** start inlining v2/vistas/vista_texto_codigo.hpp ****/
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/nucleo/servicio_texto.hpp ****/
+/**** skipping file: v2/nucleo/servicio_navegacion.hpp ****/
+#include <windowsx.h>
+#include <algorithm>
+#include <memory>
+
+namespace SideViewV2 {
+class VistaTextoCodigo : public IPanelContenido {
+public:
+    VistaTextoCodigo(std::shared_ptr<ServicioTextoV2> texto, std::shared_ptr<ServicioNavegacionV2> nav, bool codigo)
+        : m_texto(std::move(texto)), m_nav(std::move(nav)), m_codigo(codigo) {}
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
+        m_archivos = archivos; m_indiceArchivo = 0; Cargar();
+    }
+    bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam, HWND hwnd) override {
+        if (msg != WM_LBUTTONDOWN) return false; POINT p{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (PtInRect(&m_rcAnterior,p)) { Cambiar(-1,hwnd); return true; }
+        if (PtInRect(&m_rcSiguiente,p)) { Cambiar(1,hwnd); return true; }
+        if (PtInRect(&m_rcCopiar,p)) { m_texto->Copiar(Unir()); return true; }
+        if (PtInRect(&m_rcRenombrar,p) && !m_documento.ruta.empty()) { if(m_texto->Renombrar(hwnd,m_documento.ruta)) Cargar(); return true; }
+        for (size_t i=0;i<m_documento.indice.size();++i) { RECT r{m_rcIndice.left,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right,m_rcIndice.top+static_cast<int>((i+1)*22)}; if(PtInRect(&r,p)){m_lineaInicial=m_documento.indice[i];InvalidateRect(hwnd,nullptr,FALSE);return true;} }
+        return PtInRect(&m_rcIndice,p);
+    }
+    bool ProcesarMensajeTeclado(UINT msg, WPARAM wParam, LPARAM, HWND hwnd) override {
+        if(msg != WM_KEYDOWN) return false; if(wParam==VK_LEFT){Cambiar(-1,hwnd);return true;} if(wParam==VK_RIGHT){Cambiar(1,hwnd);return true;} if(wParam==VK_HOME){m_lineaInicial=0;InvalidateRect(hwnd,nullptr,FALSE);return true;} return false;
+    }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); SetBkMode(hdc,TRANSPARENT);
+        int top=8; m_rcAnterior={rect.left+8,rect.top+top,rect.left+72,rect.top+top+28}; m_rcSiguiente={rect.left+78,rect.top+top,rect.left+142,rect.top+top+28}; m_rcCopiar={rect.right-170,rect.top+top,rect.right-88,rect.top+top+28}; m_rcRenombrar={rect.right-82,rect.top+top,rect.right-8,rect.top+top+28};
+        DibujarBoton(hdc,m_rcAnterior,L"◀",tema); DibujarBoton(hdc,m_rcSiguiente,L"▶",tema); DibujarBoton(hdc,m_rcCopiar,L"Copiar",tema); DibujarBoton(hdc,m_rcRenombrar,L"Renombrar",tema);
+        SetTextColor(hdc,tema.textoPrincipal); RECT titulo{rect.left+154,rect.top+top,rect.right-180,rect.top+top+28}; std::wstring nombre=m_documento.ruta; size_t p=nombre.find_last_of(L"\\/"); if(p!=std::wstring::npos) nombre=nombre.substr(p+1); DrawTextW(hdc,nombre.c_str(),-1,&titulo,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
+        m_rcIndice={rect.left+8,rect.top+48,rect.left+190,rect.bottom-8}; HBRUSH bi=CreateSolidBrush(tema.fondoCabecera); FillRect(hdc,&m_rcIndice,bi); DeleteObject(bi); SetTextColor(hdc,tema.textoSecundario); size_t filasIndice = m_rcIndice.bottom > m_rcIndice.top ? static_cast<size_t>((m_rcIndice.bottom-m_rcIndice.top)/22) : 0; size_t entradasIndice = std::min(filasIndice,m_documento.indice.size()); for(size_t i=0;i<entradasIndice;++i){size_t n=m_documento.indice[i];RECT r{m_rcIndice.left+8,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right-4,m_rcIndice.top+static_cast<int>((i+1)*22)}; DrawTextW(hdc,m_documento.lineas[n].c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
+        bool mostrarNumeros=g_mostrarNumerosLineaV2.load(); int x=rect.left+202,y=rect.top+54; SetTextColor(hdc,tema.textoPrincipal); for(size_t i=m_lineaInicial;i<m_documento.lineas.size() && y<rect.bottom-8;++i,y+=20){if(mostrarNumeros){SetTextColor(hdc,tema.textoSecundario); wchar_t no[32]; swprintf_s(no,L"%5zu",i+1); TextOutW(hdc,x,y,no,static_cast<int>(wcslen(no)));} const std::wstring& linea=m_documento.lineas[i]; bool encabezado=!linea.empty() && linea[0]==L'#'; bool lista=linea.size()>1 && (linea[0]==L'-'||linea[0]==L'*'||linea[0]==L'>'); COLORREF color=m_codigo&&EsClave(linea)?RGB(180,100,220):(encabezado?RGB(70,150,230):(lista?RGB(90,180,120):tema.textoPrincipal)); SetTextColor(hdc,color); RECT r{x+ (mostrarNumeros?52:4),y,rect.right-8,y+20}; DrawTextW(hdc,linea.c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
+    }
+private:
+    void Cargar(){m_documento=m_archivos.empty()?DocumentoTextoV2{}:m_texto->Cargar(m_archivos[m_indiceArchivo]);m_lineaInicial=0;}
+    void Cambiar(int delta,HWND hwnd){if(m_archivos.size()<2)return;m_indiceArchivo=delta<0?m_nav->Anterior(m_indiceArchivo,m_archivos.size()):m_nav->Siguiente(m_indiceArchivo,m_archivos.size());Cargar();InvalidateRect(hwnd,nullptr,FALSE);}
+    std::wstring Unir()const{size_t capacidad=0;for(const auto& l:m_documento.lineas) capacidad+=l.size()+2;std::wstring r;r.reserve(capacidad);for(const auto& l:m_documento.lineas){r+=l;r+=L"\r\n";}return r;}
+    static bool EsClave(const std::wstring& l){static const wchar_t* k[]={L"class ",L"struct ",L"void ",L"int ",L"return ",L"#include",L"function ",L"const ",L"public:",L"private:"};for(auto s:k)if(l.find(s)!=std::wstring::npos)return true;return false;}
+    void DibujarBoton(HDC hdc,const RECT& r,const wchar_t* t,const TemaVisual& tema){HBRUSH b=CreateSolidBrush(tema.botonFondo);FillRect(hdc,&r,b);DeleteObject(b);SetTextColor(hdc,tema.textoPrincipal);DrawTextW(hdc,t,-1,const_cast<RECT*>(&r),DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);}
+    std::shared_ptr<ServicioTextoV2> m_texto; std::shared_ptr<ServicioNavegacionV2> m_nav; bool m_codigo{}; std::vector<std::wstring> m_archivos; size_t m_indiceArchivo{}; size_t m_lineaInicial{}; DocumentoTextoV2 m_documento; RECT m_rcAnterior{},m_rcSiguiente{},m_rcCopiar{},m_rcRenombrar{},m_rcIndice{};
+};
+}
+/**** ended inlining v2/vistas/vista_texto_codigo.hpp ****/
+/**** start inlining v2/vistas/vista_comparador_videos.hpp ****/
+
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
+/**** skipping file: v2/nucleo/servicio_comparador_videos.hpp ****/
+#include <windows.h>
+#include <windowsx.h>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
+
+class VistaComparadorVideos final : public IPanelContenido {
+public:
+    explicit VistaComparadorVideos(std::shared_ptr<ServicioComparadorVideosV2> servicio)
+        : m_servicio(std::move(servicio)) {}
+
+    ~VistaComparadorVideos() override { Liberar(); }
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring&) override {
+        LiberarReproductores();
+        m_estado = m_servicio ? m_servicio->CrearFlujo(archivos)
+                               : EstadoComparadorVideosV2{};
+        m_arrastrandoTiempo = false;
+        m_hoverVideo = 0;
+        if (m_panel) MontarReproductores();
+    }
+
+    void AlActivar(HWND panel) override {
+        m_panel = panel;
+        MontarReproductores();
+    }
+
+    void ActualizarConfiguracion() override {
+        if (!ComparadorVideosPantallaCompletaDisponibleV2()) {
+            m_estado.modoPantallaCompleta = false;
+        }
+    }
+
+    void Liberar() override {
+        LiberarReproductores();
+        m_panel = nullptr;
+    }
+
+    bool ProcesarMensajeVentana(UINT msg, WPARAM wParam, LPARAM,
+                                HWND hwndPanel) override {
+        if (msg == WM_SIDEVIEW_COMPARADOR_TICK) {
+            ActualizarEstadoDesdeReproductores();
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (msg == WM_SIDEVIEW_COMPARADOR_PIP_CLICK &&
+            m_estado.modoPantallaCompleta &&
+            static_cast<int>(wParam) != m_estado.indicePantallaCompleta) {
+            // El propio reproductor informa que su superficie es el PiP. El
+            // swap sólo cambia geometría/rol; nunca pausa ni busca el video.
+            if (m_servicio) m_servicio->IntercambiarPantallaCompleta(m_estado);
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        return false;
+    }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam,
+                              HWND hwndPanel) override {
+        POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        if (msg == WM_MOUSEMOVE) {
+            int hoverNuevo = 0;
+            if (PtInRect(&m_rcBotonFullIzquierda, punto)) hoverNuevo = 1;
+            else if (PtInRect(&m_rcBotonFullDerecha, punto)) hoverNuevo = 2;
+            else if (PtInRect(&m_rcVideoIzquierda, punto)) hoverNuevo = 3;
+            else if (PtInRect(&m_rcVideoDerecha, punto)) hoverNuevo = 4;
+            if (hoverNuevo != m_hoverVideo) {
+                m_hoverVideo = hoverNuevo;
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+            }
+            if (m_arrastrandoTiempo && m_servicio) {
+                m_servicio->BuscarAmbos(m_estado, PosicionDesdePunto(punto),
+                                        m_reproductorIzquierda.get(),
+                                        m_reproductorDerecha.get());
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+            }
+            return m_arrastrandoTiempo || hoverNuevo != 0;
+        }
+
+        if (msg == WM_LBUTTONUP) {
+            m_arrastrandoTiempo = false;
+            ReleaseCapture();
+            return true;
+        }
+
+        if (msg != WM_LBUTTONDOWN) return false;
+        SetFocus(hwndPanel);
+
+        if (PtInRect(&m_rcVolver, punto)) {
+            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS, 0, 0);
+            return true;
+        }
+        if (ComparadorVideosPantallaCompletaDisponibleV2()) {
+            if (PtInRect(&m_rcBotonFullIzquierda, punto)) {
+                if (m_servicio) m_servicio->AlternarPantallaCompleta(m_estado, 0);
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+                return true;
+            }
+            if (PtInRect(&m_rcBotonFullDerecha, punto)) {
+                if (m_servicio) m_servicio->AlternarPantallaCompleta(m_estado, 1);
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+                return true;
+            }
+        }
+        if (PtInRect(&m_rcLineaTiempo, punto)) {
+            m_arrastrandoTiempo = true;
+            SetCapture(hwndPanel);
+            if (m_servicio) m_servicio->BuscarAmbos(
+                m_estado, PosicionDesdePunto(punto), m_reproductorIzquierda.get(),
+                m_reproductorDerecha.get());
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (PtInRect(&m_rcReproducir, punto)) {
+            if (m_servicio) m_servicio->AlternarEstadoReproduccion(
+                m_estado, m_reproductorIzquierda.get(), m_reproductorDerecha.get());
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (PtInRect(&m_rcRetroceder, punto)) {
+            BuscarRelativo(-10.0);
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (PtInRect(&m_rcAvanzar, punto)) {
+            BuscarRelativo(10.0);
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        return false;
+    }
+
+    bool ProcesarMensajeTeclado(UINT msg, WPARAM wParam, LPARAM,
+                                HWND hwndPanel) override {
+        if (msg != WM_KEYDOWN || !m_servicio) return false;
+        switch (wParam) {
+            case VK_SPACE:
+                m_servicio->AlternarEstadoReproduccion(
+                    m_estado, m_reproductorIzquierda.get(), m_reproductorDerecha.get());
+                break;
+            case VK_LEFT:
+                BuscarRelativo(-10.0);
+                break;
+            case VK_RIGHT:
+                BuscarRelativo(10.0);
+                break;
+            default:
+                return false;
+        }
+        InvalidateRect(hwndPanel, nullptr, FALSE);
+        return true;
+    }
+
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        HBRUSH fondo = CreateSolidBrush(tema.fondo);
+        FillRect(hdc, &rect, fondo);
+        DeleteObject(fondo);
+        SetBkMode(hdc, TRANSPARENT);
+
+        HFONT titulo = CrearFuente(-18, FW_SEMIBOLD);
+        HFONT texto = CrearFuente(-13, FW_NORMAL);
+        HFONT negrita = CrearFuente(-13, FW_BOLD);
+        HFONT anterior = static_cast<HFONT>(SelectObject(hdc, titulo));
+
+        const int margen = 16;
+        const int espacio = 12;
+        const int anchoCliente = static_cast<int>(rect.right - rect.left);
+        const int altoCliente = static_cast<int>(rect.bottom - rect.top);
+        const int ancho = std::max(1, anchoCliente);
+        const int anchoVideo = std::max(1, (ancho - margen * 2 - espacio) / 2);
+        const int altoVideo = std::max(220, std::min(520, altoCliente / 2));
+        const int yVideo = rect.top + 52;
+
+        m_rcVolver = {rect.left + margen, rect.top + 12,
+                      rect.left + 124, rect.top + 40};
+        DibujarBoton(hdc, m_rcVolver, L"←  Volver", tema, true);
+
+        if (m_estado.modoPantallaCompleta &&
+            ComparadorVideosPantallaCompletaDisponibleV2()) {
+            ConstruirLayoutPantallaCompleta(hdc, rect, margen, yVideo, altoVideo, tema);
+        } else {
+            m_estado.modoPantallaCompleta = false;
+            m_rcVideoIzquierda = {rect.left + margen, yVideo,
+                                  rect.left + margen + anchoVideo, yVideo + altoVideo};
+            m_rcVideoDerecha = {m_rcVideoIzquierda.right + espacio, yVideo,
+                                rect.right - margen, yVideo + altoVideo};
+            ActualizarRectReproductores();
+            DibujarMarcoVideo(hdc, m_rcVideoIzquierda, m_estado.izquierda,
+                              L"Video 1", false, 0, tema);
+            DibujarMarcoVideo(hdc, m_rcVideoDerecha, m_estado.derecha,
+                              L"Video 2", false, 1, tema);
+        }
+
+        const int yControles = std::max(m_rcVideoIzquierda.bottom,
+                                        m_rcVideoDerecha.bottom) + 18;
+        m_rcLineaTiempo = {rect.left + margen, yControles,
+                           rect.right - margen, yControles + 34};
+        DibujarContenedor(hdc, m_rcLineaTiempo, tema);
+        DibujarLineaTiempo(hdc, tema);
+
+        const int yBotones = m_rcLineaTiempo.bottom + 8;
+        m_rcRetroceder = {rect.left + margen, yBotones,
+                          rect.left + margen + 92, yBotones + 30};
+        m_rcReproducir = {m_rcRetroceder.right + 8, yBotones,
+                          m_rcRetroceder.right + 116, yBotones + 30};
+        m_rcAvanzar = {m_rcReproducir.right + 8, yBotones,
+                       m_rcReproducir.right + 100, yBotones + 30};
+        DibujarBoton(hdc, m_rcRetroceder, L"-10 s", tema, true);
+        DibujarBoton(hdc, m_rcReproducir,
+                     m_estado.reproduciendo ? L"Pausar" : L"Reproducir", tema, true);
+        DibujarBoton(hdc, m_rcAvanzar, L"+10 s", tema, true);
+
+        SelectObject(hdc, texto);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT tiempo{m_rcAvanzar.right + 12, yBotones,
+                    rect.right - margen, yBotones + 30};
+        std::wstring etiquetaTiempo = m_servicio
+            ? m_servicio->FormatearTiempo(m_estado.posicionSegundos) + L" / " +
+              m_servicio->FormatearTiempo(m_estado.duracionSegundos)
+            : L"00:00 / 10:00";
+        DrawTextW(hdc, etiquetaTiempo.c_str(), -1, &tiempo,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+
+        const int yInfo = yBotones + 46;
+        RECT info{rect.left + margen, yInfo, rect.right - margen,
+                  std::max(yInfo + 116, static_cast<int>(rect.bottom - margen))};
+        DibujarContenedor(hdc, info, tema);
+        SelectObject(hdc, negrita);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT tituloInfo{info.left + 12, info.top + 10,
+                        info.right - 12, info.top + 32};
+        DrawTextW(hdc, L"INFORMACIÓN DE LA COMPARACIÓN", -1, &tituloInfo,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, texto);
+        DibujarDato(hdc, info, m_estado.izquierda, L"Video 1", 0, tema);
+        DibujarDato(hdc, info, m_estado.derecha, L"Video 2", 1, tema);
+        SetTextColor(hdc, tema.acento);
+        RECT diferencia{info.left + 12, info.bottom - 30,
+                        info.right - 12, info.bottom - 10};
+        std::wstring diferenciaTexto = L"Diferencia de peso: " +
+            (m_servicio ? m_servicio->FormatearDiferencia(
+                m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
+        DrawTextW(hdc, diferenciaTexto.c_str(), -1, &diferencia,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT mensaje{info.left + 12, info.top + 34,
+                     info.right - 12, info.top + 54};
+        DrawTextW(hdc, m_estado.mensaje.c_str(), -1, &mensaje,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (m_hoverVideo >= 3 && m_hoverVideo <= 4) {
+            const DatosVideoComparacionV2& video = m_hoverVideo == 3
+                ? m_estado.izquierda : m_estado.derecha;
+            RECT base = m_hoverVideo == 3 ? m_rcVideoIzquierda : m_rcVideoDerecha;
+            RECT tooltip{base.left + 10, base.top + 34,
+                         base.right - 10, base.top + 62};
+            HBRUSH fondoTooltip = CreateSolidBrush(tema.fondoCabecera);
+            FillRect(hdc, &tooltip, fondoTooltip);
+            DeleteObject(fondoTooltip);
+            SetTextColor(hdc, tema.textoPrincipal);
+            DrawTextW(hdc, video.nombre.c_str(), -1, &tooltip,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE |
+                      DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+
+        SelectObject(hdc, anterior);
+        DeleteObject(titulo);
+        DeleteObject(texto);
+        DeleteObject(negrita);
+    }
+
+private:
+    static HFONT CrearFuente(int altura, int peso) {
+        return CreateFontW(altura, 0, 0, 0, peso, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                           L"Segoe UI Variable Text");
+    }
+
+    void MontarReproductores() {
+        if (!m_panel || !m_servicio) return;
+        LiberarReproductores();
+        m_reproductorIzquierda = m_servicio->CrearReproductor();
+        m_reproductorDerecha = m_servicio->CrearReproductor();
+        if (m_reproductorIzquierda) {
+            m_reproductorIzquierda->Montar(m_panel, 0, m_estado.izquierda.ruta);
+        }
+        if (m_reproductorDerecha) {
+            m_reproductorDerecha->Montar(m_panel, 1, m_estado.derecha.ruta);
+        }
+    }
+
+    void LiberarReproductores() {
+        if (m_reproductorIzquierda) m_reproductorIzquierda->Liberar();
+        if (m_reproductorDerecha) m_reproductorDerecha->Liberar();
+        m_reproductorIzquierda.reset();
+        m_reproductorDerecha.reset();
+    }
+
+    void ActualizarEstadoDesdeReproductores() {
+        const double duracionIzquierda = m_reproductorIzquierda
+            ? m_reproductorIzquierda->Duracion() : 0.0;
+        const double duracionDerecha = m_reproductorDerecha
+            ? m_reproductorDerecha->Duracion() : 0.0;
+        if (duracionIzquierda > 0.0 && duracionDerecha > 0.0) {
+            m_estado.duracionSegundos = std::min(duracionIzquierda, duracionDerecha);
+        } else if (duracionIzquierda > 0.0) {
+            m_estado.duracionSegundos = duracionIzquierda;
+        } else if (duracionDerecha > 0.0) {
+            m_estado.duracionSegundos = duracionDerecha;
+        }
+
+        IReproductorVideoV2* reloj = m_reproductorIzquierda &&
+            m_reproductorIzquierda->EstaListo() ? m_reproductorIzquierda.get() :
+            m_reproductorDerecha.get();
+        if (reloj) {
+            m_estado.posicionSegundos = std::clamp(
+                reloj->Posicion(), 0.0, m_estado.duracionSegundos);
+        }
+    }
+
+    void BuscarRelativo(double desplazamiento) {
+        if (!m_servicio) return;
+        m_servicio->BuscarAmbos(m_estado,
+                                m_estado.posicionSegundos + desplazamiento,
+                                m_reproductorIzquierda.get(),
+                                m_reproductorDerecha.get());
+    }
+
+    double PosicionDesdePunto(POINT punto) const {
+        const int inicio = m_rcLineaTiempo.left + 14;
+        const int fin = m_rcLineaTiempo.right - 14;
+        if (fin <= inicio) return 0.0;
+        const double porcentaje = std::clamp(
+            static_cast<double>(punto.x - inicio) / (fin - inicio), 0.0, 1.0);
+        return porcentaje * m_estado.duracionSegundos;
+    }
+
+    RECT BotonPantallaCompleta(const RECT& video) const {
+        return {video.right - 34, video.top + 4, video.right - 6, video.top + 28};
+    }
+
+    void ConstruirLayoutPantallaCompleta(HDC hdc, const RECT& rect, int margen,
+                                         int yVideo, int altoVideo,
+                                         const TemaVisual& tema) {
+        RECT completa{rect.left + margen, yVideo, rect.right - margen, yVideo + altoVideo};
+        const int anchoCompleta = static_cast<int>(completa.right - completa.left);
+        const int altoCompleta = static_cast<int>(completa.bottom - completa.top);
+        const int anchoPip = std::max(190, anchoCompleta / 4);
+        const int altoPip = std::max(130, altoCompleta / 4);
+        RECT pip{completa.right - anchoPip - 18, completa.bottom - altoPip - 18,
+                 completa.right - 18, completa.bottom - 18};
+        if (m_estado.indicePantallaCompleta == 0) {
+            m_rcVideoIzquierda = completa;
+            m_rcVideoDerecha = pip;
+        } else {
+            m_rcVideoDerecha = completa;
+            m_rcVideoIzquierda = pip;
+        }
+        ActualizarRectReproductores();
+        if (m_estado.indicePantallaCompleta == 0) {
+            DibujarMarcoVideo(hdc, m_rcVideoIzquierda, m_estado.izquierda,
+                              L"Video 1", false, 0, tema);
+            DibujarMarcoVideo(hdc, m_rcVideoDerecha, m_estado.derecha,
+                              L"Video 2", true, 1, tema);
+        } else {
+            DibujarMarcoVideo(hdc, m_rcVideoIzquierda, m_estado.izquierda,
+                              L"Video 1", true, 0, tema);
+            DibujarMarcoVideo(hdc, m_rcVideoDerecha, m_estado.derecha,
+                              L"Video 2", false, 1, tema);
+        }
+    }
+
+    void ActualizarRectReproductores() {
+        if (!m_reproductorIzquierda || !m_reproductorDerecha) return;
+        if (m_estado.modoPantallaCompleta) {
+            const bool izquierdaFull = m_estado.indicePantallaCompleta == 0;
+            if (izquierdaFull) {
+                m_reproductorIzquierda->ActualizarRect(m_rcVideoIzquierda, false);
+                m_reproductorDerecha->ActualizarRect(m_rcVideoDerecha, true);
+            } else {
+                m_reproductorDerecha->ActualizarRect(m_rcVideoDerecha, false);
+                m_reproductorIzquierda->ActualizarRect(m_rcVideoIzquierda, true);
+            }
+        } else {
+            m_reproductorIzquierda->ActualizarRect(m_rcVideoIzquierda, false);
+            m_reproductorDerecha->ActualizarRect(m_rcVideoDerecha, false);
+        }
+    }
+
+    void DibujarLineaTiempo(HDC hdc, const TemaVisual& tema) {
+        RECT linea{m_rcLineaTiempo.left + 14, m_rcLineaTiempo.top + 15,
+                   m_rcLineaTiempo.right - 14, m_rcLineaTiempo.top + 19};
+        HBRUSH fondo = CreateSolidBrush(tema.borde);
+        FillRect(hdc, &linea, fondo);
+        DeleteObject(fondo);
+        const double progreso = m_estado.duracionSegundos > 0.0
+            ? std::clamp(m_estado.posicionSegundos / m_estado.duracionSegundos, 0.0, 1.0)
+            : 0.0;
+        const int x = linea.left + static_cast<int>((linea.right - linea.left) * progreso);
+        HBRUSH relleno = CreateSolidBrush(tema.acento);
+        RECT tramo{linea.left, linea.top, x, linea.bottom};
+        FillRect(hdc, &tramo, relleno);
+        DeleteObject(relleno);
+        Ellipse(hdc, x - 6, linea.top - 5, x + 6, linea.bottom + 5);
+    }
+
+    void DibujarMarcoVideo(HDC hdc, const RECT& rect,
+                           const DatosVideoComparacionV2& video,
+                           const wchar_t* etiqueta, bool esPip, int indice,
+                           const TemaVisual& tema) {
+        DibujarContenedor(hdc, rect, tema);
+        RECT cabecera{rect.left + 1, rect.top + 1, rect.right - 1, rect.top + 31};
+        HBRUSH fondo = CreateSolidBrush(esPip ? tema.fondoCabecera : tema.fondoTarjeta);
+        FillRect(hdc, &cabecera, fondo);
+        DeleteObject(fondo);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT titulo{rect.left + 10, rect.top + 4, rect.right - 42, rect.top + 28};
+        std::wstring texto = esPip ? L"PIP · " : L"FULL SCREEN · ";
+        texto += etiqueta;
+        texto += L" — ";
+        texto += video.nombre;
+        DrawTextW(hdc, texto.c_str(), -1, &titulo,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (ComparadorVideosPantallaCompletaDisponibleV2()) {
+            RECT boton = BotonPantallaCompleta(rect);
+            if (indice == 0) m_rcBotonFullIzquierda = boton;
+            else m_rcBotonFullDerecha = boton;
+            DibujarBoton(hdc, boton, L"⛶", tema,
+                         m_hoverVideo == (indice == 0 ? 1 : 2));
+        }
+    }
+
+    void DibujarDato(HDC hdc, const RECT& info,
+                     const DatosVideoComparacionV2& video,
+                     const wchar_t* etiqueta, int columna,
+                     const TemaVisual& tema) {
+        const int mitad = (info.right - info.left) / 2;
+        const int izquierda = info.left + 12 + columna * mitad;
+        const int derecha = info.left + (columna + 1) * mitad - 12;
+        RECT fila{izquierda, info.top + 60, derecha, info.top + 82};
+        SetTextColor(hdc, tema.textoPrincipal);
+        std::wstring texto = std::wstring(etiqueta) + L": " + video.nombre;
+        DrawTextW(hdc, texto.c_str(), -1, &fila,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT meta{izquierda, info.top + 82, derecha, info.top + 102};
+        SetTextColor(hdc, tema.textoSecundario);
+        std::wstring datos = L"FPS: " + video.fps + L"  ·  Tamaño: " +
+            (m_servicio ? m_servicio->FormatearTamano(video.bytes) : L"0 B");
+        DrawTextW(hdc, datos.c_str(), -1, &meta,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    void DibujarBoton(HDC hdc, const RECT& rc, const wchar_t* texto,
+                      const TemaVisual& tema, bool resaltado) {
+        HBRUSH fondo = CreateSolidBrush(resaltado ? tema.acento : tema.botonFondo);
+        FillRect(hdc, &rc, fondo);
+        DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+        SelectObject(hdc, anteriorBrocha);
+        SelectObject(hdc, anterior);
+        DeleteObject(borde);
+        SetTextColor(hdc, resaltado ? RGB(255, 255, 255) : tema.textoPrincipal);
+        RECT textoRect = rc;
+        DrawTextW(hdc, texto, -1, &textoRect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    void DibujarContenedor(HDC hdc, const RECT& rc, const TemaVisual& tema) {
+        if (!hdc || rc.right <= rc.left || rc.bottom <= rc.top) return;
+        HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta);
+        FillRect(hdc, &rc, fondo);
+        DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+        RoundRect(hdc, rc.left, rc.top, rc.right, rc.bottom, 8, 8);
+        SelectObject(hdc, anteriorBrocha);
+        SelectObject(hdc, anterior);
+        DeleteObject(borde);
+    }
+
+    std::shared_ptr<ServicioComparadorVideosV2> m_servicio;
+    std::unique_ptr<IReproductorVideoV2> m_reproductorIzquierda;
+    std::unique_ptr<IReproductorVideoV2> m_reproductorDerecha;
+    EstadoComparadorVideosV2 m_estado;
+    HWND m_panel{nullptr};
+    bool m_arrastrandoTiempo{false};
+    int m_hoverVideo{0};
+
+    RECT m_rcVolver{};
+    RECT m_rcVideoIzquierda{};
+    RECT m_rcVideoDerecha{};
+    RECT m_rcBotonFullIzquierda{};
+    RECT m_rcBotonFullDerecha{};
+    RECT m_rcLineaTiempo{};
+    RECT m_rcRetroceder{};
+    RECT m_rcReproducir{};
+    RECT m_rcAvanzar{};
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/vistas/vista_comparador_videos.hpp ****/
+/**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 #include <memory>
 #include <vector>
 #include <string>
@@ -2097,49 +4488,62 @@ namespace SideViewV2 {
 
 class FabricaVistas {
 public:
+    static DependenciasVistaV2& Dependencias() {
+        static DependenciasVistaV2 dependencias;
+        return dependencias;
+    }
+
+    static std::shared_ptr<IPanelContenido> CrearVistaComparadorVideos(
+        const std::vector<std::wstring>& seleccion = {}) {
+        auto vista = std::make_shared<VistaComparadorVideos>(Dependencias().comparadorVideos);
+        vista->AlCambiarSeleccion(seleccion, L"");
+        return vista;
+    }
+
     static std::shared_ptr<IPanelContenido> CrearVistaParaSeleccion(
         const std::vector<std::wstring>& seleccion,
-        const std::wstring& carpeta) {
+        const std::wstring& carpeta,
+        bool excluirComparadorExperimental = false) {
 
         TipoVistaContenido tipo = ClasificarSeleccion(seleccion, carpeta);
+
+        if (!excluirComparadorExperimental &&
+            tipo == TipoVistaContenido::Video && seleccion.size() == 2 &&
+            ComparadorVideosExperimentalDisponibleV2()) {
+            return CrearVistaComparadorVideos(seleccion);
+        }
 
         std::shared_ptr<IPanelContenido> vista;
 
         switch (tipo) {
             case TipoVistaContenido::Tutorial:
-                vista = std::make_shared<VistaWalkthrough>();
+                vista = std::make_shared<VistaWalkthrough>(Dependencias().enlaces);
                 break;
 
             case TipoVistaContenido::Comprimidos:
-                vista = std::make_shared<VistaComprimidos>();
+                vista = std::make_shared<VistaComprimidos>(Dependencias().abrirConComprimidos, Dependencias().navegacion, Dependencias().extensiones, Dependencias().contenidoComprimido);
+                break;
+
+            case TipoVistaContenido::Comics:
+                vista = std::make_shared<VistaComics>(Dependencias().extensiones, Dependencias().navegacion, Dependencias().previsualizacionMedia);
                 break;
 
             case TipoVistaContenido::Carpetas:
-                vista = std::make_shared<VistaCarpetas>();
+                vista = std::make_shared<VistaCarpetas>(Dependencias().abrirConCarpetas,
+                    Dependencias().navegacion, Dependencias().fusionCarpetas,
+                    Dependencias().inspeccionCarpetas, Dependencias().comparadorVideos);
                 break;
 
             case TipoVistaContenido::Texto:
-                vista = std::make_shared<VistaEnDesarrollo>(
-                    L"Visor de Texto & Markdown",
-                    L"📄",
-                    L"Renderizado GitHub Flavored Markdown con tablas, listas de verificación, bloques de código sombreados e índice vertical interactivo."
-                );
+                vista = std::make_shared<VistaTextoCodigo>(Dependencias().texto, Dependencias().navegacion, false);
                 break;
 
             case TipoVistaContenido::Imagen:
-                vista = std::make_shared<VistaEnDesarrollo>(
-                    L"Visor de Imágenes & GIFs en Bucle",
-                    L"🖼️",
-                    L"Decodificación acelerada por hardware de WebP, AVIF, PNG, JPG y GIFs animados en reproducción continua infinita."
-                );
+                vista = std::make_shared<VistaImagenes>(Dependencias().navegacion, Dependencias().abrirConImagenes, Dependencias().previsualizacionMedia);
                 break;
 
             case TipoVistaContenido::Video:
-                vista = std::make_shared<VistaEnDesarrollo>(
-                    L"Suite de Reproducción de Video",
-                    L"🎬",
-                    L"Reproductor multimedia interactivo por Media Foundation con búsqueda precisa, selector de velocidad y línea de tiempo."
-                );
+                vista = std::make_shared<VistaVideos>(Dependencias().navegacion, Dependencias().abrirConVideos, Dependencias().previsualizacionMedia);
                 break;
 
             case TipoVistaContenido::Documentos:
@@ -2151,11 +4555,7 @@ public:
                 break;
 
             case TipoVistaContenido::Codigo:
-                vista = std::make_shared<VistaEnDesarrollo>(
-                    L"Inspector de Código Fuente",
-                    L"💻",
-                    L"Resaltado de sintaxis moderno para más de 30 lenguajes de programación y numeración de líneas."
-                );
+                vista = std::make_shared<VistaTextoCodigo>(Dependencias().texto, Dependencias().navegacion, true);
                 break;
 
             default:
@@ -2172,6 +4572,7 @@ public:
         }
         return vista;
     }
+
 };
 
 } // namespace SideViewV2
@@ -2185,12 +4586,12 @@ public:
 #include <shlguid.h>
 #include <string>
 #include <vector>
+/**** skipping file: v2/nucleo/servicio_com.hpp ****/
 
 namespace SideViewV2 {
 
-inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2** outBrowser = nullptr) {
+inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab) {
     if (outTab) *outTab = nullptr;
-    if (outBrowser) *outBrowser = nullptr;
     if (!top) return nullptr;
 
     IShellWindows* shellWindows = nullptr;
@@ -2262,9 +4663,6 @@ inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2**
                                         }
                                         if (!*outTab) *outTab = tabActiva ? tabActiva : top;
                                     }
-                                    if (outBrowser) {
-                                        app->QueryInterface(IID_IWebBrowser2, reinterpret_cast<void**>(outBrowser));
-                                    }
                                 }
                             }
                             if (!resultado) sv->Release();
@@ -2286,6 +4684,8 @@ inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2**
 inline std::vector<std::wstring> ObtenerRutasSeleccionadasDeVista(IShellView* vista, std::wstring* outCarpeta = nullptr) {
     if (outCarpeta) outCarpeta->clear();
     if (!vista) return {};
+    AmbitoComV2 com;
+    if (!com.Disponible()) return {};
 
     IFolderView2* fv = nullptr;
     if (FAILED(vista->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv))) || !fv) {
@@ -2343,15 +4743,21 @@ inline std::vector<std::wstring> ObtenerRutasSeleccionadasDeVista(IShellView* vi
 /**** skipping file: v2/nucleo/shell_extractor.hpp ****/
 /**** skipping file: v2/nucleo/enrutador_vistas.hpp ****/
 /**** skipping file: v2/nucleo/fabrica_vistas.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 
 namespace SideViewV2 {
 
 inline UINT WM_SIDEVIEW_TOGGLE = 0;
 inline UINT WM_SIDEVIEW_SETTINGS = 0;
-inline UINT WM_SIDEVIEW_CLEANUP = 0;
 
 inline std::mutex g_bloqueoEstados;
 inline std::map<HWND, EstadoPanelV2*> g_estadosPorVentana;
+
+inline bool EsComparadorVideosActivoPorSeleccionV2(
+    const std::vector<std::wstring>& seleccion) {
+    return ComparadorVideosExperimentalDisponibleV2() && seleccion.size() == 2 &&
+           ClasificarSeleccion(seleccion, L"") == TipoVistaContenido::Video;
+}
 
 LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
 LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
@@ -2361,6 +4767,11 @@ LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LP
 
 inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
     if (!estado) return;
+    bool esperado = false;
+    if (!estado->destruyendo.compare_exchange_strong(esperado, true,
+                                                     std::memory_order_acq_rel)) {
+        return;
+    }
 
     LiberarBufferMemoria(estado);
 
@@ -2370,6 +4781,7 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
     }
 
     if (estado->panel && IsWindow(estado->panel)) {
+        KillTimer(estado->panel, 101);
         DestroyWindow(estado->panel);
         estado->panel = nullptr;
     }
@@ -2425,9 +4837,23 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
     int altoVista = estado->viewOriginal.bottom - estado->viewOriginal.top;
     if (anchoVista < 1 || altoVista < 1) return;
 
-    int anchoPanel = EscalarDpi(estado->anchoDIP, dpi);
-    anchoPanel = std::min(std::max(anchoPanel, EscalarDpi(280, dpi)), anchoVista - EscalarDpi(200, dpi));
-    if (anchoPanel < EscalarDpi(220, dpi)) anchoPanel = EscalarDpi(220, dpi);
+    // El comparador es una experiencia temporal a pantalla completa dentro
+    // del contenedor de Explorer. Al salir se vuelve al layout lateral normal.
+    if (estado->comparadorVideosActivo) {
+        SetWindowPos(estado->view, nullptr, estado->viewOriginal.left,
+                     estado->viewOriginal.top, 1, altoVista,
+                     SWP_NOZORDER | SWP_NOACTIVATE);
+        SetWindowPos(estado->panel, HWND_TOP, estado->viewOriginal.left,
+                     estado->viewOriginal.top, anchoVista, altoVista,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        InvalidateRect(estado->panel, nullptr, FALSE);
+        return;
+    }
+
+    int anchoPanelSolicitado = EscalarDpi(estado->anchoDIP, dpi);
+    int anchoPanelMaximo = std::max(1, anchoVista - EscalarDpi(200, dpi));
+    int anchoPanelMinimo = std::min(EscalarDpi(220, dpi), anchoPanelMaximo);
+    int anchoPanel = std::min(std::max(anchoPanelSolicitado, anchoPanelMinimo), anchoPanelMaximo);
 
     int nuevoAnchoVista = std::max(1, anchoVista - anchoPanel);
 
@@ -2455,6 +4881,7 @@ inline void CerrarEstado(EstadoPanelV2* estado) {
     estado->abierto = false;
 
     if (estado->panel && IsWindow(estado->panel)) {
+        KillTimer(estado->panel, 101);
         ShowWindow(estado->panel, SW_HIDE);
     }
 
@@ -2470,16 +4897,16 @@ inline void CerrarEstado(EstadoPanelV2* estado) {
 inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) {
     if (outVista) *outVista = nullptr;
     if (!IsWindow(top)) return nullptr;
+    AmbitoComV2 com;
+    if (!com.Disponible()) return nullptr;
 
     HWND tab = nullptr;
-    IWebBrowser2* webBrowser = nullptr;
-    IShellView* vistaShell = ObtenerShellViewActivo(top, &tab, &webBrowser);
+    IShellView* vistaShell = ObtenerShellViewActivo(top, &tab);
     if (!vistaShell) return nullptr;
 
     HWND ventanaVista = nullptr;
     vistaShell->GetWindow(&ventanaVista);
     if (!ventanaVista) {
-        if (webBrowser) webBrowser->Release();
         vistaShell->Release();
         return nullptr;
     }
@@ -2493,7 +4920,8 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
     {
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
         auto it = g_estadosPorVentana.find(clave);
-        if (it != g_estadosPorVentana.end()) {
+        if (it != g_estadosPorVentana.end() &&
+            it->second && !it->second->destruyendo.load(std::memory_order_acquire)) {
             estado = it->second;
         }
     }
@@ -2523,7 +4951,6 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
 
         if (!estado->panel) {
             delete estado;
-            if (webBrowser) webBrowser->Release();
             vistaShell->Release();
             return nullptr;
         }
@@ -2536,8 +4963,6 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
         g_estadosPorVentana[clave] = estado;
     }
-
-    if (webBrowser) webBrowser->Release();
 
     if (outVista) {
         *outVista = vistaShell;
@@ -2577,12 +5002,14 @@ inline void AlternarSideView(HWND top) {
 
             // Inyectar dinámicamente la vista correspondiente mediante la Fábrica
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(archivos, carpeta);
+            estado->comparadorVideosActivo = EsComparadorVideosActivoPorSeleccionV2(archivos);
+            if (estado->vistaContenido) estado->vistaContenido->AlActivar(estado->panel);
         } else {
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion({}, L"");
         }
 
         DisponerPanel(estado);
-        SetTimer(estado->panel, 101, 150, nullptr); // Timer de polling no invasivo para selección
+        SetTimer(estado->panel, 101, 500, nullptr); // Polling moderado para no cargar Explorer
     }
 
     if (vista) vista->Release();
@@ -2593,6 +5020,55 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     if (estado && estado->vistaContenido) {
+        if (msg == WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS &&
+            ComparadorVideosExperimentalDisponibleV2() &&
+            !estado->comparadorVideosActivo) {
+            estado->vistaContenido->Liberar();
+            estado->vistaContenido = FabricaVistas::CrearVistaComparadorVideos();
+            estado->comparadorVideosActivo = true;
+            if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+            DisponerPanel(estado);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS &&
+            estado->comparadorVideosActivo) {
+            estado->vistaContenido->Liberar();
+            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
+                estado->archivosSeleccionados, estado->carpetaContenedora, true);
+            estado->comparadorVideosActivo = false;
+            if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+            DisponerPanel(estado);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        if (msg == WM_SIDEVIEW_SETTINGS) {
+            if (estado->comparadorVideosActivo &&
+                !ComparadorVideosExperimentalDisponibleV2()) {
+                estado->vistaContenido->Liberar();
+                estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
+                    estado->archivosSeleccionados, estado->carpetaContenedora);
+                estado->comparadorVideosActivo = false;
+                if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+                DisponerPanel(estado);
+            } else if (!estado->comparadorVideosActivo &&
+                       EsComparadorVideosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
+                estado->vistaContenido->Liberar();
+                estado->vistaContenido = FabricaVistas::CrearVistaComparadorVideos(
+                    estado->archivosSeleccionados);
+                estado->comparadorVideosActivo = true;
+                if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+                DisponerPanel(estado);
+            }
+            estado->vistaContenido->ActualizarConfiguracion();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+        if (estado->vistaContenido->ProcesarMensajeVentana(msg, wParam, lParam, hwnd)) {
+            return 0;
+        }
         if (msg >= WM_MOUSEFIRST && msg <= WM_MOUSELAST) {
             if (estado->vistaContenido->ProcesarMensajeRaton(msg, wParam, lParam, hwnd)) {
                 return 0;
@@ -2616,7 +5092,13 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
         case WM_TIMER: {
             if (wParam == 101 && estado && estado->abierto) {
+                HWND frente = GetForegroundWindow();
+                if (frente && frente != estado->top && GetAncestor(frente, GA_ROOT) != estado->top) {
+                    return 0;
+                }
                 // Actualizar selección periódicamente si el panel está visible
+                AmbitoComV2 com;
+                if (!com.Disponible()) return 0;
                 IShellView* vista = nullptr;
                 HWND tab = nullptr;
                 vista = ObtenerShellViewActivo(estado->top, &tab);
@@ -2631,10 +5113,24 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                         estado->archivosSeleccionados = seleccion;
                         estado->carpetaContenedora = carpeta;
 
-                        // Si cambió la categoría de archivo, reemplazamos la vista inyectada
-                        if (tipoPrevio != tipoNuevo || !estado->vistaContenido) {
+                        const bool mantenerComparador =
+                            estado->comparadorVideosActivo &&
+                            EsComparadorVideosActivoPorSeleccionV2(seleccion);
+
+                        // Si el comparador sigue recibiendo exactamente dos
+                        // videos, sólo renueva sus fuentes; no desmonta la UX.
+                        if (mantenerComparador) {
+                            estado->vistaContenido->AlCambiarSeleccion(seleccion, carpeta);
+                        } else if (estado->comparadorVideosActivo ||
+                                   tipoPrevio != tipoNuevo ||
+                                   EsComparadorVideosActivoPorSeleccionV2(seleccion) !=
+                                       estado->comparadorVideosActivo ||
+                                   !estado->vistaContenido) {
                             if (estado->vistaContenido) estado->vistaContenido->Liberar();
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
+                            estado->comparadorVideosActivo = EsComparadorVideosActivoPorSeleccionV2(seleccion);
+                            if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+                            DisponerPanel(estado);
                         } else {
                             estado->vistaContenido->AlCambiarSeleccion(seleccion, carpeta);
                         }
@@ -2758,6 +5254,8 @@ inline bool RegistrarClasePanelV2(HINSTANCE hInstance) {
 /**** start inlining v2/nucleo/hook_teclado.hpp ****/
 
 #include <windows.h>
+#include <algorithm>
+#include <cwctype>
 #include <vector>
 #include <atomic>
 #include <string>
@@ -2786,7 +5284,9 @@ inline void ConfigurarAtajoDesdeString(const wchar_t* strAtajo) {
     }
 
     std::wstring s = strAtajo;
-    std::transform(s.begin(), s.end(), s.begin(), ::towupper);
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t caracter) {
+        return static_cast<wchar_t>(std::towupper(caracter));
+    });
 
     bool c = (s.find(L"CTRL") != std::wstring::npos);
     bool a = (s.find(L"ALT") != std::wstring::npos);
@@ -2809,10 +5309,12 @@ inline void ConfigurarAtajoDesdeString(const wchar_t* strAtajo) {
     }
 
     if (s.find(L"SPACE") != std::wstring::npos) vk = VK_SPACE;
-    if (s.find(L"F1") != std::wstring::npos) vk = VK_F1;
-    if (s.find(L"F2") != std::wstring::npos) vk = VK_F2;
-    if (s.find(L"F3") != std::wstring::npos) vk = VK_F3;
-    if (s.find(L"F4") != std::wstring::npos) vk = VK_F4;
+    for (int numero = 12; numero >= 1; --numero) {
+        if (s.find(L"F" + std::to_wstring(numero)) != std::wstring::npos) {
+            vk = VK_F1 + numero - 1;
+            break;
+        }
+    }
 
     g_teclaAtajo.store(vk);
     g_requiereCtrl.store(c);
@@ -2939,11 +5441,13 @@ inline void DetenerHookTeclado() {
 /**** start inlining v2/nucleo/mod_core.hpp ****/
 
 #include <windows.h>
+#include <algorithm>
 #include <vector>
 #include <windhawk_api.h>
 #include <windhawk_utils.h>
 /**** skipping file: v2/nucleo/gestor_ventanas.hpp ****/
 /**** skipping file: v2/nucleo/hook_teclado.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 
 namespace SideViewV2 {
 
@@ -2997,19 +5501,21 @@ inline void CargarConfiguracionesV2() {
     }
 
     int limite = Wh_GetIntSetting(L"limiteCarpetasPesadas");
-    if (limite > 0) {
-        g_limiteCarpetasPesadasConfig.store(limite);
-    } else {
-        g_limiteCarpetasPesadasConfig.store(3);
-    }
+    g_limiteCarpetasPesadasConfig.store(std::max(1, std::min(limite, 100)));
+    g_mostrarNumerosLineaV2.store(Wh_GetIntSetting(L"mostrarNumerosLinea") != 0);
+    g_comparadorVideosExperimentalV2.store(
+        Wh_GetIntSetting(L"comparadorVideosExperimental") != 0,
+        std::memory_order_release);
+    g_comparadorVideosPantallaCompletaV2.store(
+        Wh_GetIntSetting(L"comparadorVideosPantallaCompleta") != 0,
+        std::memory_order_release);
 }
 
 inline bool InicializarModV2() {
     WM_SIDEVIEW_TOGGLE = RegisterWindowMessageW(L"UsefulSideView_WM_Toggle_V2");
     WM_SIDEVIEW_SETTINGS = RegisterWindowMessageW(L"UsefulSideView_WM_Settings_V2");
-    WM_SIDEVIEW_CLEANUP = RegisterWindowMessageW(L"UsefulSideView_WM_Cleanup_V2");
 
-    if (!WM_SIDEVIEW_TOGGLE || !WM_SIDEVIEW_SETTINGS || !WM_SIDEVIEW_CLEANUP) {
+    if (!WM_SIDEVIEW_TOGGLE || !WM_SIDEVIEW_SETTINGS) {
         return false;
     }
 
@@ -3042,22 +5548,28 @@ inline void DespuesDeIniciarModV2() {
 
 inline void AlCambiarConfiguracionesV2() {
     CargarConfiguracionesV2();
+    std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+    for (auto& par : g_estadosPorVentana) {
+        if (par.second && par.second->panel && IsWindow(par.second->panel)) {
+            PostMessageW(par.second->panel, WM_SIDEVIEW_SETTINGS, 0, 0);
+        }
+    }
 }
 
 inline void DesinicializarModV2() {
     g_descargandoMod = true;
     DetenerHookTeclado();
 
-    // Limpiar estados de todas las ventanas
+    // Extraer el registro antes de destruir ventanas. DestroyWindow puede
+    // provocar reentrada y nunca debe ejecutarse sosteniendo este mutex.
+    std::vector<EstadoPanelV2*> estados;
     {
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
-        for (auto& par : g_estadosPorVentana) {
-            if (par.second) {
-                DestruirEstado(par.second, false);
-            }
-        }
+        estados.reserve(g_estadosPorVentana.size());
+        for (auto& par : g_estadosPorVentana) if (par.second) estados.push_back(par.second);
         g_estadosPorVentana.clear();
     }
+    for (EstadoPanelV2* estado : estados) DestruirEstado(estado, false);
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     UnregisterClassW(CLASE_PANEL_V2, hInst);

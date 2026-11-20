@@ -10,13 +10,14 @@ namespace SideViewV2 {
 
 enum class TipoVistaContenido {
     Tutorial,      // Walkthrough Screen (cuando no hay selección)
-    Comprimidos,   // Vista funcional de ZIP, RAR, CBZ, CBR, 7Z, TAR, etc.
-    Texto,         // Vista de TXT, Markdown (en desarrollo)
-    Imagen,        // Vista de PNG, JPG, WebP, GIF, etc. (en desarrollo)
-    Video,         // Vista de MP4, MKV, AVI, etc. (en desarrollo)
+    Comprimidos,   // ZIP, RAR, 7Z, TAR y otros comprimidos comunes.
+    Comics,        // CBZ, CBR, CBX y formatos equivalentes.
+    Texto,         // Vista de TXT, Markdown y formatos de texto
+    Imagen,        // Vista de PNG, JPG, WebP, GIF, etc.
+    Video,         // Vista de MP4, MKV, AVI, etc.
     Documentos,    // Vista de PDF, DOCX, XLSX, etc. (en desarrollo)
-    Codigo,        // Vista de C++, Python, JS, etc. (en desarrollo)
-    Carpetas,      // Vista de inspección de árbol de carpetas (en desarrollo)
+    Codigo,        // Vista de C++, Python, JS, etc.
+    Carpetas,      // Vista de inspección de árbol de carpetas
     Desconocido    // Archivo genérico / visor pendiente (en desarrollo)
 };
 
@@ -47,11 +48,21 @@ inline bool EsExtensionComprimido(const wchar_t* extension) {
     wchar_t ext[32]{};
     NormalizarExtension(extension, ext, ARRAYSIZE(ext));
     static const wchar_t* const EXT_COMPRIMIDOS[] = {
-        L".7z", L".bz2", L".bzip2", L".cbr", L".cbz", L".gz", L".gzip",
+        L".7z", L".bz2", L".bzip2", L".gz", L".gzip",
         L".iso", L".rar", L".tar", L".tbz2", L".tgz", L".txz", L".xz",
         L".z", L".zip", L".zipx"
     };
     return CoincideExtension(ext, EXT_COMPRIMIDOS, ARRAYSIZE(EXT_COMPRIMIDOS));
+}
+
+inline bool EsExtensionComic(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    static const wchar_t* const EXT_COMICS[] = {
+        L".cb7", L".cba", L".cbr", L".cbt", L".cbx", L".cbz"
+    };
+    return CoincideExtension(ext, EXT_COMICS, ARRAYSIZE(EXT_COMICS));
 }
 
 inline bool EsExtensionImagen(const wchar_t* extension) {
@@ -121,6 +132,7 @@ inline TipoVistaContenido ClasificarRuta(const wchar_t* ruta) {
     if (EsRutaCarpeta(ruta)) return TipoVistaContenido::Carpetas;
 
     const wchar_t* ext = PathFindExtensionW(ruta);
+    if (EsExtensionComic(ext)) return TipoVistaContenido::Comics;
     if (EsExtensionComprimido(ext)) return TipoVistaContenido::Comprimidos;
     if (EsExtensionImagen(ext)) return TipoVistaContenido::Imagen;
     if (EsExtensionVideo(ext)) return TipoVistaContenido::Video;
@@ -144,30 +156,31 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
     }
 
     size_t cComprimidos = 0;
+    size_t cComics = 0;
     size_t cImagenes = 0;
     size_t cVideos = 0;
     size_t cTexto = 0;
     size_t cCodigo = 0;
     size_t cDocs = 0;
     size_t cCarpetas = 0;
-    size_t cOtros = 0;
-
     for (const auto& r : seleccion) {
         TipoVistaContenido t = ClasificarRuta(r.c_str());
         switch (t) {
             case TipoVistaContenido::Comprimidos: cComprimidos++; break;
+            case TipoVistaContenido::Comics: cComics++; break;
             case TipoVistaContenido::Imagen: cImagenes++; break;
             case TipoVistaContenido::Video: cVideos++; break;
             case TipoVistaContenido::Texto: cTexto++; break;
             case TipoVistaContenido::Codigo: cCodigo++; break;
             case TipoVistaContenido::Documentos: cDocs++; break;
             case TipoVistaContenido::Carpetas: cCarpetas++; break;
-            default: cOtros++; break;
+            default: break;
         }
     }
 
     size_t total = seleccion.size();
     if (cComprimidos == total) return TipoVistaContenido::Comprimidos;
+    if (cComics == total) return TipoVistaContenido::Comics;
     if (cImagenes == total) return TipoVistaContenido::Imagen;
     if (cVideos == total) return TipoVistaContenido::Video;
     if (cTexto == total) return TipoVistaContenido::Texto;
@@ -177,6 +190,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
 
     // Preferencias prioritarias en selecciones mixtas
     if (cComprimidos > 0) return TipoVistaContenido::Comprimidos;
+    if (cComics > 0) return TipoVistaContenido::Comics;
     if (cImagenes > 0) return TipoVistaContenido::Imagen;
     if (cVideos > 0) return TipoVistaContenido::Video;
     if (cTexto > 0) return TipoVistaContenido::Texto;

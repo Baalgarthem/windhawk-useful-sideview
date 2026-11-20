@@ -2,11 +2,11 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         3.0.1-alpha
+// @version         4.0.0
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32
+// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lmfplat -lmfreadwrite -lmfuuid
 // @license         MIT
 // ==/WindhawkMod==
 
@@ -21,6 +21,19 @@
   $name: Cantidad de subcarpetas pesadas
   $description: >-
     Número de subcarpetas más pesadas a visualizar por defecto en la vista de carpetas (ej. 3, 5, 10, 20).
+- mostrarNumerosLinea: true
+  $name: Mostrar números de línea en texto y código
+  $description: Activa o desactiva la numeración de líneas en las vistas de texto, Markdown y código.
+- comparadorVideosExperimental: true
+  $name: Comparador de videos (experimental)
+  $description: >-
+    Activa el comparador de videos y su reproductor Media Foundation en la vista general de carpetas.
+    Si aún no hay dos videos seleccionados, se muestra el flujo visual de preparación.
+- comparadorVideosPantallaCompleta: true
+  $name: Pantalla completa y PiP del comparador
+  $description: >-
+    Muestra los controles para alternar un video a pantalla completa y el otro
+    en Picture in Picture dentro del comparador experimental.
 */
 // ==/WindhawkModSettings==
 
@@ -35,7 +48,8 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Pantalla Tutorial (Walkthrough)**: Se activa automáticamente al presionar el atajo sin archivos seleccionados.
 - **Suite Funcional de Comprimidos & Cómics**: Portadas, árbol de archivos, navegación anterior/siguiente, "Abrir con" y selector de conversión.
 - **Suite Funcional de Inspección de Carpetas**: Árbol jerárquico recursivo, cálculo de peso, Top 4 subcarpetas pesadas, enlaces simbólicos, copia de estructura y limpieza de carpetas vacías.
-- **Vistas Especializadas Modulares**: Texto, Imágenes, Video, Documentos y Código (Marcadas como "En desarrollo").
+- **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes.
 */
 // ==/WindhawkModReadme==
 

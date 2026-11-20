@@ -7,12 +7,12 @@
 #include <shlguid.h>
 #include <string>
 #include <vector>
+#include "v2/nucleo/servicio_com.hpp"
 
 namespace SideViewV2 {
 
-inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2** outBrowser = nullptr) {
+inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab) {
     if (outTab) *outTab = nullptr;
-    if (outBrowser) *outBrowser = nullptr;
     if (!top) return nullptr;
 
     IShellWindows* shellWindows = nullptr;
@@ -84,9 +84,6 @@ inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2**
                                         }
                                         if (!*outTab) *outTab = tabActiva ? tabActiva : top;
                                     }
-                                    if (outBrowser) {
-                                        app->QueryInterface(IID_IWebBrowser2, reinterpret_cast<void**>(outBrowser));
-                                    }
                                 }
                             }
                             if (!resultado) sv->Release();
@@ -108,6 +105,8 @@ inline IShellView* ObtenerShellViewActivo(HWND top, HWND* outTab, IWebBrowser2**
 inline std::vector<std::wstring> ObtenerRutasSeleccionadasDeVista(IShellView* vista, std::wstring* outCarpeta = nullptr) {
     if (outCarpeta) outCarpeta->clear();
     if (!vista) return {};
+    AmbitoComV2 com;
+    if (!com.Disponible()) return {};
 
     IFolderView2* fv = nullptr;
     if (FAILED(vista->QueryInterface(IID_IFolderView2, reinterpret_cast<void**>(&fv))) || !fv) {

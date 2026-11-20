@@ -4,6 +4,7 @@
 #include <commctrl.h>
 #include <dwmapi.h>
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -11,6 +12,7 @@
 #include "v2/ui/panel_interfaz.hpp"
 
 namespace SideViewV2 {
+
 
 constexpr wchar_t CLASE_PANEL_V2[] = L"UsefulSideView_Panel_V2";
 
@@ -40,8 +42,9 @@ struct EstadoPanelV2 {
     RECT viewOriginal{};        // Coordenadas completas de la vista antes de reflow
     RECT parentCliente{};       // Tamaño cliente del contenedor
     bool abierto{false};
+    bool comparadorVideosActivo{false};
+    std::atomic_bool destruyendo{false};
     int anchoDIP{380};          // Ancho por defecto en DIP
-    bool dockDerecha{true};
 
     // Doble buffer para renderizado sin parpadeo (anti-flicker)
     HDC dcMemoria{nullptr};
@@ -56,8 +59,6 @@ struct EstadoPanelV2 {
     // Proveedor de contenido actual (inyectado)
     std::shared_ptr<IPanelContenido> vistaContenido;
 
-    // Metadatos para el prototipo
-    std::wstring rutaActiva;
     std::vector<std::wstring> archivosSeleccionados;
     std::wstring carpetaContenedora;
 };

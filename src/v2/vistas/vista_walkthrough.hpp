@@ -2,12 +2,14 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
-#include <shellapi.h>
+#include "v2/nucleo/servicio_enlaces.hpp"
+#include <memory>
 
 namespace SideViewV2 {
 
 class VistaWalkthrough : public IPanelContenido {
 public:
+    explicit VistaWalkthrough(std::shared_ptr<ServicioEnlacesV2> enlaces) : m_enlaces(std::move(enlaces)) {}
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
         m_carpeta = carpeta;
     }
@@ -16,7 +18,7 @@ public:
         if (msg == WM_LBUTTONDOWN) {
             POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             if (PtInRect(&m_rectLinkGithub, pt)) {
-                ShellExecuteW(nullptr, L"open", m_urlGithub.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                m_enlaces->Abrir(m_urlGithub);
                 return true;
             }
         }
@@ -182,6 +184,7 @@ private:
 
     std::wstring m_carpeta;
     std::wstring m_urlGithub{L"https://github.com/ramonrey/windhawk-useful-sideview"};
+    std::shared_ptr<ServicioEnlacesV2> m_enlaces;
     RECT m_rectLinkGithub{};
 };
 

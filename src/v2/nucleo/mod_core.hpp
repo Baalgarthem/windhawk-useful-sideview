@@ -1,11 +1,13 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
 #include <vector>
 #include <windhawk_api.h>
 #include <windhawk_utils.h>
 #include "v2/nucleo/gestor_ventanas.hpp"
 #include "v2/nucleo/hook_teclado.hpp"
+#include "v2/nucleo/configuracion_v2.hpp"
 
 namespace SideViewV2 {
 
@@ -59,19 +61,21 @@ inline void CargarConfiguracionesV2() {
     }
 
     int limite = Wh_GetIntSetting(L"limiteCarpetasPesadas");
-    if (limite > 0) {
-        g_limiteCarpetasPesadasConfig.store(limite);
-    } else {
-        g_limiteCarpetasPesadasConfig.store(3);
-    }
+    g_limiteCarpetasPesadasConfig.store(std::max(1, std::min(limite, 100)));
+    g_mostrarNumerosLineaV2.store(Wh_GetIntSetting(L"mostrarNumerosLinea") != 0);
+    g_comparadorVideosExperimentalV2.store(
+        Wh_GetIntSetting(L"comparadorVideosExperimental") != 0,
+        std::memory_order_release);
+    g_comparadorVideosPantallaCompletaV2.store(
+        Wh_GetIntSetting(L"comparadorVideosPantallaCompleta") != 0,
+        std::memory_order_release);
 }
 
 inline bool InicializarModV2() {
     WM_SIDEVIEW_TOGGLE = RegisterWindowMessageW(L"UsefulSideView_WM_Toggle_V2");
     WM_SIDEVIEW_SETTINGS = RegisterWindowMessageW(L"UsefulSideView_WM_Settings_V2");
-    WM_SIDEVIEW_CLEANUP = RegisterWindowMessageW(L"UsefulSideView_WM_Cleanup_V2");
 
-    if (!WM_SIDEVIEW_TOGGLE || !WM_SIDEVIEW_SETTINGS || !WM_SIDEVIEW_CLEANUP) {
+    if (!WM_SIDEVIEW_TOGGLE || !WM_SIDEVIEW_SETTINGS) {
         return false;
     }
 
@@ -104,22 +108,28 @@ inline void DespuesDeIniciarModV2() {
 
 inline void AlCambiarConfiguracionesV2() {
     CargarConfiguracionesV2();
+    std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+    for (auto& par : g_estadosPorVentana) {
+        if (par.second && par.second->panel && IsWindow(par.second->panel)) {
+            PostMessageW(par.second->panel, WM_SIDEVIEW_SETTINGS, 0, 0);
+        }
+    }
 }
 
 inline void DesinicializarModV2() {
     g_descargandoMod = true;
     DetenerHookTeclado();
 
-    // Limpiar estados de todas las ventanas
+    // Extraer el registro antes de destruir ventanas. DestroyWindow puede
+    // provocar reentrada y nunca debe ejecutarse sosteniendo este mutex.
+    std::vector<EstadoPanelV2*> estados;
     {
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
-        for (auto& par : g_estadosPorVentana) {
-            if (par.second) {
-                DestruirEstado(par.second, false);
-            }
-        }
+        estados.reserve(g_estadosPorVentana.size());
+        for (auto& par : g_estadosPorVentana) if (par.second) estados.push_back(par.second);
         g_estadosPorVentana.clear();
     }
+    for (EstadoPanelV2* estado : estados) DestruirEstado(estado, false);
 
     HINSTANCE hInst = GetModuleHandleW(nullptr);
     UnregisterClassW(CLASE_PANEL_V2, hInst);

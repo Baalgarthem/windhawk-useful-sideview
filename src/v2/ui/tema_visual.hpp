@@ -14,9 +14,7 @@ struct TemaVisual {
     COLORREF textoPrincipal{RGB(240, 240, 240)};
     COLORREF textoSecundario{RGB(160, 160, 160)};
     COLORREF acento{RGB(0, 120, 215)};
-    COLORREF acentoHover{RGB(30, 144, 255)};
     COLORREF botonFondo{RGB(50, 50, 50)};
-    COLORREF botonHover{RGB(70, 70, 70)};
 };
 
 inline TemaVisual ObtenerTemaActual() {
@@ -43,7 +41,6 @@ inline TemaVisual ObtenerTemaActual() {
         tema.textoPrincipal = RGB(33, 37, 41);
         tema.textoSecundario = RGB(108, 117, 125);
         tema.botonFondo = RGB(235, 238, 242);
-        tema.botonHover = RGB(220, 224, 230);
     }
 
     return tema;

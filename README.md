@@ -1,4 +1,4 @@
-# Useful Side View
+# Useful Side View 4.0.0
 
 **Useful Side View** es un mod para [Windhawk](https://windhawk.net/) que transforma el panel de vista previa de Windows 11 (`Alt + P`) en una suite multimedia integral, ultrarrápida y responsiva para videos, imágenes, cómics, archivos comprimidos y documentos Markdown.
 
@@ -36,23 +36,25 @@
 - **Bloqueo Granular de Tamaño**: Opción de fijar el tamaño del visor individualmente por tipo de contenido.
 - **Cero Fugas y Máxima Eficiencia**: Implementado en C++23 nativo con gestión segura de memoria y recursos GDI/COM.
 
+### 🧪 6. Comparador de videos experimental
+- Disponible desde la vista general de carpetas mediante un activador en Ajustes.
+- Usa dos instancias independientes del reproductor Media Foundation, con layout 50/50, línea de tiempo y controles estrictamente sincronizados.
+- Permite pantalla completa temporal con PiP fijo; al pulsar el PiP se intercambian los roles sin pausar la reproducción.
+- Los errores de formato o archivos corruptos se muestran dentro del espacio reservado, sin reiniciar Explorer.
+- El backend permanece aislado en `ServicioReproductorVideoV2` y `ServicioComparadorVideosV2` para poder sustituirlo o retirarlo sin afectar las demás vistas.
+
 ---
 
 ## 🚀 Instalación y Compilación
 
 1. **Compilación en 1 solo clic (Recomendado)**:
-   - Haz doble clic en el archivo [`build.bat`](file:///D:/Development/windhawk-development/windhawk-useful-sideview/build.bat) en la raíz del proyecto (o ejecuta `.\build.ps1` en PowerShell).
-   - Esto generará de forma automática el archivo compilado único en `dist/useful-sideview.wh.cpp`.
+   - Ejecuta `.\compilador.ps1` en PowerShell.
+   - Se abrirá el menú guiado para versionar, integrar, compilar, inyectar y sincronizar Git.
+   - El único artefacto final se genera en `dist/useful-sideview.wh.cpp`.
+   - Los errores y operaciones quedan registrados en `dist/compilador.log`.
 
 2. **Herramientas de despliegue y calidad (Avanzado)**:
-   - Compilación manual vía Deployment Manager:
-     ```powershell
-     powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 build
-     ```
-   - Puerta de calidad completa (Clang-Tidy + Linker estricto):
-     ```powershell
-     powershell -ExecutionPolicy Bypass -File .\tools\deployment-manager.ps1 quality
-     ```
+   - El flujo universal incorpora las validaciones de versionado, bundle, inyección y Git del antiguo Deployment Manager.
 
 3. **Carga en Windhawk**:
    - Carga el archivo generado en [`dist/useful-sideview.wh.cpp`](file:///D:/Development/windhawk-development/windhawk-useful-sideview/dist/useful-sideview.wh.cpp) como mod local en Windhawk.

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <windows.h>
+#include <algorithm>
+#include <cwctype>
 #include <vector>
 #include <atomic>
 #include <string>
@@ -29,7 +31,9 @@ inline void ConfigurarAtajoDesdeString(const wchar_t* strAtajo) {
     }
 
     std::wstring s = strAtajo;
-    std::transform(s.begin(), s.end(), s.begin(), ::towupper);
+    std::transform(s.begin(), s.end(), s.begin(), [](wchar_t caracter) {
+        return static_cast<wchar_t>(std::towupper(caracter));
+    });
 
     bool c = (s.find(L"CTRL") != std::wstring::npos);
     bool a = (s.find(L"ALT") != std::wstring::npos);
@@ -52,10 +56,12 @@ inline void ConfigurarAtajoDesdeString(const wchar_t* strAtajo) {
     }
 
     if (s.find(L"SPACE") != std::wstring::npos) vk = VK_SPACE;
-    if (s.find(L"F1") != std::wstring::npos) vk = VK_F1;
-    if (s.find(L"F2") != std::wstring::npos) vk = VK_F2;
-    if (s.find(L"F3") != std::wstring::npos) vk = VK_F3;
-    if (s.find(L"F4") != std::wstring::npos) vk = VK_F4;
+    for (int numero = 12; numero >= 1; --numero) {
+        if (s.find(L"F" + std::to_wstring(numero)) != std::wstring::npos) {
+            vk = VK_F1 + numero - 1;
+            break;
+        }
+    }
 
     g_teclaAtajo.store(vk);
     g_requiereCtrl.store(c);

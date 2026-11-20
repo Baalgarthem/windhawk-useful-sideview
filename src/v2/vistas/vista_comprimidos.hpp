@@ -2,53 +2,28 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
-#include "v2/nucleo/programas_recordados.hpp"
+#include "v2/nucleo/servicios_vistas.hpp"
 #include <windows.h>
-#include <shellapi.h>
-#include <shlobj.h>
-#include <shobjidl.h>
-#include <commdlg.h>
 #include <string>
 #include <vector>
-#include <map>
 #include <algorithm>
 
 namespace SideViewV2 {
 
-#pragma pack(push, 1)
-struct CabeceraZipLocalV2 {
-    uint32_t firma;
-    uint16_t versionMinima;
-    uint16_t banderaGeneral;
-    uint16_t metodoCompresion;
-    uint16_t horaModificacion;
-    uint16_t fechaModificacion;
-    uint32_t sumaCrc32;
-    uint32_t tamanoComprimido;
-    uint32_t tamanoDescomprimido;
-    uint16_t longitudNombreArchivo;
-    uint16_t longitudCampoExtra;
-};
-#pragma pack(pop)
-
-struct EntradaComprimidoV2 {
-    std::wstring nombre;
-    std::wstring rutaRelativa;
-    bool esDirectorio{false};
-    uintmax_t tamanoBytes{0};
-};
-
 class VistaComprimidos : public IPanelContenido {
 public:
-    VistaComprimidos() {
-        m_formatosDisponibles = { L"zip", L"cbz", L"7z", L"tar" };
+    explicit VistaComprimidos(std::shared_ptr<ServicioAbrirConV2> servicio,
+                              std::shared_ptr<ServicioNavegacionV2> navegacion,
+                              std::shared_ptr<ServicioExtensionV2> extensiones,
+                              std::shared_ptr<ServicioContenidoComprimidoV2> contenido)
+        : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
+          m_extensiones(std::move(extensiones)), m_contenido(std::move(contenido)) {
+        m_formatosDisponibles = { L"zip", L"rar", L"7z", L"tar", L"cbz", L"cbr" };
         m_formatoSeleccionado = L"zip";
-        m_ultimoProgramaUsado = g_programasRecordadosV2.ultimoComprimidos;
     }
 
-    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
         m_archivos = archivos;
-        m_carpeta = carpeta;
         m_indiceArchivo = 0;
         m_desplazamientoScrollY = 0;
         CargarArchivoActual();
@@ -70,7 +45,7 @@ public:
             // Botón Anterior
             if (PtInRect(&m_rcBotonAnterior, pt)) {
                 if (m_archivos.size() > 1) {
-                    m_indiceArchivo = (m_indiceArchivo == 0) ? (m_archivos.size() - 1) : (m_indiceArchivo - 1);
+                    m_indiceArchivo = m_navegacion->Anterior(m_indiceArchivo, m_archivos.size());
                     CargarArchivoActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -79,7 +54,7 @@ public:
             // Botón Siguiente
             if (PtInRect(&m_rcBotonSiguiente, pt)) {
                 if (m_archivos.size() > 1) {
-                    m_indiceArchivo = (m_indiceArchivo + 1) % m_archivos.size();
+                    m_indiceArchivo = m_navegacion->Siguiente(m_indiceArchivo, m_archivos.size());
                     CargarArchivoActual();
                     InvalidateRect(hwndPanel, nullptr, FALSE);
                     return true;
@@ -95,8 +70,8 @@ public:
                 MostrarMenuFormatos(hwndPanel);
                 return true;
             }
-            // Botón Convertir
-            if (PtInRect(&m_rcBotonConvertir, pt)) {
+            // Botón Cambiar extensión
+            if (PtInRect(&m_rcBotonCambiarExtension, pt)) {
                 EjecutarConversion(hwndPanel);
                 return true;
             }
@@ -184,20 +159,20 @@ public:
         m_rcBotonDesplegableFormato = {m_rcBotonSiguiente.right + 10, yBarra, m_rcBotonSiguiente.right + 85, yBarra + altoBotones};
         DibujarBoton(hdc, m_rcBotonDesplegableFormato, (m_formatoSeleccionado + L" ▾").c_str(), tema, true);
 
-        // Botón Convertir
-        m_rcBotonConvertir = {m_rcBotonDesplegableFormato.right + 6, yBarra, rect.right - margen, yBarra + altoBotones};
-        DibujarBoton(hdc, m_rcBotonConvertir, L"Convertir", tema, true);
+        // Operación de cambio de extensión
+        m_rcBotonCambiarExtension = {m_rcBotonDesplegableFormato.right + 6, yBarra, rect.right - margen, yBarra + altoBotones};
+        DibujarBoton(hdc, m_rcBotonCambiarExtension, L"Cambiar extensión", tema, true);
 
         int yAbrir = rect.bottom - margen - altoBotones;
         m_rcBotonAbrirCon = {rect.left + margen, yAbrir, rect.right - margen, yAbrir + altoBotones};
-        std::wstring programa = ProgramaSeleccionadoV2(g_programasRecordadosV2.comprimidos, m_ultimoProgramaUsado);
+        std::wstring programa = m_servicio->ProgramaActual();
         std::wstring etiqueta = L"Abrir con: ";
         etiqueta += programa.empty() ? L"(click para seleccionar programa) ▾" : PathFindFileNameW(programa.c_str());
         DibujarBoton(hdc, m_rcBotonAbrirCon, etiqueta.c_str(), tema, true);
 
         // Área de Contenido: Árbol de archivos comprimidos
         int topLista = yBarra + altoBotones + 14;
-        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, rect.bottom - margen};
+        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yAbrir - 12};
         DibujarContenedor(hdc, rcContenedorLista, tema);
 
         // Header de la lista
@@ -253,55 +228,7 @@ private:
     void CargarArchivoActual() {
         m_entradas.clear();
         if (m_archivos.empty() || m_indiceArchivo >= m_archivos.size()) return;
-
-        const std::wstring& ruta = m_archivos[m_indiceArchivo];
-        const wchar_t* ext = PathFindExtensionW(ruta.c_str());
-
-        // Parseo ligero directo de archivos ZIP / JAR / APK
-        if (_wcsicmp(ext, L".zip") == 0 || _wcsicmp(ext, L".cbz") == 0 ||
-            _wcsicmp(ext, L".jar") == 0 || _wcsicmp(ext, L".apk") == 0) {
-            HANDLE hFile = CreateFileW(ruta.c_str(), GENERIC_READ,
-                                       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                       nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                CabeceraZipLocalV2 hdr{};
-                DWORD leidos = 0;
-                while (ReadFile(hFile, &hdr, sizeof(hdr), &leidos, nullptr) && leidos == sizeof(hdr)) {
-                    if (hdr.firma != 0x04034b50) break;
-                    if (hdr.longitudNombreArchivo > 0 && hdr.longitudNombreArchivo < 4096) {
-                        std::vector<char> bufName(hdr.longitudNombreArchivo + 1, 0);
-                        if (!ReadFile(hFile, bufName.data(), hdr.longitudNombreArchivo, &leidos, nullptr) ||
-                            leidos != hdr.longitudNombreArchivo) break;
-
-                        if (hdr.longitudCampoExtra > 0) {
-                            SetFilePointer(hFile, hdr.longitudCampoExtra, nullptr, FILE_CURRENT);
-                        }
-
-                        std::string nombreU8(bufName.data());
-                        for (char& c : nombreU8) if (c == '/') c = '\\';
-
-                        int lenW = MultiByteToWideChar(CP_UTF8, 0, nombreU8.c_str(), -1, nullptr, 0);
-                        if (lenW > 0) {
-                            std::vector<wchar_t> wbuf(lenW);
-                            MultiByteToWideChar(CP_UTF8, 0, nombreU8.c_str(), -1, wbuf.data(), lenW);
-                            std::wstring rRelativa = wbuf.data();
-                            bool esDir = (!rRelativa.empty() && rRelativa.back() == L'\\');
-                            const wchar_t* pSoloNombre = PathFindFileNameW(rRelativa.c_str());
-
-                            EntradaComprimidoV2 e;
-                            e.nombre = (pSoloNombre && *pSoloNombre) ? pSoloNombre : rRelativa;
-                            e.rutaRelativa = rRelativa;
-                            e.esDirectorio = esDir;
-                            e.tamanoBytes = hdr.tamanoDescomprimido;
-                            m_entradas.push_back(e);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                CloseHandle(hFile);
-            }
-        }
+        m_entradas = m_contenido->Cargar(m_archivos[m_indiceArchivo]);
     }
 
     void DibujarBoton(HDC hdc, const RECT& rc, const wchar_t* texto, const TemaVisual& tema, bool habilitado) {
@@ -351,31 +278,14 @@ private:
     }
 
     void EjecutarAbrirCon(HWND hwndPadre) {
-        m_ultimoProgramaUsado = ProgramaSeleccionadoV2(g_programasRecordadosV2.comprimidos, m_ultimoProgramaUsado);
-        if (!m_ultimoProgramaUsado.empty()) {
-            for (const auto& archivo : m_archivos) {
-                ShellExecuteW(nullptr, L"open", m_ultimoProgramaUsado.c_str(),
-                              (L"\"" + archivo + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-            }
+        std::wstring programa = m_servicio->ProgramaActual();
+        if (!programa.empty()) {
+            m_servicio->Seleccionar(programa);
+            m_servicio->Ejecutar(m_archivos);
             return;
         }
-        // Selector de archivo ejecutable de Windows
-        wchar_t rutaProg[MAX_PATH] = L"";
-        OPENFILENAMEW ofn{};
-        ofn.lStructSize = sizeof(ofn);
-        ofn.hwndOwner = hwndPadre;
-        ofn.lpstrFilter = L"Programas Ejecutables (*.exe)\0*.exe\0Todos los archivos (*.*)\0*.*\0";
-        ofn.lpstrFile = rutaProg;
-        ofn.nMaxFile = MAX_PATH;
-        ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
-
-        if (GetOpenFileNameW(&ofn)) {
-            RecordarProgramaV2(g_programasRecordadosV2.comprimidos, g_programasRecordadosV2.ultimoComprimidos, rutaProg);
-            m_ultimoProgramaUsado = rutaProg;
-            for (const auto& archivo : m_archivos) {
-                ShellExecuteW(nullptr, L"open", m_ultimoProgramaUsado.c_str(),
-                              (L"\"" + archivo + L"\"").c_str(), nullptr, SW_SHOWNORMAL);
-            }
+        if (m_servicio->AbrirDialogo(hwndPadre)) {
+            m_servicio->Ejecutar(m_archivos);
         }
     }
 
@@ -401,27 +311,28 @@ private:
     }
 
     void EjecutarConversion(HWND hwndPadre) {
-        std::wstring mensaje = L"Iniciando conversión de " + std::to_wstring(m_archivos.size()) +
-                               L" archivo(s) al formato: ." + m_formatoSeleccionado +
-                               L"\n\n(Lógica de compresión ejecutada en segundo plano)";
-        MessageBoxW(hwndPadre, mensaje.c_str(), L"Useful Side View - Conversión", MB_OK | MB_ICONINFORMATION);
+        size_t cantidad = m_extensiones->Cambiar(m_archivos, m_formatoSeleccionado);
+        std::wstring mensaje = L"Se cambiaron " + std::to_wstring(cantidad) + L" archivo(s) a ." + m_formatoSeleccionado + L".";
+        MessageBoxW(hwndPadre, mensaje.c_str(), L"Cambiar extensión", MB_OK | MB_ICONINFORMATION);
     }
 
     std::vector<std::wstring> m_archivos;
-    std::wstring m_carpeta;
     size_t m_indiceArchivo{0};
     int m_desplazamientoScrollY{0};
     std::vector<EntradaComprimidoV2> m_entradas;
 
     std::wstring m_formatoSeleccionado;
     std::vector<std::wstring> m_formatosDisponibles;
-    std::wstring m_ultimoProgramaUsado;
+    std::shared_ptr<ServicioAbrirConV2> m_servicio;
+    std::shared_ptr<ServicioNavegacionV2> m_navegacion;
+    std::shared_ptr<ServicioExtensionV2> m_extensiones;
+    std::shared_ptr<ServicioContenidoComprimidoV2> m_contenido;
 
     RECT m_rcBotonAnterior{};
     RECT m_rcBotonSiguiente{};
     RECT m_rcBotonAbrirCon{};
     RECT m_rcBotonDesplegableFormato{};
-    RECT m_rcBotonConvertir{};
+    RECT m_rcBotonCambiarExtension{};
 };
 
 } // namespace SideViewV2
