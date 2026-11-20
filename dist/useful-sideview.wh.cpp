@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.6
+// @version         4.1.7
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -69,7 +69,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.6)
+# Useful Side View V2 (4.1.7)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -177,6 +177,7 @@ inline constexpr UINT WM_SIDEVIEW_COMPARADOR_TICK = WM_APP + 0x4A5;
 inline constexpr UINT WM_SIDEVIEW_COMPARADOR_PIP_CLICK = WM_APP + 0x4A6;
 inline constexpr UINT WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS = WM_APP + 0x4A7;
 inline constexpr UINT WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN = WM_APP + 0x4A8;
+inline constexpr UINT WM_SIDEVIEW_UNLOAD_V2 = WM_APP + 0x4A9;
 
 class IPanelContenido {
 public:
@@ -1970,6 +1971,83 @@ private:
 /**** start inlining v2/nucleo/servicio_reproductor_video.hpp ****/
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** start inlining v2/nucleo/ciclo_vida_v2.hpp ****/
+
+#include <windows.h>
+#include <atomic>
+#include <utility>
+#include <vector>
+
+namespace SideViewV2 {
+
+// Estado global de quiescencia. Todas las entradas a callbacks que pueden
+// ejecutarse fuera del hilo de configuración deben consultar esta bandera antes
+// de publicar trabajo nuevo.
+inline std::atomic_bool g_descargandoMod{false};
+inline std::atomic_uint g_callbacksActivosV2{0};
+
+struct AmbitoCallbackV2 {
+    AmbitoCallbackV2() {
+        g_callbacksActivosV2.fetch_add(1, std::memory_order_acq_rel);
+    }
+
+    ~AmbitoCallbackV2() {
+        g_callbacksActivosV2.fetch_sub(1, std::memory_order_acq_rel);
+    }
+
+    AmbitoCallbackV2(const AmbitoCallbackV2&) = delete;
+    AmbitoCallbackV2& operator=(const AmbitoCallbackV2&) = delete;
+};
+
+inline HINSTANCE ObtenerInstanciaModV2() {
+    HMODULE modulo = nullptr;
+    const auto direccion = reinterpret_cast<LPCWSTR>(
+        reinterpret_cast<void*>(&ObtenerInstanciaModV2));
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            direccion, &modulo)) {
+        return nullptr;
+    }
+    return modulo;
+}
+
+inline void DrenarCallbacksV2(DWORD tiempoMaximoMs = 2000) {
+    const ULONGLONG inicio = GetTickCount64();
+    while (g_callbacksActivosV2.load(std::memory_order_acquire) != 0) {
+        if (GetTickCount64() - inicio >= tiempoMaximoMs) break;
+        Sleep(1);
+    }
+}
+
+inline BOOL CALLBACK EnumerarVentanasClaseV2(HWND hwnd, LPARAM lParam) {
+    DWORD proceso = 0;
+    GetWindowThreadProcessId(hwnd, &proceso);
+    if (proceso != GetCurrentProcessId()) return TRUE;
+
+    auto* datos = reinterpret_cast<std::pair<PCWSTR, std::vector<HWND>>*>(lParam);
+    if (!datos || !datos->first) return TRUE;
+
+    wchar_t clase[96]{};
+    if (GetClassNameW(hwnd, clase, ARRAYSIZE(clase)) > 0 &&
+        _wcsicmp(clase, datos->first) == 0) {
+        datos->second.push_back(hwnd);
+    }
+    return TRUE;
+}
+
+inline void CerrarVentanasClaseV2(PCWSTR nombreClase) {
+    if (!nombreClase || !*nombreClase) return;
+    std::vector<HWND> ventanas;
+    std::pair<PCWSTR, std::vector<HWND>> datos{nombreClase, {}};
+    EnumWindows(EnumerarVentanasClaseV2, reinterpret_cast<LPARAM>(&datos));
+    ventanas.swap(datos.second);
+    for (HWND hwnd : ventanas) {
+        if (IsWindow(hwnd)) SendMessageW(hwnd, WM_CLOSE, 0, 0);
+    }
+}
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/ciclo_vida_v2.hpp ****/
 #include <windows.h>
 #include <windowsx.h>
 #include <mfapi.h>
@@ -2032,10 +2110,12 @@ public:
 
     HRESULT STDMETHODCALLTYPE EventNotify(DWORD evento, DWORD_PTR param1,
                                            DWORD param2) override {
+        AmbitoCallbackV2 ambitoCallback;
         if (evento == MF_MEDIA_ENGINE_EVENT_NOTIFYSTABLESTATE) {
             if (param1) SetEvent(reinterpret_cast<HANDLE>(param1));
             return S_OK;
         }
+        if (g_descargandoMod.load(std::memory_order_acquire)) return S_OK;
         HWND destino = m_destino.load(std::memory_order_acquire);
         if (destino) {
             // El callback de Media Foundation puede entregar eventos después
@@ -2069,10 +2149,18 @@ public:
         m_ranura = ranura;
         m_mensaje.clear();
 
-        RegistrarClase();
+        if (!RegistrarClase()) {
+            m_mensaje = L"No se pudo registrar el espacio de reproducción.";
+            return false;
+        }
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) {
+            m_mensaje = L"No se pudo resolver el módulo del reproductor.";
+            return false;
+        }
         m_ventana = CreateWindowExW(
             0, ClaseVideo(), L"", WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-            0, 0, 1, 1, panel, nullptr, GetModuleHandleW(nullptr), this);
+            0, 0, 1, 1, panel, nullptr, hInst, this);
         if (!m_ventana) {
             m_mensaje = L"No se pudo crear el espacio de reproducción.";
             return false;
@@ -2238,21 +2326,33 @@ private:
         return L"UsefulSideView_MediaFoundationVideo_V2";
     }
 
-    static void RegistrarClase() {
+    static bool RegistrarClase() {
         static std::once_flag unaVez;
+        static bool registrada = false;
         std::call_once(unaVez, [] {
             WNDCLASSW clase{};
             clase.lpfnWndProc = ProcedimientoVideo;
-            clase.hInstance = GetModuleHandleW(nullptr);
+            clase.hInstance = ObtenerInstanciaModV2();
             clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
             clase.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
             clase.lpszClassName = ClaseVideo();
-            RegisterClassW(&clase);
+            if (!clase.hInstance) return;
+            if (RegisterClassW(&clase)) {
+                registrada = true;
+                return;
+            }
+            if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+                WNDCLASSW existente{};
+                registrada = GetClassInfoW(clase.hInstance, ClaseVideo(), &existente) &&
+                             existente.lpfnWndProc == ProcedimientoVideo;
+            }
         });
+        return registrada;
     }
 
     static LRESULT CALLBACK ProcedimientoVideo(HWND hwnd, UINT mensaje,
                                                WPARAM wParam, LPARAM lParam) {
+        AmbitoCallbackV2 ambitoCallback;
         auto* reproductor = reinterpret_cast<ReproductorMediaFoundationV2*>(
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (mensaje == WM_NCCREATE) {
@@ -2263,6 +2363,9 @@ private:
         if (!reproductor) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         if (mensaje == WM_NCDESTROY) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+        }
+        if (g_descargandoMod.load(std::memory_order_acquire)) {
             return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         }
         switch (mensaje) {
@@ -2332,7 +2435,7 @@ private:
     }
 
     void ProcesarEvento(DWORD evento, HRESULT error) {
-        if (!m_engine) return;
+        if (!m_engine || g_descargandoMod.load(std::memory_order_acquire)) return;
         switch (evento) {
             case MF_MEDIA_ENGINE_EVENT_ERROR:
                 m_listo = false;
@@ -2435,6 +2538,11 @@ private:
 
 class ServicioReproductorVideoV2 {
 public:
+    static void DesregistrarClaseV2() {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (hInst) UnregisterClassW(L"UsefulSideView_MediaFoundationVideo_V2", hInst);
+    }
+
     std::unique_ptr<IReproductorVideoV2> Crear() const {
         // Punto de sustitución futuro: otro backend puede implementar la misma
         // interfaz sin cambiar la vista ni el comparador.
@@ -2850,7 +2958,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.6";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.7";
 
 class ServicioVersionModV2 final {
 public:
@@ -2866,6 +2974,7 @@ public:
 
 #include <windows.h>
 /**** skipping file: v2/nucleo/servicio_persistencia_windhawk.hpp ****/
+/**** skipping file: v2/nucleo/ciclo_vida_v2.hpp ****/
 
 #include <algorithm>
 #include <cstddef>
@@ -3313,6 +3422,11 @@ private:
 
 class ServicioNotasV2 final {
 public:
+    static void DesregistrarClasePromptNotaV2() {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (hInst) UnregisterClassW(L"UsefulSideView_PromptNota_V2", hInst);
+    }
+
     explicit ServicioNotasV2(
         std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia,
         std::function<bool()> politicaSincronizacion = {})
@@ -3460,14 +3574,15 @@ private:
         }
         if (!estado) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         if (mensaje == WM_CREATE) {
-            CreateWindowW(L"STATIC", L"Título", WS_CHILD | WS_VISIBLE, 14, 12, 70, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            HINSTANCE hInst = ObtenerInstanciaModV2();
+            CreateWindowW(L"STATIC", L"Título", WS_CHILD | WS_VISIBLE, 14, 12, 70, 20, hwnd, nullptr, hInst, nullptr);
             estado->campoTitulo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", estado->titulo.c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                                  82, 10, 390, 24, hwnd, reinterpret_cast<HMENU>(kControlTitulo), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"STATIC", L"Contenido (Markdown opcional)", WS_CHILD | WS_VISIBLE, 14, 44, 240, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                                  82, 10, 390, 24, hwnd, reinterpret_cast<HMENU>(kControlTitulo), hInst, nullptr);
+            CreateWindowW(L"STATIC", L"Contenido (Markdown opcional)", WS_CHILD | WS_VISIBLE, 14, 44, 240, 20, hwnd, nullptr, hInst, nullptr);
             estado->campoCuerpo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", estado->cuerpo.c_str(), WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
-                                                  14, 66, 458, 250, hwnd, reinterpret_cast<HMENU>(kControlCuerpo), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"BUTTON", L"Guardar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 296, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE, 388, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
+                                                  14, 66, 458, 250, hwnd, reinterpret_cast<HMENU>(kControlCuerpo), hInst, nullptr);
+            CreateWindowW(L"BUTTON", L"Guardar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 296, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDOK), hInst, nullptr);
+            CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE, 388, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDCANCEL), hInst, nullptr);
             SendMessageW(estado->campoTitulo, EM_SETSEL, 0, -1);
             SetFocus(estado->campoTitulo);
             return 0;
@@ -3499,20 +3614,34 @@ private:
 
     static bool MostrarPromptNota(PromptNotaV2& estado) {
         static std::once_flag registroClase;
+        static bool claseRegistrada = false;
         std::call_once(registroClase, [] {
             WNDCLASSW clase{};
             clase.lpfnWndProc = ProcedimientoPromptNota;
-            clase.hInstance = GetModuleHandleW(nullptr);
+            clase.hInstance = ObtenerInstanciaModV2();
             clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
             clase.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
             clase.lpszClassName = L"UsefulSideView_PromptNota_V2";
-            RegisterClassW(&clase);
+            if (!clase.hInstance) return;
+            if (RegisterClassW(&clase)) {
+                claseRegistrada = true;
+                return;
+            }
+            if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+                WNDCLASSW existente{};
+                claseRegistrada = GetClassInfoW(
+                    clase.hInstance, L"UsefulSideView_PromptNota_V2", &existente) &&
+                    existente.lpfnWndProc == ProcedimientoPromptNota;
+            }
         });
 
+        if (!claseRegistrada) return false;
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) return false;
         EnableWindow(estado.propietario, FALSE);
         HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UsefulSideView_PromptNota_V2", L"Nota",
                                        WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 500, 395,
-                                       estado.propietario, nullptr, GetModuleHandleW(nullptr), &estado);
+                                       estado.propietario, nullptr, hInst, &estado);
         if (!ventana) { EnableWindow(estado.propietario, TRUE); return false; }
         RECT padre{}, dialogo{};
         GetWindowRect(estado.propietario, &padre);
@@ -4309,6 +4438,7 @@ private:
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 /**** skipping file: v2/nucleo/servicio_com.hpp ****/
 /**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
+/**** skipping file: v2/nucleo/ciclo_vida_v2.hpp ****/
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -4323,6 +4453,8 @@ private:
 namespace SideViewV2 {
 
 inline std::atomic<int> g_limiteCarpetasPesadasConfig{3};
+inline constexpr wchar_t CLASE_PROMPT_CARPETAS_V2[] =
+    L"UsefulSideView_PromptNombreCarpeta_V2";
 
 struct PromptNombreCarpetaV2 {
     HWND ventanaPadre{nullptr};
@@ -4341,18 +4473,19 @@ inline LRESULT CALLBACK ProcedimientoPromptNombreCarpetaV2(HWND hwnd, UINT mensa
     }
     if (!estado) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
     if (mensaje == WM_CREATE) {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
         CreateWindowW(L"STATIC", L"Nombre de la carpeta unificada:", WS_CHILD | WS_VISIBLE,
-                      14, 12, 280, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                      14, 12, 280, 20, hwnd, nullptr, hInst, nullptr);
         estado->campoTexto = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"Carpeta unificada",
                                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                              14, 36, 280, 24, hwnd, reinterpret_cast<HMENU>(101),
-                                             GetModuleHandleW(nullptr), nullptr);
+                                             hInst, nullptr);
         CreateWindowW(L"BUTTON", L"Aceptar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                       134, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDOK),
-                      GetModuleHandleW(nullptr), nullptr);
+                      hInst, nullptr);
         CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE,
                       218, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDCANCEL),
-                      GetModuleHandleW(nullptr), nullptr);
+                      hInst, nullptr);
         SendMessageW(estado->campoTexto, EM_SETSEL, 0, -1);
         SetFocus(estado->campoTexto);
         return 0;
@@ -4380,21 +4513,35 @@ inline LRESULT CALLBACK ProcedimientoPromptNombreCarpetaV2(HWND hwnd, UINT mensa
 
 inline std::wstring SolicitarNombreCarpetaV2(HWND padre) {
     static std::once_flag registroClase;
+    static bool claseRegistrada = false;
     std::call_once(registroClase, [] {
         WNDCLASSW clase{};
         clase.lpfnWndProc = ProcedimientoPromptNombreCarpetaV2;
-        clase.hInstance = GetModuleHandleW(nullptr);
+        clase.hInstance = ObtenerInstanciaModV2();
         clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         clase.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        clase.lpszClassName = L"UsefulSideView_PromptNombreCarpeta_V2";
-        RegisterClassW(&clase);
+        clase.lpszClassName = CLASE_PROMPT_CARPETAS_V2;
+        if (!clase.hInstance) return;
+        if (RegisterClassW(&clase)) {
+            claseRegistrada = true;
+            return;
+        }
+        if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+            WNDCLASSW existente{};
+            claseRegistrada = GetClassInfoW(
+                clase.hInstance, CLASE_PROMPT_CARPETAS_V2, &existente) &&
+                existente.lpfnWndProc == ProcedimientoPromptNombreCarpetaV2;
+        }
     });
+    if (!claseRegistrada) return {};
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (!hInst) return {};
     PromptNombreCarpetaV2 estado{padre};
     EnableWindow(padre, FALSE);
-    HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UsefulSideView_PromptNombreCarpeta_V2",
+    HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, CLASE_PROMPT_CARPETAS_V2,
                                    L"Fusionar carpetas", WS_CAPTION | WS_SYSMENU,
                                    CW_USEDEFAULT, CW_USEDEFAULT, 320, 132, padre, nullptr,
-                                   GetModuleHandleW(nullptr), &estado);
+                                   hInst, &estado);
     if (!ventana) { EnableWindow(padre, TRUE); return {}; }
     RECT rcPadre{}, rcVentana{};
     GetWindowRect(padre, &rcPadre); GetWindowRect(ventana, &rcVentana);
@@ -4409,6 +4556,11 @@ inline std::wstring SolicitarNombreCarpetaV2(HWND padre) {
     }
     EnableWindow(padre, TRUE); SetForegroundWindow(padre);
     return estado.resultado;
+}
+
+inline void DesregistrarClasePromptNombreCarpetaV2() {
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (hInst) UnregisterClassW(CLASE_PROMPT_CARPETAS_V2, hInst);
 }
 
 class VistaCarpetas : public IPanelContenido {
@@ -8495,6 +8647,7 @@ inline std::vector<std::wstring> ObtenerRutasSeleccionadasDeVista(IShellView* vi
 /**** skipping file: v2/nucleo/enrutador_vistas.hpp ****/
 /**** skipping file: v2/nucleo/fabrica_vistas.hpp ****/
 /**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
+/**** skipping file: v2/nucleo/ciclo_vida_v2.hpp ****/
 
 namespace SideViewV2 {
 
@@ -8552,21 +8705,30 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
         }
     }
 
+    // El estado puede ser utilizado por dos subclases distintas (contenedor y
+    // pestaña). Quitarlas antes de liberar la vista evita que un WM_SIZE o
+    // WM_DESTROY posterior vuelva a entrar con un puntero colgante. Esta rutina
+    // siempre se ejecuta en el hilo propietario mediante WM_SIDEVIEW_UNLOAD_V2
+    // durante la descarga.
+    if (estado->parent && IsWindow(estado->parent)) {
+        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
+    }
+    if (estado->tab && estado->tab != estado->parent && IsWindow(estado->tab)) {
+        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
+    }
+
     LiberarBufferMemoria(estado);
 
     LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
-        DestroyWindow(estado->panel);
+        HWND panel = estado->panel;
+        // WM_NCDESTROY puede llegar después de que DestroyWindow devuelva el
+        // control. Cortar el userdata antes de destruir evita que ese mensaje
+        // consulte un EstadoPanelV2 que ya está en proceso de liberación.
+        SetWindowLongPtrW(panel, GWLP_USERDATA, 0);
+        DestroyWindow(panel);
         estado->panel = nullptr;
-    }
-
-    if (estado->parent && IsWindow(estado->parent)) {
-        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
-    }
-
-    if (estado->tab && IsWindow(estado->tab)) {
-        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     delete estado;
@@ -8775,7 +8937,12 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         estado->viewOriginal = superficie.limites;
         GetClientRect(estado->parent, &estado->parentCliente);
 
-        HINSTANCE hInst = GetModuleHandleW(nullptr);
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) {
+            delete estado;
+            vistaShell->Release();
+            return nullptr;
+        }
         estado->panel = CreateWindowExW(
             0, CLASE_PANEL_V2, L"",
             WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
@@ -8790,7 +8957,8 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         SetWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1,
                           reinterpret_cast<DWORD_PTR>(estado));
         if (tab && tab != estado->parent) {
-            SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2, reinterpret_cast<DWORD_PTR>(estado));
+            SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2,
+                              reinterpret_cast<DWORD_PTR>(estado));
         }
 
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
@@ -8853,7 +9021,19 @@ inline void AlternarSideView(HWND top) {
 }
 
 inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    AmbitoCallbackV2 ambitoCallback;
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    // El cierre se entrega de forma síncrona al hilo que creó el panel. Así
+    // DestroyWindow nunca se intenta desde el hilo de configuración de
+    // Windhawk y el estado se libera junto con su ventana propietaria.
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && estado) {
+        DestruirEstado(estado, true);
+        return 0;
+    }
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
 
     if (estado && estado->vistaContenido) {
         try {
@@ -9047,7 +9227,21 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
 inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                   UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    AmbitoCallbackV2 ambitoCallback;
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(dwRefData);
+
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && estado &&
+        (lParam == 0 || reinterpret_cast<EstadoPanelV2*>(lParam) == estado)) {
+        DestruirEstado(estado, true);
+        return 0;
+    }
+
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        if (msg == WM_NCDESTROY) {
+            RemoveWindowSubclass(hwnd, ProcedimientoSubclasePadre, uIdSubclass);
+        }
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
 
     if (msg == WM_SIZE) {
         LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -9079,6 +9273,30 @@ inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM w
 
 inline LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                 DWORD_PTR) {
+    AmbitoCallbackV2 ambitoCallback;
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && lParam != 0) {
+        auto* solicitado = reinterpret_cast<EstadoPanelV2*>(lParam);
+        EstadoPanelV2* encontrado = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+            for (auto& par : g_estadosPorVentana) {
+                if (par.second == solicitado) {
+                    encontrado = par.second;
+                    break;
+                }
+            }
+        }
+        if (encontrado) DestruirEstado(encontrado, true);
+        return 0;
+    }
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        if (msg == WM_NCDESTROY) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(
+                hwnd, ProcedimientoSubclaseTop);
+        }
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+
     if (msg == WM_SIDEVIEW_TOGGLE) {
         try {
             AlternarSideView(hwnd);
@@ -9116,10 +9334,13 @@ inline bool RegistrarClasePanelV2(HINSTANCE hInstance) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = CLASE_PANEL_V2;
 
-    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        return false;
-    }
-    return true;
+    if (RegisterClassExW(&wc)) return true;
+    if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+    WNDCLASSEXW existente{};
+    existente.cbSize = sizeof(existente);
+    return GetClassInfoExW(hInstance, CLASE_PANEL_V2, &existente) &&
+           existente.lpfnWndProc == ProcedimientoVentanaPanel;
 }
 
 } // namespace SideViewV2
@@ -9132,6 +9353,7 @@ inline bool RegistrarClasePanelV2(HINSTANCE hInstance) {
 #include <vector>
 #include <atomic>
 #include <string>
+/**** skipping file: v2/nucleo/ciclo_vida_v2.hpp ****/
 /**** skipping file: v2/nucleo/gestor_ventanas.hpp ****/
 
 namespace SideViewV2 {
@@ -9139,7 +9361,6 @@ namespace SideViewV2 {
 inline HANDLE g_hiloTeclado = nullptr;
 inline DWORD g_idHiloTeclado = 0;
 inline HHOOK g_hookTeclado = nullptr;
-inline std::atomic_bool g_descargandoMod{false};
 
 // Configuración de atajo dinámica
 inline std::atomic<DWORD> g_teclaAtajo{'K'};
@@ -9275,7 +9496,8 @@ inline LRESULT CALLBACK ProcedimientoHookTeclado(int code, WPARAM wParam, LPARAM
 }
 
 inline DWORD WINAPI HiloHookProc(LPVOID) {
-    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (!hInst) return 1;
     g_hookTeclado = SetWindowsHookExW(WH_KEYBOARD_LL, ProcedimientoHookTeclado, hInst, 0);
 
     MSG msg;
@@ -9328,15 +9550,27 @@ using CreateWindowExW_t = decltype(&CreateWindowExW);
 inline CreateWindowExW_t CreateWindowExW_Original = nullptr;
 inline thread_local bool g_dentroHookCreateWindowV2{false};
 
+struct GuardiaReentradaCreateWindowV2 {
+    bool& bandera;
+    explicit GuardiaReentradaCreateWindowV2(bool& valor) : bandera(valor) {
+        bandera = true;
+    }
+    ~GuardiaReentradaCreateWindowV2() { bandera = false; }
+    GuardiaReentradaCreateWindowV2(const GuardiaReentradaCreateWindowV2&) = delete;
+    GuardiaReentradaCreateWindowV2& operator=(const GuardiaReentradaCreateWindowV2&) = delete;
+};
+
 inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
                                         LPCWSTR lpWindowName, DWORD dwStyle,
                                         int X, int Y, int nWidth, int nHeight,
                                         HWND hWndParent, HMENU hMenu,
                                         HINSTANCE hInstance, LPVOID lpParam) {
+    AmbitoCallbackV2 ambitoCallback;
+    if (!CreateWindowExW_Original) return nullptr;
     HWND hwnd = CreateWindowExW_Original(dwExStyle, lpClassName, lpWindowName,
                                          dwStyle, X, Y, nWidth, nHeight,
                                          hWndParent, hMenu, hInstance, lpParam);
-    if (!hwnd || g_descargandoMod.load()) {
+    if (!hwnd || g_descargandoMod.load(std::memory_order_acquire)) {
         return hwnd;
     }
 
@@ -9344,14 +9578,13 @@ inline HWND WINAPI CreateWindowExW_Hook(DWORD dwExStyle, LPCWSTR lpClassName,
     // auxiliares. Evitar reentrada aquí impide encadenar el hook sobre sí
     // mismo durante la construcción de Explorer.
     if (g_dentroHookCreateWindowV2) return hwnd;
-    g_dentroHookCreateWindowV2 = true;
+    GuardiaReentradaCreateWindowV2 guardia(g_dentroHookCreateWindowV2);
 
-    if (!IS_INTRESOURCE(lpClassName) && (_wcsicmp(lpClassName, L"CabinetWClass") == 0 ||
+    if (lpClassName && !IS_INTRESOURCE(lpClassName) &&
+        (_wcsicmp(lpClassName, L"CabinetWClass") == 0 ||
                                          _wcsicmp(lpClassName, L"ExploreWClass") == 0)) {
         WindhawkUtils::SetWindowSubclassFromAnyThread(hwnd, ProcedimientoSubclaseTop, 0);
     }
-
-    g_dentroHookCreateWindowV2 = false;
 
     return hwnd;
 }
@@ -9418,6 +9651,7 @@ inline void CargarConfiguracionesV2() {
 
 inline bool InicializarModV2() {
     g_descargandoMod.store(false, std::memory_order_release);
+    g_callbacksActivosV2.store(0, std::memory_order_release);
     WM_SIDEVIEW_TOGGLE = RegisterWindowMessageW(L"UsefulSideView_WM_Toggle_V2");
     WM_SIDEVIEW_SETTINGS = RegisterWindowMessageW(L"UsefulSideView_WM_Settings_V2");
 
@@ -9427,7 +9661,8 @@ inline bool InicializarModV2() {
 
     CargarConfiguracionesV2();
 
-    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (!hInst) return false;
     if (!RegistrarClasePanelV2(hInst)) {
         return false;
     }
@@ -9442,6 +9677,7 @@ inline bool InicializarModV2() {
 }
 
 inline void DespuesDeIniciarModV2() {
+    if (g_descargandoMod.load(std::memory_order_acquire)) return;
     // Subclasear las ventanas existentes de Explorer
     auto ventanas = ObtenerVentanasExplorerActuales();
     for (HWND w : ventanas) {
@@ -9453,32 +9689,86 @@ inline void DespuesDeIniciarModV2() {
 }
 
 inline void AlCambiarConfiguracionesV2() {
+    if (g_descargandoMod.load(std::memory_order_acquire)) return;
     CargarConfiguracionesV2();
-    std::lock_guard<std::mutex> lock(g_bloqueoEstados);
-    for (auto& par : g_estadosPorVentana) {
-        if (par.second && par.second->panel && IsWindow(par.second->panel)) {
-            PostMessageW(par.second->panel, WM_SIDEVIEW_SETTINGS, 0, 0);
+    std::vector<HWND> paneles;
+    {
+        std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+        paneles.reserve(g_estadosPorVentana.size());
+        for (auto& par : g_estadosPorVentana) {
+            if (par.second && par.second->panel && IsWindow(par.second->panel)) {
+                paneles.push_back(par.second->panel);
+            }
+        }
+    }
+    for (HWND panel : paneles) {
+        if (!g_descargandoMod.load(std::memory_order_acquire) && IsWindow(panel)) {
+            PostMessageW(panel, WM_SIDEVIEW_SETTINGS, 0, 0);
         }
     }
 }
 
-inline void DesinicializarModV2() {
-    g_descargandoMod = true;
+inline void PrepararDesinicializacionModV2() {
+    g_descargandoMod.store(true, std::memory_order_release);
     DetenerHookTeclado();
+}
 
-    // Extraer el registro antes de destruir ventanas. DestroyWindow puede
-    // provocar reentrada y nunca debe ejecutarse sosteniendo este mutex.
+inline void DesinicializarModV2() {
+    PrepararDesinicializacionModV2();
+
+    // Las ventanas de diálogo son modales y tienen su propio ciclo de
+    // mensajes. Cerrarlas antes de descargar la DLL evita que su WNDPROC quede
+    // apuntando a memoria liberada.
+    CerrarVentanasClaseV2(L"UsefulSideView_PromptNombreCarpeta_V2");
+    CerrarVentanasClaseV2(L"UsefulSideView_PromptNota_V2");
+
+    // No se borra el mapa antes de enviar la orden: cada panel debe destruirse
+    // en el hilo que lo creó. Liberarlo directamente desde el hilo de Windhawk
+    // deja ventanas huérfanas cuando DestroyWindow cruza hilos.
     std::vector<EstadoPanelV2*> estados;
     {
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
         estados.reserve(g_estadosPorVentana.size());
-        for (auto& par : g_estadosPorVentana) if (par.second) estados.push_back(par.second);
-        g_estadosPorVentana.clear();
+        for (auto& par : g_estadosPorVentana) {
+            if (par.second) estados.push_back(par.second);
+        }
     }
-    for (EstadoPanelV2* estado : estados) DestruirEstado(estado, false);
+    for (EstadoPanelV2* estado : estados) {
+        if (!estado) continue;
+        HWND panel = estado->panel;
+        if (panel && IsWindow(panel)) {
+            SendMessageW(panel, WM_SIDEVIEW_UNLOAD_V2, 0, 0);
+        } else if (estado->parent && IsWindow(estado->parent)) {
+            SendMessageW(estado->parent, WM_SIDEVIEW_UNLOAD_V2, 0,
+                         reinterpret_cast<LPARAM>(estado));
+        } else if (estado->top && IsWindow(estado->top)) {
+            SendMessageW(estado->top, WM_SIDEVIEW_UNLOAD_V2, 0,
+                         reinterpret_cast<LPARAM>(estado));
+        } else {
+            // Todas las HWND asociadas ya desaparecieron; sólo en este caso
+            // es seguro completar la liberación localmente.
+            DestruirEstado(estado, true);
+        }
+    }
 
-    HINSTANCE hInst = GetModuleHandleW(nullptr);
-    UnregisterClassW(CLASE_PANEL_V2, hInst);
+    // La subclase superior se instala en todas las ventanas de Explorer y no
+    // pertenece a un EstadoPanelV2 concreto. Se retira después de dar una
+    // oportunidad al top-level para limpiar cualquier estado cuyo panel y
+    // contenedor ya hayan desaparecido.
+    for (HWND ventana : ObtenerVentanasExplorerActuales()) {
+        if (IsWindow(ventana)) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(
+                ventana, ProcedimientoSubclaseTop);
+        }
+    }
+
+    DrenarCallbacksV2();
+
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (hInst) UnregisterClassW(CLASE_PANEL_V2, hInst);
+    DesregistrarClasePromptNombreCarpetaV2();
+    ServicioNotasV2::DesregistrarClasePromptNotaV2();
+    ServicioReproductorVideoV2::DesregistrarClaseV2();
 }
 
 } // namespace SideViewV2
@@ -9500,6 +9790,13 @@ BOOL Wh_ModInit() {
 void Wh_ModAfterInit() {
     Wh_Log(L"[UsefulSideView-v2] Wh_ModAfterInit ejecutado");
     SideViewV2::DespuesDeIniciarModV2();
+}
+
+void Wh_ModBeforeUninit() {
+    // Windhawk llama este punto antes de retirar los detours. Se cierra la
+    // admisión de trabajo nuevo aquí para que ningún hook cree subclases o
+    // publique mensajes mientras comienza el desmontaje.
+    SideViewV2::PrepararDesinicializacionModV2();
 }
 
 void Wh_ModSettingsChanged() {

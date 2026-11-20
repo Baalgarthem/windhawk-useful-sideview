@@ -13,6 +13,7 @@
 #include "v2/nucleo/enrutador_vistas.hpp"
 #include "v2/nucleo/fabrica_vistas.hpp"
 #include "v2/nucleo/configuracion_v2.hpp"
+#include "v2/nucleo/ciclo_vida_v2.hpp"
 
 namespace SideViewV2 {
 
@@ -70,21 +71,30 @@ inline void DestruirEstado(EstadoPanelV2* estado, bool quitarDelMapa = true) {
         }
     }
 
+    // El estado puede ser utilizado por dos subclases distintas (contenedor y
+    // pestaña). Quitarlas antes de liberar la vista evita que un WM_SIZE o
+    // WM_DESTROY posterior vuelva a entrar con un puntero colgante. Esta rutina
+    // siempre se ejecuta en el hilo propietario mediante WM_SIDEVIEW_UNLOAD_V2
+    // durante la descarga.
+    if (estado->parent && IsWindow(estado->parent)) {
+        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
+    }
+    if (estado->tab && estado->tab != estado->parent && IsWindow(estado->tab)) {
+        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
+    }
+
     LiberarBufferMemoria(estado);
 
     LiberarVistaContenidoV2(estado);
 
     if (estado->panel && IsWindow(estado->panel)) {
-        DestroyWindow(estado->panel);
+        HWND panel = estado->panel;
+        // WM_NCDESTROY puede llegar después de que DestroyWindow devuelva el
+        // control. Cortar el userdata antes de destruir evita que ese mensaje
+        // consulte un EstadoPanelV2 que ya está en proceso de liberación.
+        SetWindowLongPtrW(panel, GWLP_USERDATA, 0);
+        DestroyWindow(panel);
         estado->panel = nullptr;
-    }
-
-    if (estado->parent && IsWindow(estado->parent)) {
-        RemoveWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1);
-    }
-
-    if (estado->tab && IsWindow(estado->tab)) {
-        RemoveWindowSubclass(estado->tab, ProcedimientoSubclasePadre, 2);
     }
 
     delete estado;
@@ -293,7 +303,12 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         estado->viewOriginal = superficie.limites;
         GetClientRect(estado->parent, &estado->parentCliente);
 
-        HINSTANCE hInst = GetModuleHandleW(nullptr);
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) {
+            delete estado;
+            vistaShell->Release();
+            return nullptr;
+        }
         estado->panel = CreateWindowExW(
             0, CLASE_PANEL_V2, L"",
             WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
@@ -308,7 +323,8 @@ inline EstadoPanelV2* AsegurarEstado(HWND top, IShellView** outVista = nullptr) 
         SetWindowSubclass(estado->parent, ProcedimientoSubclasePadre, 1,
                           reinterpret_cast<DWORD_PTR>(estado));
         if (tab && tab != estado->parent) {
-            SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2, reinterpret_cast<DWORD_PTR>(estado));
+            SetWindowSubclass(tab, ProcedimientoSubclasePadre, 2,
+                              reinterpret_cast<DWORD_PTR>(estado));
         }
 
         std::lock_guard<std::mutex> lock(g_bloqueoEstados);
@@ -371,7 +387,19 @@ inline void AlternarSideView(HWND top) {
 }
 
 inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
+    AmbitoCallbackV2 ambitoCallback;
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+
+    // El cierre se entrega de forma síncrona al hilo que creó el panel. Así
+    // DestroyWindow nunca se intenta desde el hilo de configuración de
+    // Windhawk y el estado se libera junto con su ventana propietaria.
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && estado) {
+        DestruirEstado(estado, true);
+        return 0;
+    }
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        return DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
 
     if (estado && estado->vistaContenido) {
         try {
@@ -565,7 +593,21 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
 inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                   UINT_PTR uIdSubclass, DWORD_PTR dwRefData) {
+    AmbitoCallbackV2 ambitoCallback;
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(dwRefData);
+
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && estado &&
+        (lParam == 0 || reinterpret_cast<EstadoPanelV2*>(lParam) == estado)) {
+        DestruirEstado(estado, true);
+        return 0;
+    }
+
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        if (msg == WM_NCDESTROY) {
+            RemoveWindowSubclass(hwnd, ProcedimientoSubclasePadre, uIdSubclass);
+        }
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
 
     if (msg == WM_SIZE) {
         LRESULT res = DefSubclassProc(hwnd, msg, wParam, lParam);
@@ -597,6 +639,30 @@ inline LRESULT CALLBACK ProcedimientoSubclasePadre(HWND hwnd, UINT msg, WPARAM w
 
 inline LRESULT CALLBACK ProcedimientoSubclaseTop(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam,
                                                 DWORD_PTR) {
+    AmbitoCallbackV2 ambitoCallback;
+    if (msg == WM_SIDEVIEW_UNLOAD_V2 && lParam != 0) {
+        auto* solicitado = reinterpret_cast<EstadoPanelV2*>(lParam);
+        EstadoPanelV2* encontrado = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(g_bloqueoEstados);
+            for (auto& par : g_estadosPorVentana) {
+                if (par.second == solicitado) {
+                    encontrado = par.second;
+                    break;
+                }
+            }
+        }
+        if (encontrado) DestruirEstado(encontrado, true);
+        return 0;
+    }
+    if (g_descargandoMod.load(std::memory_order_acquire)) {
+        if (msg == WM_NCDESTROY) {
+            WindhawkUtils::RemoveWindowSubclassFromAnyThread(
+                hwnd, ProcedimientoSubclaseTop);
+        }
+        return DefSubclassProc(hwnd, msg, wParam, lParam);
+    }
+
     if (msg == WM_SIDEVIEW_TOGGLE) {
         try {
             AlternarSideView(hwnd);
@@ -634,10 +700,13 @@ inline bool RegistrarClasePanelV2(HINSTANCE hInstance) {
     wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wc.lpszClassName = CLASE_PANEL_V2;
 
-    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-        return false;
-    }
-    return true;
+    if (RegisterClassExW(&wc)) return true;
+    if (GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return false;
+
+    WNDCLASSEXW existente{};
+    existente.cbSize = sizeof(existente);
+    return GetClassInfoExW(hInstance, CLASE_PANEL_V2, &existente) &&
+           existente.lpfnWndProc == ProcedimientoVentanaPanel;
 }
 
 } // namespace SideViewV2

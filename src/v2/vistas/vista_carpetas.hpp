@@ -5,6 +5,7 @@
 #include "v2/nucleo/servicios_vistas.hpp"
 #include "v2/nucleo/servicio_com.hpp"
 #include "v2/nucleo/configuracion_v2.hpp"
+#include "v2/nucleo/ciclo_vida_v2.hpp"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -19,6 +20,8 @@
 namespace SideViewV2 {
 
 inline std::atomic<int> g_limiteCarpetasPesadasConfig{3};
+inline constexpr wchar_t CLASE_PROMPT_CARPETAS_V2[] =
+    L"UsefulSideView_PromptNombreCarpeta_V2";
 
 struct PromptNombreCarpetaV2 {
     HWND ventanaPadre{nullptr};
@@ -37,18 +40,19 @@ inline LRESULT CALLBACK ProcedimientoPromptNombreCarpetaV2(HWND hwnd, UINT mensa
     }
     if (!estado) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
     if (mensaje == WM_CREATE) {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
         CreateWindowW(L"STATIC", L"Nombre de la carpeta unificada:", WS_CHILD | WS_VISIBLE,
-                      14, 12, 280, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                      14, 12, 280, 20, hwnd, nullptr, hInst, nullptr);
         estado->campoTexto = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"Carpeta unificada",
                                              WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
                                              14, 36, 280, 24, hwnd, reinterpret_cast<HMENU>(101),
-                                             GetModuleHandleW(nullptr), nullptr);
+                                             hInst, nullptr);
         CreateWindowW(L"BUTTON", L"Aceptar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
                       134, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDOK),
-                      GetModuleHandleW(nullptr), nullptr);
+                      hInst, nullptr);
         CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE,
                       218, 68, 76, 26, hwnd, reinterpret_cast<HMENU>(IDCANCEL),
-                      GetModuleHandleW(nullptr), nullptr);
+                      hInst, nullptr);
         SendMessageW(estado->campoTexto, EM_SETSEL, 0, -1);
         SetFocus(estado->campoTexto);
         return 0;
@@ -76,21 +80,35 @@ inline LRESULT CALLBACK ProcedimientoPromptNombreCarpetaV2(HWND hwnd, UINT mensa
 
 inline std::wstring SolicitarNombreCarpetaV2(HWND padre) {
     static std::once_flag registroClase;
+    static bool claseRegistrada = false;
     std::call_once(registroClase, [] {
         WNDCLASSW clase{};
         clase.lpfnWndProc = ProcedimientoPromptNombreCarpetaV2;
-        clase.hInstance = GetModuleHandleW(nullptr);
+        clase.hInstance = ObtenerInstanciaModV2();
         clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         clase.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
-        clase.lpszClassName = L"UsefulSideView_PromptNombreCarpeta_V2";
-        RegisterClassW(&clase);
+        clase.lpszClassName = CLASE_PROMPT_CARPETAS_V2;
+        if (!clase.hInstance) return;
+        if (RegisterClassW(&clase)) {
+            claseRegistrada = true;
+            return;
+        }
+        if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+            WNDCLASSW existente{};
+            claseRegistrada = GetClassInfoW(
+                clase.hInstance, CLASE_PROMPT_CARPETAS_V2, &existente) &&
+                existente.lpfnWndProc == ProcedimientoPromptNombreCarpetaV2;
+        }
     });
+    if (!claseRegistrada) return {};
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (!hInst) return {};
     PromptNombreCarpetaV2 estado{padre};
     EnableWindow(padre, FALSE);
-    HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UsefulSideView_PromptNombreCarpeta_V2",
+    HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, CLASE_PROMPT_CARPETAS_V2,
                                    L"Fusionar carpetas", WS_CAPTION | WS_SYSMENU,
                                    CW_USEDEFAULT, CW_USEDEFAULT, 320, 132, padre, nullptr,
-                                   GetModuleHandleW(nullptr), &estado);
+                                   hInst, &estado);
     if (!ventana) { EnableWindow(padre, TRUE); return {}; }
     RECT rcPadre{}, rcVentana{};
     GetWindowRect(padre, &rcPadre); GetWindowRect(ventana, &rcVentana);
@@ -105,6 +123,11 @@ inline std::wstring SolicitarNombreCarpetaV2(HWND padre) {
     }
     EnableWindow(padre, TRUE); SetForegroundWindow(padre);
     return estado.resultado;
+}
+
+inline void DesregistrarClasePromptNombreCarpetaV2() {
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (hInst) UnregisterClassW(CLASE_PROMPT_CARPETAS_V2, hInst);
 }
 
 class VistaCarpetas : public IPanelContenido {

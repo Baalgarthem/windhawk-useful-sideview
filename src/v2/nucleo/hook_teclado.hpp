@@ -6,6 +6,7 @@
 #include <vector>
 #include <atomic>
 #include <string>
+#include "v2/nucleo/ciclo_vida_v2.hpp"
 #include "v2/nucleo/gestor_ventanas.hpp"
 
 namespace SideViewV2 {
@@ -13,7 +14,6 @@ namespace SideViewV2 {
 inline HANDLE g_hiloTeclado = nullptr;
 inline DWORD g_idHiloTeclado = 0;
 inline HHOOK g_hookTeclado = nullptr;
-inline std::atomic_bool g_descargandoMod{false};
 
 // Configuración de atajo dinámica
 inline std::atomic<DWORD> g_teclaAtajo{'K'};
@@ -149,7 +149,8 @@ inline LRESULT CALLBACK ProcedimientoHookTeclado(int code, WPARAM wParam, LPARAM
 }
 
 inline DWORD WINAPI HiloHookProc(LPVOID) {
-    HINSTANCE hInst = GetModuleHandleW(nullptr);
+    HINSTANCE hInst = ObtenerInstanciaModV2();
+    if (!hInst) return 1;
     g_hookTeclado = SetWindowsHookExW(WH_KEYBOARD_LL, ProcedimientoHookTeclado, hInst, 0);
 
     MSG msg;

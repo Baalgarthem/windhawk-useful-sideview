@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include "v2/nucleo/servicio_persistencia_windhawk.hpp"
+#include "v2/nucleo/ciclo_vida_v2.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -449,6 +450,11 @@ private:
 
 class ServicioNotasV2 final {
 public:
+    static void DesregistrarClasePromptNotaV2() {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (hInst) UnregisterClassW(L"UsefulSideView_PromptNota_V2", hInst);
+    }
+
     explicit ServicioNotasV2(
         std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia,
         std::function<bool()> politicaSincronizacion = {})
@@ -596,14 +602,15 @@ private:
         }
         if (!estado) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         if (mensaje == WM_CREATE) {
-            CreateWindowW(L"STATIC", L"Título", WS_CHILD | WS_VISIBLE, 14, 12, 70, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+            HINSTANCE hInst = ObtenerInstanciaModV2();
+            CreateWindowW(L"STATIC", L"Título", WS_CHILD | WS_VISIBLE, 14, 12, 70, 20, hwnd, nullptr, hInst, nullptr);
             estado->campoTitulo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", estado->titulo.c_str(), WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-                                                  82, 10, 390, 24, hwnd, reinterpret_cast<HMENU>(kControlTitulo), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"STATIC", L"Contenido (Markdown opcional)", WS_CHILD | WS_VISIBLE, 14, 44, 240, 20, hwnd, nullptr, GetModuleHandleW(nullptr), nullptr);
+                                                  82, 10, 390, 24, hwnd, reinterpret_cast<HMENU>(kControlTitulo), hInst, nullptr);
+            CreateWindowW(L"STATIC", L"Contenido (Markdown opcional)", WS_CHILD | WS_VISIBLE, 14, 44, 240, 20, hwnd, nullptr, hInst, nullptr);
             estado->campoCuerpo = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", estado->cuerpo.c_str(), WS_CHILD | WS_VISIBLE | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_VSCROLL,
-                                                  14, 66, 458, 250, hwnd, reinterpret_cast<HMENU>(kControlCuerpo), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"BUTTON", L"Guardar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 296, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDOK), GetModuleHandleW(nullptr), nullptr);
-            CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE, 388, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDCANCEL), GetModuleHandleW(nullptr), nullptr);
+                                                  14, 66, 458, 250, hwnd, reinterpret_cast<HMENU>(kControlCuerpo), hInst, nullptr);
+            CreateWindowW(L"BUTTON", L"Guardar", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON, 296, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDOK), hInst, nullptr);
+            CreateWindowW(L"BUTTON", L"Cancelar", WS_CHILD | WS_VISIBLE, 388, 328, 84, 28, hwnd, reinterpret_cast<HMENU>(IDCANCEL), hInst, nullptr);
             SendMessageW(estado->campoTitulo, EM_SETSEL, 0, -1);
             SetFocus(estado->campoTitulo);
             return 0;
@@ -635,20 +642,34 @@ private:
 
     static bool MostrarPromptNota(PromptNotaV2& estado) {
         static std::once_flag registroClase;
+        static bool claseRegistrada = false;
         std::call_once(registroClase, [] {
             WNDCLASSW clase{};
             clase.lpfnWndProc = ProcedimientoPromptNota;
-            clase.hInstance = GetModuleHandleW(nullptr);
+            clase.hInstance = ObtenerInstanciaModV2();
             clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
             clase.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
             clase.lpszClassName = L"UsefulSideView_PromptNota_V2";
-            RegisterClassW(&clase);
+            if (!clase.hInstance) return;
+            if (RegisterClassW(&clase)) {
+                claseRegistrada = true;
+                return;
+            }
+            if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+                WNDCLASSW existente{};
+                claseRegistrada = GetClassInfoW(
+                    clase.hInstance, L"UsefulSideView_PromptNota_V2", &existente) &&
+                    existente.lpfnWndProc == ProcedimientoPromptNota;
+            }
         });
 
+        if (!claseRegistrada) return false;
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) return false;
         EnableWindow(estado.propietario, FALSE);
         HWND ventana = CreateWindowExW(WS_EX_DLGMODALFRAME, L"UsefulSideView_PromptNota_V2", L"Nota",
                                        WS_CAPTION | WS_SYSMENU, CW_USEDEFAULT, CW_USEDEFAULT, 500, 395,
-                                       estado.propietario, nullptr, GetModuleHandleW(nullptr), &estado);
+                                       estado.propietario, nullptr, hInst, &estado);
         if (!ventana) { EnableWindow(estado.propietario, TRUE); return false; }
         RECT padre{}, dialogo{};
         GetWindowRect(estado.propietario, &padre);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "v2/ui/panel_interfaz.hpp"
+#include "v2/nucleo/ciclo_vida_v2.hpp"
 #include <windows.h>
 #include <windowsx.h>
 #include <mfapi.h>
@@ -63,10 +64,12 @@ public:
 
     HRESULT STDMETHODCALLTYPE EventNotify(DWORD evento, DWORD_PTR param1,
                                            DWORD param2) override {
+        AmbitoCallbackV2 ambitoCallback;
         if (evento == MF_MEDIA_ENGINE_EVENT_NOTIFYSTABLESTATE) {
             if (param1) SetEvent(reinterpret_cast<HANDLE>(param1));
             return S_OK;
         }
+        if (g_descargandoMod.load(std::memory_order_acquire)) return S_OK;
         HWND destino = m_destino.load(std::memory_order_acquire);
         if (destino) {
             // El callback de Media Foundation puede entregar eventos después
@@ -100,10 +103,18 @@ public:
         m_ranura = ranura;
         m_mensaje.clear();
 
-        RegistrarClase();
+        if (!RegistrarClase()) {
+            m_mensaje = L"No se pudo registrar el espacio de reproducción.";
+            return false;
+        }
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (!hInst) {
+            m_mensaje = L"No se pudo resolver el módulo del reproductor.";
+            return false;
+        }
         m_ventana = CreateWindowExW(
             0, ClaseVideo(), L"", WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
-            0, 0, 1, 1, panel, nullptr, GetModuleHandleW(nullptr), this);
+            0, 0, 1, 1, panel, nullptr, hInst, this);
         if (!m_ventana) {
             m_mensaje = L"No se pudo crear el espacio de reproducción.";
             return false;
@@ -269,21 +280,33 @@ private:
         return L"UsefulSideView_MediaFoundationVideo_V2";
     }
 
-    static void RegistrarClase() {
+    static bool RegistrarClase() {
         static std::once_flag unaVez;
+        static bool registrada = false;
         std::call_once(unaVez, [] {
             WNDCLASSW clase{};
             clase.lpfnWndProc = ProcedimientoVideo;
-            clase.hInstance = GetModuleHandleW(nullptr);
+            clase.hInstance = ObtenerInstanciaModV2();
             clase.hCursor = LoadCursorW(nullptr, IDC_ARROW);
             clase.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
             clase.lpszClassName = ClaseVideo();
-            RegisterClassW(&clase);
+            if (!clase.hInstance) return;
+            if (RegisterClassW(&clase)) {
+                registrada = true;
+                return;
+            }
+            if (GetLastError() == ERROR_CLASS_ALREADY_EXISTS) {
+                WNDCLASSW existente{};
+                registrada = GetClassInfoW(clase.hInstance, ClaseVideo(), &existente) &&
+                             existente.lpfnWndProc == ProcedimientoVideo;
+            }
         });
+        return registrada;
     }
 
     static LRESULT CALLBACK ProcedimientoVideo(HWND hwnd, UINT mensaje,
                                                WPARAM wParam, LPARAM lParam) {
+        AmbitoCallbackV2 ambitoCallback;
         auto* reproductor = reinterpret_cast<ReproductorMediaFoundationV2*>(
             GetWindowLongPtrW(hwnd, GWLP_USERDATA));
         if (mensaje == WM_NCCREATE) {
@@ -294,6 +317,9 @@ private:
         if (!reproductor) return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         if (mensaje == WM_NCDESTROY) {
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            return DefWindowProcW(hwnd, mensaje, wParam, lParam);
+        }
+        if (g_descargandoMod.load(std::memory_order_acquire)) {
             return DefWindowProcW(hwnd, mensaje, wParam, lParam);
         }
         switch (mensaje) {
@@ -363,7 +389,7 @@ private:
     }
 
     void ProcesarEvento(DWORD evento, HRESULT error) {
-        if (!m_engine) return;
+        if (!m_engine || g_descargandoMod.load(std::memory_order_acquire)) return;
         switch (evento) {
             case MF_MEDIA_ENGINE_EVENT_ERROR:
                 m_listo = false;
@@ -466,6 +492,11 @@ private:
 
 class ServicioReproductorVideoV2 {
 public:
+    static void DesregistrarClaseV2() {
+        HINSTANCE hInst = ObtenerInstanciaModV2();
+        if (hInst) UnregisterClassW(L"UsefulSideView_MediaFoundationVideo_V2", hInst);
+    }
+
     std::unique_ptr<IReproductorVideoV2> Crear() const {
         // Punto de sustitución futuro: otro backend puede implementar la misma
         // interfaz sin cambiar la vista ni el comparador.
