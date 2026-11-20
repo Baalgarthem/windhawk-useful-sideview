@@ -202,7 +202,10 @@ private:
             const std::wstring writable = appData + L"\\ModsWritable\\winklok.ini";
             const bool instalado = GetFileAttributesW(mods.c_str()) != INVALID_FILE_ATTRIBUTES ||
                                    GetFileAttributesW(writable.c_str()) != INVALID_FILE_ATTRIBUTES;
-            if (!instalado && !GetFileAttributesW(backend.archivoIni.c_str())) return false;
+            if (!instalado &&
+                GetFileAttributesW(backend.archivoIni.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                return false;
+            }
             if (crear) {
                 WritePrivateProfileStringW(L"LocalStorage", L"__useful_sideview_probe", L"1", backend.archivoIni.c_str());
                 WritePrivateProfileStringW(L"LocalStorage", L"__useful_sideview_probe", nullptr, backend.archivoIni.c_str());

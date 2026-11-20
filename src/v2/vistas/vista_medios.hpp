@@ -117,6 +117,17 @@ protected:
         m_preview = nuevo;
     }
 
+    void Liberar() override {
+        if (m_preview) DeleteObject(m_preview);
+        m_preview = nullptr;
+        m_archivos.clear();
+        m_indice = 0;
+        m_rcAnterior = {};
+        m_rcSiguiente = {};
+        m_rcAbrirCon = {};
+        m_rcComparar = {};
+    }
+
     virtual void CargarActual() = 0;
     virtual bool MostrarComparador() const { return true; }
     std::vector<std::wstring> m_archivos; size_t m_indice{0}; HBITMAP m_preview{nullptr};
@@ -133,7 +144,6 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin imágenes":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🖼 Imágenes",n); DibujarPreview(hdc,rect,tema,m_preview); }
 private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarImagen(m_archivos[m_indice])); }
 };
@@ -145,7 +155,6 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
 private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
 protected: bool MostrarComparador() const override { return false; }

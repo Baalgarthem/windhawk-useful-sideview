@@ -16,9 +16,9 @@ class ServicioTextoV2 {
 public:
     DocumentoTextoV2 Cargar(const std::wstring& ruta) const {
         DocumentoTextoV2 documento; documento.ruta = ruta;
-        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (archivo == INVALID_HANDLE_VALUE) return documento;
-        LARGE_INTEGER tam{}; if (!GetFileSizeEx(archivo, &tam) || tam.QuadPart > 16 * 1024 * 1024) { CloseHandle(archivo); return documento; }
+        LARGE_INTEGER tam{}; if (!GetFileSizeEx(archivo, &tam) || tam.QuadPart < 0 || tam.QuadPart > 16 * 1024 * 1024) { CloseHandle(archivo); return documento; }
         std::string bytes(static_cast<size_t>(tam.QuadPart), '\0'); DWORD leidos = 0; size_t totalLeido = 0;
         while (totalLeido < bytes.size()) { DWORD bloque = 0; if (!ReadFile(archivo, bytes.data() + totalLeido, static_cast<DWORD>(bytes.size() - totalLeido), &bloque, nullptr) || bloque == 0) break; totalLeido += bloque; }
         leidos = static_cast<DWORD>(totalLeido);

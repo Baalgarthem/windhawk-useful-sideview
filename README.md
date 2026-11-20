@@ -1,4 +1,4 @@
-# Useful Side View 4.1.1
+# Useful Side View 4.1.2
 
 **Useful Side View** es un mod para [Windhawk](https://windhawk.net/) que transforma el panel de vista previa de Windows 11 (`Alt + P`) en una suite multimedia integral, ultrarrápida y responsiva para videos, imágenes, cómics, archivos comprimidos y documentos Markdown.
 

@@ -93,7 +93,8 @@ private:
     static std::wstring CalcularSha256(const std::wstring& ruta) {
         HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ,
                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                     nullptr, OPEN_EXISTING,
+                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (archivo == INVALID_HANDLE_VALUE) return L"No disponible";
 
         BCRYPT_ALG_HANDLE algoritmo = nullptr;

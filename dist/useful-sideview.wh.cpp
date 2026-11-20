@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.1
+// @version         4.1.2
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -55,7 +55,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.1)
+# Useful Side View V2 (4.1.2)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -1393,9 +1393,9 @@ class ServicioTextoV2 {
 public:
     DocumentoTextoV2 Cargar(const std::wstring& ruta) const {
         DocumentoTextoV2 documento; documento.ruta = ruta;
-        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (archivo == INVALID_HANDLE_VALUE) return documento;
-        LARGE_INTEGER tam{}; if (!GetFileSizeEx(archivo, &tam) || tam.QuadPart > 16 * 1024 * 1024) { CloseHandle(archivo); return documento; }
+        LARGE_INTEGER tam{}; if (!GetFileSizeEx(archivo, &tam) || tam.QuadPart < 0 || tam.QuadPart > 16 * 1024 * 1024) { CloseHandle(archivo); return documento; }
         std::string bytes(static_cast<size_t>(tam.QuadPart), '\0'); DWORD leidos = 0; size_t totalLeido = 0;
         while (totalLeido < bytes.size()) { DWORD bloque = 0; if (!ReadFile(archivo, bytes.data() + totalLeido, static_cast<DWORD>(bytes.size() - totalLeido), &bloque, nullptr) || bloque == 0) break; totalLeido += bloque; }
         leidos = static_cast<DWORD>(totalLeido);
@@ -1492,10 +1492,12 @@ public:
             FAILED(converter->Initialize(frame, GUID_WICPixelFormat24bppBGR, WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom))) {
             if (converter) converter->Release(); if (frame) frame->Release(); if (decoder) decoder->Release(); if (fabrica) fabrica->Release(); return nullptr;
         }
-        UINT ancho=0, alto=0; converter->GetSize(&ancho,&alto);
-        if (ancho == 0 || alto == 0 || ancho > 8192 || alto > 8192 || static_cast<ULONGLONG>(ancho) * alto > 16ULL * 1024 * 1024) { converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return nullptr; }
+        UINT ancho=0, alto=0;
+        if (FAILED(converter->GetSize(&ancho,&alto)) || ancho == 0 || alto == 0 || ancho > 8192 || alto > 8192 || static_cast<ULONGLONG>(ancho) * alto > 16ULL * 1024 * 1024) { converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return nullptr; }
         BITMAPINFO info{}; info.bmiHeader.biSize=sizeof(BITMAPINFOHEADER); info.bmiHeader.biWidth=static_cast<LONG>(ancho); info.bmiHeader.biHeight=-static_cast<LONG>(alto); info.bmiHeader.biPlanes=1; info.bmiHeader.biBitCount=24; info.bmiHeader.biCompression=BI_RGB;
-        void* bits=nullptr; HDC dc=GetDC(nullptr); resultado=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0); ReleaseDC(nullptr,dc);
+        void* bits=nullptr; HDC dc=GetDC(nullptr);
+        if (!dc) { converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return nullptr; }
+        resultado=CreateDIBSection(dc,&info,DIB_RGB_COLORS,&bits,nullptr,0); ReleaseDC(nullptr,dc);
         UINT stride=((ancho*3+3)/4)*4; if(resultado && bits && FAILED(converter->CopyPixels(nullptr,stride,stride*alto,static_cast<BYTE*>(bits)))) { DeleteObject(resultado); resultado=nullptr; }
         converter->Release(); frame->Release(); decoder->Release(); fabrica->Release(); return resultado;
     }
@@ -1861,7 +1863,8 @@ private:
     static std::wstring CalcularSha256(const std::wstring& ruta) {
         HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ,
                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+                                     nullptr, OPEN_EXISTING,
+                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
         if (archivo == INVALID_HANDLE_VALUE) return L"No disponible";
 
         BCRYPT_ALG_HANDLE algoritmo = nullptr;
@@ -2704,7 +2707,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.1";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.2";
 
 class ServicioVersionModV2 final {
 public:
@@ -2920,7 +2923,10 @@ private:
             const std::wstring writable = appData + L"\\ModsWritable\\winklok.ini";
             const bool instalado = GetFileAttributesW(mods.c_str()) != INVALID_FILE_ATTRIBUTES ||
                                    GetFileAttributesW(writable.c_str()) != INVALID_FILE_ATTRIBUTES;
-            if (!instalado && !GetFileAttributesW(backend.archivoIni.c_str())) return false;
+            if (!instalado &&
+                GetFileAttributesW(backend.archivoIni.c_str()) == INVALID_FILE_ATTRIBUTES) {
+                return false;
+            }
             if (crear) {
                 WritePrivateProfileStringW(L"LocalStorage", L"__useful_sideview_probe", L"1", backend.archivoIni.c_str());
                 WritePrivateProfileStringW(L"LocalStorage", L"__useful_sideview_probe", nullptr, backend.archivoIni.c_str());
@@ -5745,6 +5751,17 @@ protected:
         m_preview = nuevo;
     }
 
+    void Liberar() override {
+        if (m_preview) DeleteObject(m_preview);
+        m_preview = nullptr;
+        m_archivos.clear();
+        m_indice = 0;
+        m_rcAnterior = {};
+        m_rcSiguiente = {};
+        m_rcAbrirCon = {};
+        m_rcComparar = {};
+    }
+
     virtual void CargarActual() = 0;
     virtual bool MostrarComparador() const { return true; }
     std::vector<std::wstring> m_archivos; size_t m_indice{0}; HBITMAP m_preview{nullptr};
@@ -5761,7 +5778,6 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin imágenes":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🖼 Imágenes",n); DibujarPreview(hdc,rect,tema,m_preview); }
 private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarImagen(m_archivos[m_indice])); }
 };
@@ -5773,7 +5789,6 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
 private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
 protected: bool MostrarComparador() const override { return false; }
@@ -5793,6 +5808,18 @@ class VistaTextoCodigo : public IPanelContenido {
 public:
     VistaTextoCodigo(std::shared_ptr<ServicioTextoV2> texto, std::shared_ptr<ServicioNavegacionV2> nav, bool codigo)
         : m_texto(std::move(texto)), m_nav(std::move(nav)), m_codigo(codigo) {}
+    void Liberar() override {
+        m_documento = {};
+        m_archivos.clear();
+        m_indiceArchivo = 0;
+        m_lineaInicial = 0;
+        m_rcAnterior = {};
+        m_rcSiguiente = {};
+        m_rcComparar = {};
+        m_rcCopiar = {};
+        m_rcRenombrar = {};
+        m_rcIndice = {};
+    }
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
         m_archivos = archivos; m_indiceArchivo = 0; Cargar();
     }
@@ -5819,7 +5846,7 @@ public:
         int top=8; m_rcAnterior={rect.left+8,rect.top+top,rect.left+72,rect.top+top+28}; m_rcSiguiente={rect.left+78,rect.top+top,rect.left+142,rect.top+top+28}; m_rcComparar={rect.right-300,rect.top+top,rect.right-178,rect.top+top+28}; m_rcCopiar={rect.right-170,rect.top+top,rect.right-88,rect.top+top+28}; m_rcRenombrar={rect.right-82,rect.top+top,rect.right-8,rect.top+top+28};
         DibujarBoton(hdc,m_rcAnterior,L"◀",tema); DibujarBoton(hdc,m_rcSiguiente,L"▶",tema); DibujarBoton(hdc,m_rcComparar,L"Comparar",tema); DibujarBoton(hdc,m_rcCopiar,L"Copiar",tema); DibujarBoton(hdc,m_rcRenombrar,L"Renombrar",tema);
         SetTextColor(hdc,tema.textoPrincipal); RECT titulo{rect.left+154,rect.top+top,rect.right-180,rect.top+top+28}; std::wstring nombre=m_documento.ruta; size_t p=nombre.find_last_of(L"\\/"); if(p!=std::wstring::npos) nombre=nombre.substr(p+1); DrawTextW(hdc,nombre.c_str(),-1,&titulo,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
-        m_rcIndice={rect.left+8,rect.top+48,rect.left+190,rect.bottom-8}; HBRUSH bi=CreateSolidBrush(tema.fondoCabecera); FillRect(hdc,&m_rcIndice,bi); DeleteObject(bi); SetTextColor(hdc,tema.textoSecundario); size_t filasIndice = m_rcIndice.bottom > m_rcIndice.top ? static_cast<size_t>((m_rcIndice.bottom-m_rcIndice.top)/22) : 0; size_t entradasIndice = std::min(filasIndice,m_documento.indice.size()); for(size_t i=0;i<entradasIndice;++i){size_t n=m_documento.indice[i];RECT r{m_rcIndice.left+8,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right-4,m_rcIndice.top+static_cast<int>((i+1)*22)}; DrawTextW(hdc,m_documento.lineas[n].c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
+        m_rcIndice={rect.left+8,rect.top+48,rect.left+190,rect.bottom-8}; HBRUSH bi=CreateSolidBrush(tema.fondoCabecera); FillRect(hdc,&m_rcIndice,bi); DeleteObject(bi); SetTextColor(hdc,tema.textoSecundario); size_t filasIndice = m_rcIndice.bottom > m_rcIndice.top ? static_cast<size_t>((m_rcIndice.bottom-m_rcIndice.top)/22) : 0; size_t entradasIndice = std::min(filasIndice,m_documento.indice.size()); for(size_t i=0;i<entradasIndice;++i){size_t n=m_documento.indice[i]; if(n>=m_documento.lineas.size()) continue; RECT r{m_rcIndice.left+8,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right-4,m_rcIndice.top+static_cast<int>((i+1)*22)}; DrawTextW(hdc,m_documento.lineas[n].c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
         bool mostrarNumeros=g_mostrarNumerosLineaV2.load(); int x=rect.left+202,y=rect.top+54; SetTextColor(hdc,tema.textoPrincipal); for(size_t i=m_lineaInicial;i<m_documento.lineas.size() && y<rect.bottom-8;++i,y+=20){if(mostrarNumeros){SetTextColor(hdc,tema.textoSecundario); wchar_t no[32]; swprintf_s(no,L"%5zu",i+1); TextOutW(hdc,x,y,no,static_cast<int>(wcslen(no)));} const std::wstring& linea=m_documento.lineas[i]; bool encabezado=!linea.empty() && linea[0]==L'#'; bool lista=linea.size()>1 && (linea[0]==L'-'||linea[0]==L'*'||linea[0]==L'>'); COLORREF color=m_codigo&&EsClave(linea)?RGB(180,100,220):(encabezado?RGB(70,150,230):(lista?RGB(90,180,120):tema.textoPrincipal)); SetTextColor(hdc,color); RECT r{x+ (mostrarNumeros?52:4),y,rect.right-8,y+20}; DrawTextW(hdc,linea.c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
     }
 private:
@@ -5827,7 +5854,7 @@ private:
     void Cambiar(int delta,HWND hwnd){if(m_archivos.size()<2)return;m_indiceArchivo=delta<0?m_nav->Anterior(m_indiceArchivo,m_archivos.size()):m_nav->Siguiente(m_indiceArchivo,m_archivos.size());Cargar();InvalidateRect(hwnd,nullptr,FALSE);}
     std::wstring Unir()const{size_t capacidad=0;for(const auto& l:m_documento.lineas) capacidad+=l.size()+2;std::wstring r;r.reserve(capacidad);for(const auto& l:m_documento.lineas){r+=l;r+=L"\r\n";}return r;}
     static bool EsClave(const std::wstring& l){static const wchar_t* k[]={L"class ",L"struct ",L"void ",L"int ",L"return ",L"#include",L"function ",L"const ",L"public:",L"private:"};for(auto s:k)if(l.find(s)!=std::wstring::npos)return true;return false;}
-    void DibujarBoton(HDC hdc,const RECT& r,const wchar_t* t,const TemaVisual& tema){HBRUSH b=CreateSolidBrush(tema.botonFondo);FillRect(hdc,&r,b);DeleteObject(b);SetTextColor(hdc,tema.textoPrincipal);DrawTextW(hdc,t,-1,const_cast<RECT*>(&r),DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);}
+    void DibujarBoton(HDC hdc,const RECT& r,const wchar_t* t,const TemaVisual& tema){HBRUSH b=CreateSolidBrush(tema.botonFondo);FillRect(hdc,&r,b);DeleteObject(b);SetTextColor(hdc,tema.textoPrincipal);RECT texto=r;DrawTextW(hdc,t,-1,&texto,DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);}
     std::shared_ptr<ServicioTextoV2> m_texto; std::shared_ptr<ServicioNavegacionV2> m_nav; bool m_codigo{}; std::vector<std::wstring> m_archivos; size_t m_indiceArchivo{}; size_t m_lineaInicial{}; DocumentoTextoV2 m_documento; RECT m_rcAnterior{},m_rcSiguiente{},m_rcComparar{},m_rcCopiar{},m_rcRenombrar{},m_rcIndice{};
 };
 }
