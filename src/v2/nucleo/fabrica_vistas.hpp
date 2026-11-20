@@ -38,25 +38,7 @@ public:
     static bool SeleccionaDosDelMismoTipo(
         const std::vector<std::wstring>& seleccion,
         TipoVistaContenido* tipoResultado = nullptr) {
-        if (seleccion.size() != 2) return false;
-        const TipoVistaContenido primero = ClasificarRuta(seleccion[0].c_str());
-        const TipoVistaContenido segundo = ClasificarRuta(seleccion[1].c_str());
-        if (tipoResultado) *tipoResultado = primero;
-        if (primero != segundo ||
-            primero == TipoVistaContenido::Tutorial ||
-            primero == TipoVistaContenido::Carpetas ||
-            primero == TipoVistaContenido::Desconocido) {
-            return false;
-        }
-        if (primero == TipoVistaContenido::Documentos) {
-            const wchar_t* extIzquierda = PathFindExtensionW(seleccion[0].c_str());
-            const wchar_t* extDerecha = PathFindExtensionW(seleccion[1].c_str());
-            return EsExtensionDocumentoAdmitidoParaComparacion(extIzquierda) &&
-                   EsExtensionDocumentoAdmitidoParaComparacion(extDerecha) &&
-                   FamiliaDocumentoComparacionV2(extIzquierda) ==
-                       FamiliaDocumentoComparacionV2(extDerecha);
-        }
-        return true;
+        return PuedeCompararSeleccionV2(seleccion, tipoResultado);
     }
 
     static bool DebeCrearComparador(
@@ -67,37 +49,40 @@ public:
                ComparadorVideosExperimentalDisponibleV2();
     }
 
-    static std::shared_ptr<IPanelContenido> CrearVistaParaSeleccion(
+    static std::shared_ptr<IPanelContenido> CrearComparadorParaSeleccion(
         const std::vector<std::wstring>& seleccion,
-        const std::wstring& carpeta,
-        bool forzarVistaNormal = false) {
+        const std::wstring& carpeta) {
+        if (!DebeCrearComparador(seleccion)) return nullptr;
 
-        TipoVistaContenido tipo = ClasificarSeleccion(seleccion, carpeta);
-
-        if (!forzarVistaNormal && DebeCrearComparador(seleccion)) {
-            TipoVistaContenido tipoComparador{};
-            SeleccionaDosDelMismoTipo(seleccion, &tipoComparador);
-            if (tipoComparador == TipoVistaContenido::Video) {
-                return CrearVistaComparadorVideos(seleccion);
-            }
-            if (tipoComparador == TipoVistaContenido::Texto ||
-                tipoComparador == TipoVistaContenido::Codigo) {
-                auto vista = std::make_shared<VistaComparadorTextoV2>(
-                    Dependencias().comparadorTexto);
-                vista->AlCambiarSeleccion(seleccion, carpeta);
-                return vista;
-            }
-            if (tipoComparador == TipoVistaContenido::Documentos) {
-                auto vista = std::make_shared<VistaComparadorDocumentosV2>(
-                    Dependencias().comparadorDocumentos);
-                vista->AlCambiarSeleccion(seleccion, carpeta);
-                return vista;
-            }
-            auto vista = std::make_shared<VistaComparadorArchivosV2>(
-                Dependencias().comparadorArchivos);
+        TipoVistaContenido tipo{};
+        if (!SeleccionaDosDelMismoTipo(seleccion, &tipo)) return nullptr;
+        if (tipo == TipoVistaContenido::Video) {
+            return CrearVistaComparadorVideos(seleccion);
+        }
+        if (tipo == TipoVistaContenido::Texto ||
+            tipo == TipoVistaContenido::Codigo) {
+            auto vista = std::make_shared<VistaComparadorTextoV2>(
+                Dependencias().comparadorTexto);
             vista->AlCambiarSeleccion(seleccion, carpeta);
             return vista;
         }
+        if (tipo == TipoVistaContenido::Documentos) {
+            auto vista = std::make_shared<VistaComparadorDocumentosV2>(
+                Dependencias().comparadorDocumentos);
+            vista->AlCambiarSeleccion(seleccion, carpeta);
+            return vista;
+        }
+        auto vista = std::make_shared<VistaComparadorArchivosV2>(
+            Dependencias().comparadorArchivos);
+        vista->AlCambiarSeleccion(seleccion, carpeta);
+        return vista;
+    }
+
+    static std::shared_ptr<IPanelContenido> CrearVistaParaSeleccion(
+        const std::vector<std::wstring>& seleccion,
+        const std::wstring& carpeta) {
+
+        TipoVistaContenido tipo = ClasificarSeleccion(seleccion, carpeta);
 
         std::shared_ptr<IPanelContenido> vista;
 

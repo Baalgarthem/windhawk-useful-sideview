@@ -22,7 +22,7 @@ inline UINT WM_SIDEVIEW_SETTINGS = 0;
 inline std::mutex g_bloqueoEstados;
 inline std::map<HWND, EstadoPanelV2*> g_estadosPorVentana;
 
-inline bool EsComparadorArchivosActivoPorSeleccionV2(
+inline bool PuedeCompararArchivosPorSeleccionV2(
     const std::vector<std::wstring>& seleccion) {
     return FabricaVistas::DebeCrearComparador(seleccion);
 }
@@ -352,7 +352,9 @@ inline void AlternarSideView(HWND top) {
 
             // Inyectar dinámicamente la vista correspondiente mediante la Fábrica
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(archivos, carpeta);
-            estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(archivos);
+            // La selección sólo habilita el botón. El comparador se crea
+            // exclusivamente después de recibir su acción explícita.
+            estado->comparadorArchivosActivo = false;
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(estado->panel);
         } else {
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion({}, L"");
@@ -375,7 +377,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
             estado->comparadorArchivosActivo) {
             LiberarVistaContenidoV2(estado);
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
-                estado->archivosSeleccionados, estado->carpetaContenedora, true);
+                estado->archivosSeleccionados, estado->carpetaContenedora);
             estado->comparadorArchivosActivo = false;
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
             DisponerPanel(estado);
@@ -385,19 +387,11 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
         if (msg == WM_SIDEVIEW_SETTINGS) {
             if (estado->comparadorArchivosActivo &&
-                !EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
+                !PuedeCompararArchivosPorSeleccionV2(estado->archivosSeleccionados)) {
                 LiberarVistaContenidoV2(estado);
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
                 estado->comparadorArchivosActivo = false;
-                if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
-                DisponerPanel(estado);
-            } else if (!estado->comparadorArchivosActivo &&
-                       EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
-                LiberarVistaContenidoV2(estado);
-                estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
-                    estado->archivosSeleccionados, estado->carpetaContenedora);
-                estado->comparadorArchivosActivo = true;
                 if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                 DisponerPanel(estado);
             }
@@ -408,11 +402,11 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
         if (msg == WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS &&
             !estado->comparadorArchivosActivo &&
-            EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
+            PuedeCompararArchivosPorSeleccionV2(estado->archivosSeleccionados)) {
             LiberarVistaContenidoV2(estado);
-            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
+            estado->vistaContenido = FabricaVistas::CrearComparadorParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora);
-            estado->comparadorArchivosActivo = true;
+            estado->comparadorArchivosActivo = estado->vistaContenido != nullptr;
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
             DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -478,7 +472,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
                         const bool mantenerComparador =
                             estado->comparadorArchivosActivo &&
-                            EsComparadorArchivosActivoPorSeleccionV2(seleccion);
+                            PuedeCompararArchivosPorSeleccionV2(seleccion);
 
                         // Si el comparador sigue recibiendo exactamente dos
                         // videos, sólo renueva sus fuentes; no desmonta la UX.
@@ -486,12 +480,10 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                             estado->vistaContenido->AlCambiarSeleccion(seleccion, carpeta);
                         } else if (estado->comparadorArchivosActivo ||
                                    tipoPrevio != tipoNuevo ||
-                                   EsComparadorArchivosActivoPorSeleccionV2(seleccion) !=
-                                       estado->comparadorArchivosActivo ||
                                    !estado->vistaContenido) {
                             LiberarVistaContenidoV2(estado);
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
-                            estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(seleccion);
+                            estado->comparadorArchivosActivo = false;
                             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                             DisponerPanel(estado);
                         } else {

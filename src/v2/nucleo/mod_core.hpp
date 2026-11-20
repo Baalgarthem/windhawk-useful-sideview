@@ -74,6 +74,15 @@ inline void CargarConfiguracionesV2() {
     int limite = Wh_GetIntSetting(L"limiteCarpetasPesadas");
     g_limiteCarpetasPesadasConfig.store(std::max(1, std::min(limite, 100)));
     g_mostrarNumerosLineaV2.store(Wh_GetIntSetting(L"mostrarNumerosLinea") != 0);
+    g_tamanoFuenteTextoV2.store(
+        NormalizarTamanoFuenteV2(Wh_GetIntSetting(L"tamanoFuenteTexto")),
+        std::memory_order_release);
+    g_tamanoFuenteCodigoV2.store(
+        NormalizarTamanoFuenteV2(Wh_GetIntSetting(L"tamanoFuenteCodigo")),
+        std::memory_order_release);
+    g_ajusteLineaTextoCodigoV2.store(
+        Wh_GetIntSetting(L"ajusteLineaTextoCodigo") != 0,
+        std::memory_order_release);
     g_comparadorVideosExperimentalV2.store(
         Wh_GetIntSetting(L"comparadorVideosExperimental") != 0,
         std::memory_order_release);

@@ -2,6 +2,7 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
+#include "v2/nucleo/enrutador_vistas.hpp"
 #include <windowsx.h>
 
 namespace SideViewV2 {
@@ -20,7 +21,7 @@ public:
         if (msg != WM_LBUTTONDOWN) return false;
         POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
         if (!PtInRect(&m_rcComparar, punto)) return false;
-        if (m_archivos.size() == 2) {
+        if (PuedeCompararSeleccionV2(m_archivos)) {
             PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
         }
         return true;
@@ -144,11 +145,12 @@ public:
 
         m_rcComparar = {rcTarjeta.right - 158, rcTarjeta.bottom - 42,
                         rcTarjeta.right - 16, rcTarjeta.bottom - 14};
-        HBRUSH fondoComparar = CreateSolidBrush(m_archivos.size() == 2
+        const bool puedeComparar = PuedeCompararSeleccionV2(m_archivos);
+        HBRUSH fondoComparar = CreateSolidBrush(puedeComparar
             ? tema.botonFondo : tema.fondoCabecera);
         FillRect(hdc, &m_rcComparar, fondoComparar);
         DeleteObject(fondoComparar);
-        SetTextColor(hdc, m_archivos.size() == 2
+        SetTextColor(hdc, puedeComparar
             ? tema.textoPrincipal : tema.textoSecundario);
         DrawTextW(hdc, L"Comparar archivos", -1, &m_rcComparar,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);

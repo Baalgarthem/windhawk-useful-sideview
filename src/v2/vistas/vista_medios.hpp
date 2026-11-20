@@ -1,6 +1,7 @@
 #pragma once
 
 #include "v2/ui/panel_interfaz.hpp"
+#include "v2/nucleo/enrutador_vistas.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include <windows.h>
 #include <windowsx.h>
@@ -52,7 +53,7 @@ protected:
             m_abrirCon->Ejecutar({m_archivos[m_indice]}); return true;
         }
         if (MostrarComparador() && PtInRect(&m_rcComparar, pt)) {
-            if (m_archivos.size() == 2) {
+            if (PuedeCompararSeleccionV2(m_archivos)) {
                 PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
             }
             return true;
@@ -79,7 +80,7 @@ protected:
         DibujarBotonMediaV2(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
         if (MostrarComparador()) {
             DibujarBotonMediaV2(hdc, m_rcComparar, L"Comparar", tema,
-                                m_archivos.size() == 2);
+                                PuedeCompararSeleccionV2(m_archivos));
         }
         DibujarBotonMediaV2(hdc, m_rcAbrirCon, L"Abrir con", tema);
     }

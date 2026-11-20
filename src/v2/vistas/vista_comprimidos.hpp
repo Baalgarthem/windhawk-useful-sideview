@@ -2,6 +2,7 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
+#include "v2/nucleo/enrutador_vistas.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include <windows.h>
 #include <string>
@@ -66,7 +67,7 @@ public:
                 return true;
             }
             if (PtInRect(&m_rcBotonComparar, pt)) {
-                if (m_archivos.size() == 2) {
+                if (PuedeCompararSeleccionV2(m_archivos)) {
                     PostMessageW(hwndPanel, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
                 }
                 return true;
@@ -180,7 +181,7 @@ public:
         m_rcBotonComparar = {rect.left + margen, yComparar,
                              rect.left + margen + 126, yComparar + altoBotones};
         DibujarBoton(hdc, m_rcBotonComparar, L"Comparar archivos", tema,
-                     m_archivos.size() == 2);
+                     PuedeCompararSeleccionV2(m_archivos));
 
         // Área de Contenido: Árbol de archivos comprimidos
         int topLista = yBarra + altoBotones + 14;

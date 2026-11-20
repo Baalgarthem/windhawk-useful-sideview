@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.2
+// @version         4.1.3
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -24,6 +24,15 @@
 - mostrarNumerosLinea: true
   $name: Mostrar números de línea en texto y código
   $description: Activa o desactiva la numeración de líneas en las vistas de texto, Markdown y código.
+- tamanoFuenteTexto: 10
+  $name: Tamaño de letra para texto y Markdown
+  $description: Tamaño compacto en píxeles para evitar desbordamientos. Se limita automáticamente entre 8 y 18.
+- tamanoFuenteCodigo: 10
+  $name: Tamaño de letra para código
+  $description: Tamaño compacto en píxeles para archivos de programación. Se limita automáticamente entre 8 y 18.
+- ajusteLineaTextoCodigo: true
+  $name: Ajuste de línea (text wrapping)
+  $description: Ajusta las líneas largas al ancho disponible en las vistas de texto, Markdown y código.
 - comparadorVideosExperimental: true
   $name: Comparador de videos (experimental)
   $description: >-
@@ -54,7 +63,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.2)
+# Useful Side View V2 (4.1.3)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.

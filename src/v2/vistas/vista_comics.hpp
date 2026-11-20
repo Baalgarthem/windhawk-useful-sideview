@@ -2,6 +2,7 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
+#include "v2/nucleo/enrutador_vistas.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include <windows.h>
 #include <windowsx.h>
@@ -48,7 +49,7 @@ public:
             MostrarMenuExtensiones(hwnd); return true;
         }
         if (PtInRect(&m_rcComparar, pt)) {
-            if (m_archivos.size() == 2) {
+            if (PuedeCompararSeleccionV2(m_archivos)) {
                 PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
             }
             return true;
@@ -87,7 +88,7 @@ public:
         DibujarBoton(hdc, m_rcCambiarExtension, L"Cambiar extensión", tema, true);
         m_rcComparar = {rect.right - 296, yBoton, rect.right - 178, yBoton + 30};
         DibujarBoton(hdc, m_rcComparar, L"Comparar archivos", tema,
-                     m_archivos.size() == 2);
+                     PuedeCompararSeleccionV2(m_archivos));
 
         // Contenedor cuadrado con grid fijo 2x2. Evita que los covers se
         // conviertan en una fila horizontal y mantiene una composición
