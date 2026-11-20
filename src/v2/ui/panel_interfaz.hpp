@@ -26,6 +26,7 @@ public:
     // Montaje opcional de superficies/recursos inyectados después de crear el panel.
     virtual void AlActivar(HWND) {}
     virtual void ActualizarConfiguracion() {}
+    virtual void AlCambiarPantallaCompletaPanel(bool) {}
 
     // Manejo de eventos de ratón/teclado en el panel (retornan true si consumieron el evento)
     virtual bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) { return false; }

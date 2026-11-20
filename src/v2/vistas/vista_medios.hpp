@@ -195,20 +195,40 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
         HWND panel = m_panel;
+        const bool panelPantallaCompleta = m_panelPantallaCompleta;
         Liberar();
         m_panel = panel;
+        m_panelPantallaCompleta = panelPantallaCompleta;
         m_archivos = archivos;
         m_indice = 0;
         CargarActual();
     }
     void ActualizarConfiguracion() override {
-        const bool debeUsarReproductor = ReproductorVideoEnVistaDisponibleV2();
+        const bool debeUsarReproductor = DebeUsarReproductor();
         if (debeUsarReproductor == (m_reproductor != nullptr)) return;
         DesmontarReproductor();
         ReemplazarPreview(nullptr);
         CargarActual();
     }
-    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    void AlCambiarPantallaCompletaPanel(bool pantallaCompleta) override {
+        if (m_panelPantallaCompleta == pantallaCompleta) return;
+        m_panelPantallaCompleta = pantallaCompleta;
+        const bool debeUsarReproductor = DebeUsarReproductor();
+        if (debeUsarReproductor == (m_reproductor != nullptr)) return;
+        DesmontarReproductor();
+        ReemplazarPreview(nullptr);
+        CargarActual();
+    }
+    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override {
+        if (m == WM_LBUTTONDOWN) {
+            POINT punto{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+            if (PtInRect(&m_rcPantallaCompleta, punto)) {
+                PostMessageW(h, WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN, 0, 0);
+                return true;
+            }
+        }
+        return ProcesarNavegacion(m, w, l, h);
+    }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
         HBRUSH b = CreateSolidBrush(tema.fondo);
@@ -219,10 +239,14 @@ public:
             ? L"Sin videos" : PathFindFileNameW(m_archivos[m_indice].c_str());
         DibujarCabecera(
             hdc, rect, tema,
-            ReproductorVideoEnVistaDisponibleV2()
+            DebeUsarReproductor()
                 ? L"🎬 Videos · Reproductor"
                 : L"🎬 Videos · Vista previa",
             nombre);
+
+        m_rcPantallaCompleta = {m_rcSiguiente.right + 6, m_rcSiguiente.top,
+                                m_rcSiguiente.right + 42, m_rcSiguiente.bottom};
+        DibujarBotonMediaV2(hdc, m_rcPantallaCompleta, L"⛶", tema, true);
 
         const RECT contenedor{rect.left + 16, rect.top + 118,
                               rect.right - 16, rect.bottom - 16};
@@ -241,6 +265,8 @@ public:
         DesmontarReproductor();
         VistaMediaV2::Liberar();
         m_panel = nullptr;
+        m_panelPantallaCompleta = false;
+        m_rcPantallaCompleta = {};
     }
 
 private:
@@ -251,7 +277,7 @@ private:
             return;
         }
 
-        if (ReproductorVideoEnVistaDisponibleV2() && MontarReproductorActual()) {
+        if (DebeUsarReproductor() && MontarReproductorActual()) {
             ReemplazarPreview(nullptr);
             return;
         }
@@ -274,6 +300,10 @@ private:
         return true;
     }
 
+    bool DebeUsarReproductor() const {
+        return ReproductorVideoEnVistaDisponibleV2() || m_panelPantallaCompleta;
+    }
+
     void DesmontarReproductor() {
         if (m_reproductor) {
             m_reproductor->Liberar();
@@ -282,6 +312,8 @@ private:
     }
 
     HWND m_panel{nullptr};
+    bool m_panelPantallaCompleta{false};
+    RECT m_rcPantallaCompleta{};
     std::shared_ptr<ServicioReproductorVideoV2> m_servicioReproductor;
     std::unique_ptr<IReproductorVideoV2> m_reproductor;
 };

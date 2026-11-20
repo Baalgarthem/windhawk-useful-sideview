@@ -404,6 +404,8 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
         if (msg == WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN) {
             estado->panelPantallaCompleta = !estado->panelPantallaCompleta;
+            estado->vistaContenido->AlCambiarPantallaCompletaPanel(
+                estado->panelPantallaCompleta);
             DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;

@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.5
+// @version         4.1.6
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -69,7 +69,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.5)
+# Useful Side View V2 (4.1.6)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -190,6 +190,7 @@ public:
     // Montaje opcional de superficies/recursos inyectados después de crear el panel.
     virtual void AlActivar(HWND) {}
     virtual void ActualizarConfiguracion() {}
+    virtual void AlCambiarPantallaCompletaPanel(bool) {}
 
     // Manejo de eventos de ratón/teclado en el panel (retornan true si consumieron el evento)
     virtual bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) { return false; }
@@ -2849,7 +2850,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.5";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.6";
 
 class ServicioVersionModV2 final {
 public:
@@ -6057,20 +6058,40 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
         HWND panel = m_panel;
+        const bool panelPantallaCompleta = m_panelPantallaCompleta;
         Liberar();
         m_panel = panel;
+        m_panelPantallaCompleta = panelPantallaCompleta;
         m_archivos = archivos;
         m_indice = 0;
         CargarActual();
     }
     void ActualizarConfiguracion() override {
-        const bool debeUsarReproductor = ReproductorVideoEnVistaDisponibleV2();
+        const bool debeUsarReproductor = DebeUsarReproductor();
         if (debeUsarReproductor == (m_reproductor != nullptr)) return;
         DesmontarReproductor();
         ReemplazarPreview(nullptr);
         CargarActual();
     }
-    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    void AlCambiarPantallaCompletaPanel(bool pantallaCompleta) override {
+        if (m_panelPantallaCompleta == pantallaCompleta) return;
+        m_panelPantallaCompleta = pantallaCompleta;
+        const bool debeUsarReproductor = DebeUsarReproductor();
+        if (debeUsarReproductor == (m_reproductor != nullptr)) return;
+        DesmontarReproductor();
+        ReemplazarPreview(nullptr);
+        CargarActual();
+    }
+    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override {
+        if (m == WM_LBUTTONDOWN) {
+            POINT punto{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+            if (PtInRect(&m_rcPantallaCompleta, punto)) {
+                PostMessageW(h, WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN, 0, 0);
+                return true;
+            }
+        }
+        return ProcesarNavegacion(m, w, l, h);
+    }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
         HBRUSH b = CreateSolidBrush(tema.fondo);
@@ -6081,10 +6102,14 @@ public:
             ? L"Sin videos" : PathFindFileNameW(m_archivos[m_indice].c_str());
         DibujarCabecera(
             hdc, rect, tema,
-            ReproductorVideoEnVistaDisponibleV2()
+            DebeUsarReproductor()
                 ? L"🎬 Videos · Reproductor"
                 : L"🎬 Videos · Vista previa",
             nombre);
+
+        m_rcPantallaCompleta = {m_rcSiguiente.right + 6, m_rcSiguiente.top,
+                                m_rcSiguiente.right + 42, m_rcSiguiente.bottom};
+        DibujarBotonMediaV2(hdc, m_rcPantallaCompleta, L"⛶", tema, true);
 
         const RECT contenedor{rect.left + 16, rect.top + 118,
                               rect.right - 16, rect.bottom - 16};
@@ -6103,6 +6128,8 @@ public:
         DesmontarReproductor();
         VistaMediaV2::Liberar();
         m_panel = nullptr;
+        m_panelPantallaCompleta = false;
+        m_rcPantallaCompleta = {};
     }
 
 private:
@@ -6113,7 +6140,7 @@ private:
             return;
         }
 
-        if (ReproductorVideoEnVistaDisponibleV2() && MontarReproductorActual()) {
+        if (DebeUsarReproductor() && MontarReproductorActual()) {
             ReemplazarPreview(nullptr);
             return;
         }
@@ -6136,6 +6163,10 @@ private:
         return true;
     }
 
+    bool DebeUsarReproductor() const {
+        return ReproductorVideoEnVistaDisponibleV2() || m_panelPantallaCompleta;
+    }
+
     void DesmontarReproductor() {
         if (m_reproductor) {
             m_reproductor->Liberar();
@@ -6144,6 +6175,8 @@ private:
     }
 
     HWND m_panel{nullptr};
+    bool m_panelPantallaCompleta{false};
+    RECT m_rcPantallaCompleta{};
     std::shared_ptr<ServicioReproductorVideoV2> m_servicioReproductor;
     std::unique_ptr<IReproductorVideoV2> m_reproductor;
 };
@@ -8853,6 +8886,8 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
 
         if (msg == WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN) {
             estado->panelPantallaCompleta = !estado->panelPantallaCompleta;
+            estado->vistaContenido->AlCambiarPantallaCompletaPanel(
+                estado->panelPantallaCompleta);
             DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
