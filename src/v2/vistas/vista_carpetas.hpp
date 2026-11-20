@@ -4,7 +4,6 @@
 #include "v2/ui/ventana_base.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include "v2/nucleo/servicio_com.hpp"
-#include "v2/nucleo/configuracion_v2.hpp"
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -112,12 +111,11 @@ public:
     explicit VistaCarpetas(std::shared_ptr<ServicioAbrirConV2> servicio,
                            std::shared_ptr<ServicioNavegacionV2> navegacion,
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
-                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
-                           std::shared_ptr<ServicioComparadorVideosV2> comparadorVideos)
+                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
-          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
-          m_comparadorVideos(std::move(comparadorVideos)) {
-        m_programasRecordados = m_servicio->Programas();
+          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)) {
+        m_programasRecordados = m_servicio ? m_servicio->Programas()
+                                           : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
     }
 
@@ -235,15 +233,10 @@ public:
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
             }
-            // El comparador sólo se expone en la vista general, sin carpetas
-            // seleccionadas. El flujo real queda aislado detrás del servicio.
+            // El acceso permanece visible en la vista general, pero el
+            // comparador sólo se activa al seleccionar exactamente dos videos.
             if (m_carpetasSeleccionadas.empty() &&
-                PtInRect(&m_rcBotonCompararVideos, pt) &&
-                ComparadorVideosExperimentalDisponibleV2()) {
-                if (m_comparadorVideos &&
-                    !m_comparadorVideos->CrearFlujoSimulado().izquierda.nombre.empty()) {
-                    PostMessageW(hwndPanel, WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS, 0, 0);
-                }
+                PtInRect(&m_rcBotonCompararVideos, pt)) {
                 return true;
             }
             // Botón Fusionar Carpetas (si hay múltiples seleccionadas)
@@ -493,14 +486,13 @@ public:
 
         yCursor += 38;
 
-        // Activador experimental: sólo existe en el estado general de
-        // carpetas. Al desactivarlo desaparece también su zona de interacción.
-        if (m_carpetasSeleccionadas.empty() &&
-            ComparadorVideosExperimentalDisponibleV2()) {
+        // Acceso fijo del comparador experimental. El flujo real se activa
+        // automáticamente cuando Explorer entrega dos videos seleccionados.
+        if (m_carpetasSeleccionadas.empty()) {
             m_rcBotonCompararVideos = {rect.left + margen, yCursor,
                                        rect.right - margen, yCursor + 32};
             DibujarBoton(hdc, m_rcBotonCompararVideos,
-                         L"Comparador de videos · experimental", tema, true);
+                         L"Comparador de videos · selecciona 2 videos", tema, false);
             yCursor += 40;
         }
 
@@ -893,7 +885,6 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
-    std::shared_ptr<ServicioComparadorVideosV2> m_comparadorVideos;
     bool m_fusionEnCurso{false};
     std::wstring m_destinoFusion;
 

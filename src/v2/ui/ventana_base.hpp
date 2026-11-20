@@ -42,7 +42,7 @@ struct EstadoPanelV2 {
     RECT viewOriginal{};        // Coordenadas completas de la vista antes de reflow
     RECT parentCliente{};       // Tamaño cliente del contenedor
     bool abierto{false};
-    bool comparadorVideosActivo{false};
+    bool comparadorArchivosActivo{false};
     std::atomic_bool destruyendo{false};
     int anchoDIP{380};          // Ancho por defecto en DIP
 

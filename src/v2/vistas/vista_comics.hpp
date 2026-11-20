@@ -47,6 +47,12 @@ public:
         if (PtInRect(&m_rcCambiarExtension, pt)) {
             MostrarMenuExtensiones(hwnd); return true;
         }
+        if (PtInRect(&m_rcComparar, pt)) {
+            if (m_archivos.size() == 2) {
+                PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+            }
+            return true;
+        }
         return false;
     }
 
@@ -79,6 +85,9 @@ public:
         DibujarBoton(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
         m_rcCambiarExtension = {rect.right - 170, yBoton, rect.right - 16, yBoton + 30};
         DibujarBoton(hdc, m_rcCambiarExtension, L"Cambiar extensión", tema, true);
+        m_rcComparar = {rect.right - 296, yBoton, rect.right - 178, yBoton + 30};
+        DibujarBoton(hdc, m_rcComparar, L"Comparar archivos", tema,
+                     m_archivos.size() == 2);
 
         // Contenedor cuadrado con grid fijo 2x2. Evita que los covers se
         // conviertan en una fila horizontal y mantiene una composición
@@ -197,6 +206,6 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioPrevisualizacionMediaV2> m_previsualizacion;
     size_t m_indice{0};
-    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcCambiarExtension{};
+    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcCambiarExtension{}, m_rcComparar{};
 };
 }

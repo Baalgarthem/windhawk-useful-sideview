@@ -3,6 +3,7 @@
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/nucleo/configuracion_v2.hpp"
 #include "v2/nucleo/servicio_comparador_videos.hpp"
+#include "v2/vistas/vista_comparador_archivos.hpp"
 #include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -12,15 +13,16 @@
 
 namespace SideViewV2 {
 
-class VistaComparadorVideos final : public IPanelContenido {
+class VistaComparadorVideos final : public VistaComparadorArchivosV2 {
 public:
     explicit VistaComparadorVideos(std::shared_ptr<ServicioComparadorVideosV2> servicio)
-        : m_servicio(std::move(servicio)) {}
+        : VistaComparadorArchivosV2(servicio), m_servicio(std::move(servicio)) {}
 
     ~VistaComparadorVideos() override { Liberar(); }
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
+        CargarComparacionComun(archivos);
         LiberarReproductores();
         m_estado = m_servicio ? m_servicio->CrearFlujo(archivos)
                                : EstadoComparadorVideosV2{};
@@ -97,7 +99,7 @@ public:
         SetFocus(hwndPanel);
 
         if (PtInRect(&m_rcVolver, punto)) {
-            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS, 0, 0);
+            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
             return true;
         }
         if (ComparadorVideosPantallaCompletaDisponibleV2()) {
@@ -233,7 +235,7 @@ public:
 
         const int yInfo = yBotones + 46;
         RECT info{rect.left + margen, yInfo, rect.right - margen,
-                  std::max(yInfo + 116, static_cast<int>(rect.bottom - margen))};
+                  std::max(yInfo + 148, static_cast<int>(rect.bottom - margen))};
         DibujarContenedor(hdc, info, tema);
         SelectObject(hdc, negrita);
         SetTextColor(hdc, tema.textoPrincipal);
@@ -252,6 +254,19 @@ public:
                 m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
         DrawTextW(hdc, diferenciaTexto.c_str(), -1, &diferencia,
                   DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT hashIzquierda{info.left + 12, info.top + 124,
+                           info.left + (info.right - info.left) / 2 - 12,
+                           info.top + 144};
+        RECT hashDerecha{info.left + (info.right - info.left) / 2 + 12,
+                         info.top + 124, info.right - 12, info.top + 144};
+        std::wstring shaIzquierda = L"SHA-256: " + m_estado.izquierda.sha256;
+        std::wstring shaDerecha = L"SHA-256: " + m_estado.derecha.sha256;
+        DrawTextW(hdc, shaIzquierda.c_str(), -1, &hashIzquierda,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        DrawTextW(hdc, shaDerecha.c_str(), -1, &hashDerecha,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         SetTextColor(hdc, tema.textoSecundario);
         RECT mensaje{info.left + 12, info.top + 34,

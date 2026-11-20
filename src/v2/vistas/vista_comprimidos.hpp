@@ -65,6 +65,12 @@ public:
                 EjecutarAbrirCon(hwndPanel);
                 return true;
             }
+            if (PtInRect(&m_rcBotonComparar, pt)) {
+                if (m_archivos.size() == 2) {
+                    PostMessageW(hwndPanel, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+                }
+                return true;
+            }
             // Botón Desplegable Formatos
             if (PtInRect(&m_rcBotonDesplegableFormato, pt)) {
                 MostrarMenuFormatos(hwndPanel);
@@ -170,9 +176,15 @@ public:
         etiqueta += programa.empty() ? L"(click para seleccionar programa) ▾" : PathFindFileNameW(programa.c_str());
         DibujarBoton(hdc, m_rcBotonAbrirCon, etiqueta.c_str(), tema, true);
 
+        int yComparar = yAbrir - altoBotones - 8;
+        m_rcBotonComparar = {rect.left + margen, yComparar,
+                             rect.left + margen + 126, yComparar + altoBotones};
+        DibujarBoton(hdc, m_rcBotonComparar, L"Comparar archivos", tema,
+                     m_archivos.size() == 2);
+
         // Área de Contenido: Árbol de archivos comprimidos
         int topLista = yBarra + altoBotones + 14;
-        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yAbrir - 12};
+        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yComparar - 12};
         DibujarContenedor(hdc, rcContenedorLista, tema);
 
         // Header de la lista
@@ -333,6 +345,7 @@ private:
     RECT m_rcBotonAbrirCon{};
     RECT m_rcBotonDesplegableFormato{};
     RECT m_rcBotonCambiarExtension{};
+    RECT m_rcBotonComparar{};
 };
 
 } // namespace SideViewV2

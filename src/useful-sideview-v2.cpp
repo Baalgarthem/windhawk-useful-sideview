@@ -2,11 +2,11 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.0.0
+// @version         4.0.1
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lmfplat -lmfreadwrite -lmfuuid
+// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lbcrypt -lmfplat -lmfreadwrite -lmfuuid
 // @license         MIT
 // ==/WindhawkMod==
 
@@ -27,8 +27,8 @@
 - comparadorVideosExperimental: true
   $name: Comparador de videos (experimental)
   $description: >-
-    Activa el comparador de videos y su reproductor Media Foundation en la vista general de carpetas.
-    Si aún no hay dos videos seleccionados, se muestra el flujo visual de preparación.
+    Activa el comparador de videos y su reproductor Media Foundation. Sólo se abre
+    al seleccionar exactamente dos videos del mismo tipo.
 - comparadorVideosPantallaCompleta: true
   $name: Pantalla completa y PiP del comparador
   $description: >-
@@ -49,7 +49,9 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Suite Funcional de Comprimidos & Cómics**: Portadas, árbol de archivos, navegación anterior/siguiente, "Abrir con" y selector de conversión.
 - **Suite Funcional de Inspección de Carpetas**: Árbol jerárquico recursivo, cálculo de peso, Top 4 subcarpetas pesadas, enlaces simbólicos, copia de estructura y limpieza de carpetas vacías.
 - **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
-- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes.
+- **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
+- **Comparador de texto**: Diff clásico de dos columnas, estilo GitHub, con navegación y metadatos comunes.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 */
 // ==/WindhawkModReadme==
 

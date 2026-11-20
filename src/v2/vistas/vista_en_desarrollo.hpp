@@ -2,6 +2,7 @@
 
 #include "v2/ui/panel_interfaz.hpp"
 #include "v2/ui/ventana_base.hpp"
+#include <windowsx.h>
 
 namespace SideViewV2 {
 
@@ -13,6 +14,16 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
         m_archivos = archivos;
         m_carpeta = carpeta;
+    }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam, HWND hwnd) override {
+        if (msg != WM_LBUTTONDOWN) return false;
+        POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (!PtInRect(&m_rcComparar, punto)) return false;
+        if (m_archivos.size() == 2) {
+            PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+        }
+        return true;
     }
 
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
@@ -76,7 +87,7 @@ public:
         // Tarjeta Central informativa
         int margen = 20;
         int topTarjeta = rect.top + altoCabecera + 24;
-        RECT rcTarjeta{rect.left + margen, topTarjeta, rect.right - margen, topTarjeta + 220};
+        RECT rcTarjeta{rect.left + margen, topTarjeta, rect.right - margen, topTarjeta + 260};
 
         HBRUSH brTarjeta = CreateSolidBrush(tema.fondoTarjeta);
         FillRect(hdc, &rcTarjeta, brTarjeta);
@@ -128,8 +139,19 @@ public:
         } else {
             infoSeleccion = L"Selección múltiple: " + std::to_wstring(m_archivos.size()) + L" elementos";
         }
-        RECT rcModSel{rcTarjeta.left + 16, rcTarjeta.top + 180, rcTarjeta.right - 16, rcTarjeta.bottom - 10};
+        RECT rcModSel{rcTarjeta.left + 16, rcTarjeta.top + 180, rcTarjeta.right - 176, rcTarjeta.bottom - 48};
         DrawTextW(hdc, infoSeleccion.c_str(), -1, &rcModSel, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        m_rcComparar = {rcTarjeta.right - 158, rcTarjeta.bottom - 42,
+                        rcTarjeta.right - 16, rcTarjeta.bottom - 14};
+        HBRUSH fondoComparar = CreateSolidBrush(m_archivos.size() == 2
+            ? tema.botonFondo : tema.fondoCabecera);
+        FillRect(hdc, &m_rcComparar, fondoComparar);
+        DeleteObject(fondoComparar);
+        SetTextColor(hdc, m_archivos.size() == 2
+            ? tema.textoPrincipal : tema.textoSecundario);
+        DrawTextW(hdc, L"Comparar archivos", -1, &m_rcComparar,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         SelectObject(hdc, fuenteVieja);
         DeleteObject(fuenteTitulo);
@@ -144,6 +166,7 @@ private:
     std::wstring m_descripcion;
     std::vector<std::wstring> m_archivos;
     std::wstring m_carpeta;
+    RECT m_rcComparar{};
 };
 
 } // namespace SideViewV2

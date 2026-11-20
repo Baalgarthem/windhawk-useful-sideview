@@ -3,11 +3,11 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.0.0
+// @version         4.0.1
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
-// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lmfplat -lmfreadwrite -lmfuuid
+// @compilerOptions -lole32 -loleaut32 -lshell32 -luser32 -lgdi32 -lcomctl32 -luuid -luxtheme -ldwmapi -lwindowscodecs -lmsimg32 -lshlwapi -ladvapi32 -lcomdlg32 -lbcrypt -lmfplat -lmfreadwrite -lmfuuid
 // @license         MIT
 // ==/WindhawkMod==
 
@@ -28,8 +28,8 @@
 - comparadorVideosExperimental: true
   $name: Comparador de videos (experimental)
   $description: >-
-    Activa el comparador de videos y su reproductor Media Foundation en la vista general de carpetas.
-    Si aún no hay dos videos seleccionados, se muestra el flujo visual de preparación.
+    Activa el comparador de videos y su reproductor Media Foundation. Sólo se abre
+    al seleccionar exactamente dos videos del mismo tipo.
 - comparadorVideosPantallaCompleta: true
   $name: Pantalla completa y PiP del comparador
   $description: >-
@@ -50,7 +50,9 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Suite Funcional de Comprimidos & Cómics**: Portadas, árbol de archivos, navegación anterior/siguiente, "Abrir con" y selector de conversión.
 - **Suite Funcional de Inspección de Carpetas**: Árbol jerárquico recursivo, cálculo de peso, Top 4 subcarpetas pesadas, enlaces simbólicos, copia de estructura y limpieza de carpetas vacías.
 - **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
-- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes.
+- **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
+- **Comparador de texto**: Diff clásico de dos columnas, estilo GitHub, con navegación y metadatos comunes.
+- **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 */
 // ==/WindhawkModReadme==
 
@@ -135,11 +137,11 @@ inline TemaVisual ObtenerTemaActual() {
 
 namespace SideViewV2 {
 
-inline constexpr UINT WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS = WM_APP + 0x4A2;
-inline constexpr UINT WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS = WM_APP + 0x4A3;
+inline constexpr UINT WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS = WM_APP + 0x4A3;
 inline constexpr UINT WM_SIDEVIEW_VIDEO_EVENT_V2 = WM_APP + 0x4A4;
 inline constexpr UINT WM_SIDEVIEW_COMPARADOR_TICK = WM_APP + 0x4A5;
 inline constexpr UINT WM_SIDEVIEW_COMPARADOR_PIP_CLICK = WM_APP + 0x4A6;
+inline constexpr UINT WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS = WM_APP + 0x4A7;
 
 class IPanelContenido {
 public:
@@ -209,7 +211,7 @@ struct EstadoPanelV2 {
     RECT viewOriginal{};        // Coordenadas completas de la vista antes de reflow
     RECT parentCliente{};       // Tamaño cliente del contenedor
     bool abierto{false};
-    bool comparadorVideosActivo{false};
+    bool comparadorArchivosActivo{false};
     std::atomic_bool destruyendo{false};
     int anchoDIP{380};          // Ancho por defecto en DIP
 
@@ -1491,6 +1493,154 @@ private:
 /**** ended inlining v2/nucleo/servicio_inspeccion_carpetas.hpp ****/
 /**** start inlining v2/nucleo/servicio_comparador_videos.hpp ****/
 
+/**** start inlining v2/nucleo/servicio_comparador_archivos.hpp ****/
+
+#include <windows.h>
+#include <bcrypt.h>
+#include <shlwapi.h>
+#include <algorithm>
+#include <cstdint>
+#include <iomanip>
+#include <sstream>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
+
+struct DatosArchivoComparacionV2 {
+    std::wstring ruta;
+    std::wstring nombre;
+    std::wstring extension;
+    std::wstring fps{L"Pendiente"};
+    std::uintmax_t bytes{0};
+    std::wstring sha256{L"No disponible"};
+};
+
+struct EstadoComparadorArchivosV2 {
+    DatosArchivoComparacionV2 izquierda;
+    DatosArchivoComparacionV2 derecha;
+    std::wstring mensaje{L"Comparación general de archivos."};
+};
+
+class ServicioComparadorArchivosV2 {
+public:
+    virtual ~ServicioComparadorArchivosV2() = default;
+
+    virtual EstadoComparadorArchivosV2 CrearComparacion(
+        const std::vector<std::wstring>& seleccion) const {
+        EstadoComparadorArchivosV2 estado;
+        if (seleccion.size() != 2) {
+            estado.mensaje = L"Se requieren exactamente dos archivos del mismo tipo.";
+            return estado;
+        }
+        estado.izquierda = LeerDatos(seleccion[0]);
+        estado.derecha = LeerDatos(seleccion[1]);
+        estado.mensaje = L"Comparación general lista.";
+        return estado;
+    }
+
+    std::wstring FormatearTamano(std::uintmax_t bytes) const {
+        static constexpr const wchar_t* unidades[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
+        double valor = static_cast<double>(bytes);
+        std::size_t unidad = 0;
+        constexpr std::size_t cantidad = sizeof(unidades) / sizeof(unidades[0]);
+        while (valor >= 1024.0 && unidad + 1 < cantidad) {
+            valor /= 1024.0;
+            ++unidad;
+        }
+        std::wostringstream salida;
+        salida << std::fixed << std::setprecision(
+            unidad == 0 ? 0 : valor < 10.0 ? 2 : 1)
+               << valor << L" " << unidades[unidad];
+        return salida.str();
+    }
+
+    std::wstring FormatearDiferencia(std::uintmax_t izquierda,
+                                     std::uintmax_t derecha) const {
+        const bool negativa = derecha < izquierda;
+        const std::uintmax_t magnitud = negativa ? izquierda - derecha : derecha - izquierda;
+        return std::wstring(negativa ? L"-" : L"+") + FormatearTamano(magnitud);
+    }
+
+protected:
+    static DatosArchivoComparacionV2 LeerDatos(const std::wstring& ruta) {
+        DatosArchivoComparacionV2 datos;
+        datos.ruta = ruta;
+        const wchar_t* nombre = PathFindFileNameW(ruta.c_str());
+        datos.nombre = (nombre && *nombre) ? nombre : L"Archivo";
+        const wchar_t* extension = PathFindExtensionW(ruta.c_str());
+        datos.extension = extension ? extension : L"";
+
+        WIN32_FILE_ATTRIBUTE_DATA atributos{};
+        if (GetFileAttributesExW(ruta.c_str(), GetFileExInfoStandard, &atributos)) {
+            ULARGE_INTEGER tamano{};
+            tamano.HighPart = atributos.nFileSizeHigh;
+            tamano.LowPart = atributos.nFileSizeLow;
+            datos.bytes = static_cast<std::uintmax_t>(tamano.QuadPart);
+        }
+        datos.sha256 = CalcularSha256(ruta);
+        return datos;
+    }
+
+private:
+    static std::wstring CalcularSha256(const std::wstring& ruta) {
+        HANDLE archivo = CreateFileW(ruta.c_str(), GENERIC_READ,
+                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                     nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (archivo == INVALID_HANDLE_VALUE) return L"No disponible";
+
+        BCRYPT_ALG_HANDLE algoritmo = nullptr;
+        BCRYPT_HASH_HANDLE hash = nullptr;
+        PUCHAR objeto = nullptr;
+        std::wstring resultado = L"No disponible";
+        do {
+            if (BCryptOpenAlgorithmProvider(&algoritmo, BCRYPT_SHA256_ALGORITHM,
+                                            nullptr, 0) != 0) break;
+            DWORD tamanoObjeto = 0;
+            DWORD bytesResultado = 0;
+            if (BCryptGetProperty(algoritmo, BCRYPT_OBJECT_LENGTH,
+                                  reinterpret_cast<PUCHAR>(&tamanoObjeto),
+                                  sizeof(tamanoObjeto), &bytesResultado, 0) != 0 ||
+                tamanoObjeto == 0) break;
+            objeto = static_cast<PUCHAR>(HeapAlloc(GetProcessHeap(), 0, tamanoObjeto));
+            if (!objeto || BCryptCreateHash(algoritmo, &hash, objeto, tamanoObjeto,
+                                            nullptr, 0, 0) != 0) break;
+
+            std::vector<BYTE> buffer(1024 * 1024);
+            bool lecturaValida = true;
+            for (;;) {
+                DWORD leidos = 0;
+                if (!ReadFile(archivo, buffer.data(), static_cast<DWORD>(buffer.size()),
+                              &leidos, nullptr)) {
+                    lecturaValida = false;
+                    break;
+                }
+                if (leidos == 0) break;
+                if (BCryptHashData(hash, buffer.data(), leidos, 0) != 0) {
+                    lecturaValida = false;
+                    break;
+                }
+            }
+            if (!lecturaValida) break;
+
+            std::vector<BYTE> digest(32);
+            if (BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) != 0) break;
+            std::wostringstream hex;
+            hex << std::hex << std::setfill(L'0');
+            for (BYTE byte : digest) hex << std::setw(2) << static_cast<unsigned>(byte);
+            resultado = hex.str();
+        } while (false);
+
+        if (hash) BCryptDestroyHash(hash);
+        if (objeto) HeapFree(GetProcessHeap(), 0, objeto);
+        if (algoritmo) BCryptCloseAlgorithmProvider(algoritmo, 0);
+        CloseHandle(archivo);
+        return resultado;
+    }
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_comparador_archivos.hpp ****/
 /**** start inlining v2/nucleo/servicio_reproductor_video.hpp ****/
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
@@ -1938,37 +2088,27 @@ public:
 #include <shobjidl.h>
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <cwchar>
-#include <iomanip>
-#include <sstream>
+#include <memory>
 #include <string>
 #include <vector>
 
 namespace SideViewV2 {
 
-struct DatosVideoComparacionV2 {
-    std::wstring ruta;
-    std::wstring nombre;
-    std::wstring fps{L"Pendiente"};
-    std::uintmax_t bytes{0};
-};
+using DatosVideoComparacionV2 = DatosArchivoComparacionV2;
 
-struct EstadoComparadorVideosV2 {
-    DatosVideoComparacionV2 izquierda;
-    DatosVideoComparacionV2 derecha;
+struct EstadoComparadorVideosV2 : public EstadoComparadorArchivosV2 {
     double posicionSegundos{0.0};
     double duracionSegundos{600.0};
     bool reproduciendo{false};
     bool simulado{true};
     bool modoPantallaCompleta{false};
     int indicePantallaCompleta{0};
-    std::wstring mensaje{L"Selecciona dos videos para iniciar la comparación."};
 };
 
-// Orquesta únicamente el contrato del comparador. Los reproductores reales
-// viven en instancias independientes creadas por ServicioReproductorVideoV2.
-class ServicioComparadorVideosV2 {
+// Comparador especializado que hereda las reglas comunes de peso, nombre y
+// SHA-256, y agrega el reloj sincronizado y los dos reproductores inyectados.
+class ServicioComparadorVideosV2 : public ServicioComparadorArchivosV2 {
 public:
     explicit ServicioComparadorVideosV2(
         std::shared_ptr<ServicioReproductorVideoV2> reproductor =
@@ -1978,18 +2118,15 @@ public:
     EstadoComparadorVideosV2 CrearFlujo(
         const std::vector<std::wstring>& seleccion = {}) const {
         EstadoComparadorVideosV2 estado;
-        estado.izquierda = CrearVideoDemo(L"VIDEO 1 (simulado)");
-        estado.derecha = CrearVideoDemo(L"VIDEO 2 (simulado)");
-        if (seleccion.size() == 2) {
-            estado.izquierda = LeerDatosVideo(seleccion[0], L"Video 1");
-            estado.derecha = LeerDatosVideo(seleccion[1], L"Video 2");
-            estado.simulado = false;
-            estado.mensaje = L"Sincronización estricta activa.";
-        }
+        EstadoComparadorArchivosV2 comun = CrearComparacion(seleccion);
+        estado.izquierda = EnriquecerVideo(comun.izquierda);
+        estado.derecha = EnriquecerVideo(comun.derecha);
+        estado.simulado = seleccion.size() != 2;
+        estado.mensaje = seleccion.size() == 2
+            ? L"Sincronización estricta activa."
+            : L"Selecciona dos videos para iniciar la comparación.";
         return estado;
     }
-
-    EstadoComparadorVideosV2 CrearFlujoSimulado() const { return CrearFlujo(); }
 
     std::unique_ptr<IReproductorVideoV2> CrearReproductor() const {
         return m_reproductor ? m_reproductor->Crear() : nullptr;
@@ -1997,18 +2134,13 @@ public:
 
     void AlternarPantallaCompleta(EstadoComparadorVideosV2& estado, int indice) const {
         if (indice < 0 || indice > 1) return;
-        if (!estado.modoPantallaCompleta) {
-            estado.modoPantallaCompleta = true;
-            estado.indicePantallaCompleta = indice;
-        } else {
-            estado.indicePantallaCompleta = indice;
-        }
+        estado.modoPantallaCompleta = true;
+        estado.indicePantallaCompleta = indice;
     }
 
     void IntercambiarPantallaCompleta(EstadoComparadorVideosV2& estado) const {
-        if (estado.modoPantallaCompleta) {
+        if (estado.modoPantallaCompleta)
             estado.indicePantallaCompleta = 1 - estado.indicePantallaCompleta;
-        }
     }
 
     void AlternarEstadoReproduccion(EstadoComparadorVideosV2& estado,
@@ -2025,14 +2157,6 @@ public:
         estado.reproduciendo = reproducir;
     }
 
-    void PausarAmbos(EstadoComparadorVideosV2& estado,
-                     IReproductorVideoV2* izquierda,
-                     IReproductorVideoV2* derecha) const {
-        if (izquierda) izquierda->Pausar();
-        if (derecha) derecha->Pausar();
-        estado.reproduciendo = false;
-    }
-
     void BuscarAmbos(EstadoComparadorVideosV2& estado, double segundos,
                      IReproductorVideoV2* izquierda,
                      IReproductorVideoV2* derecha) const {
@@ -2041,77 +2165,29 @@ public:
         if (derecha) derecha->Buscar(estado.posicionSegundos);
     }
 
-    std::wstring FormatearTamano(std::uintmax_t bytes) const {
-        static constexpr const wchar_t* unidades[] = {L"B", L"KB", L"MB", L"GB", L"TB"};
-        double valor = static_cast<double>(bytes);
-        std::size_t unidad = 0;
-        constexpr std::size_t cantidadUnidades = sizeof(unidades) / sizeof(unidades[0]);
-        while (valor >= 1024.0 && unidad + 1 < cantidadUnidades) {
-            valor /= 1024.0;
-            ++unidad;
-        }
-        std::wostringstream salida;
-        salida << std::fixed << std::setprecision(
-            unidad == 0 ? 0 : valor < 10.0 ? 2 : 1)
-               << valor << L" " << unidades[unidad];
-        return salida.str();
-    }
-
-    std::wstring FormatearDiferencia(std::uintmax_t izquierda,
-                                     std::uintmax_t derecha) const {
-        const bool negativa = derecha < izquierda;
-        const std::uintmax_t magnitud = negativa ? izquierda - derecha : derecha - izquierda;
-        return std::wstring(negativa ? L"-" : L"+") + FormatearTamano(magnitud);
-    }
-
     std::wstring FormatearTiempo(double segundos) const {
         const int total = std::max(0, static_cast<int>(std::lround(segundos)));
-        const int horas = total / 3600;
-        const int minutos = (total % 3600) / 60;
-        const int segundosRestantes = total % 60;
         wchar_t buffer[32]{};
-        if (horas > 0) {
-            swprintf_s(buffer, L"%02d:%02d:%02d", horas, minutos, segundosRestantes);
-        } else {
-            swprintf_s(buffer, L"%02d:%02d", minutos, segundosRestantes);
-        }
+        swprintf_s(buffer, L"%02d:%02d", (total % 3600) / 60, total % 60);
         return buffer;
     }
 
 private:
-    DatosVideoComparacionV2 CrearVideoDemo(const wchar_t* nombre) const {
-        DatosVideoComparacionV2 video;
-        video.nombre = nombre;
-        video.fps = L"Pendiente";
-        return video;
-    }
-
-    DatosVideoComparacionV2 LeerDatosVideo(const std::wstring& ruta,
-                                           const wchar_t* etiqueta) const {
-        DatosVideoComparacionV2 video;
-        video.ruta = ruta;
-        const wchar_t* nombre = PathFindFileNameW(ruta.c_str());
-        video.nombre = (nombre && *nombre) ? nombre : etiqueta;
-        WIN32_FILE_ATTRIBUTE_DATA datos{};
-        if (GetFileAttributesExW(ruta.c_str(), GetFileExInfoStandard, &datos)) {
-            ULARGE_INTEGER tamano{};
-            tamano.HighPart = datos.nFileSizeHigh;
-            tamano.LowPart = datos.nFileSizeLow;
-            video.bytes = static_cast<std::uintmax_t>(tamano.QuadPart);
-        }
+    static DatosVideoComparacionV2 EnriquecerVideo(DatosVideoComparacionV2 datos) {
+        if (datos.ruta.empty()) return datos;
         IShellItem2* elemento = nullptr;
         if (SUCCEEDED(SHCreateItemFromParsingName(
-                ruta.c_str(), nullptr, IID_IShellItem2,
+                datos.ruta.c_str(), nullptr, IID_IShellItem2,
                 reinterpret_cast<void**>(&elemento))) && elemento) {
             ULONG fpsMil = 0;
             if (SUCCEEDED(elemento->GetUInt32(PKEY_Video_FrameRate, &fpsMil)) && fpsMil) {
                 wchar_t fps[32]{};
-                swprintf_s(fps, L"%.2f", static_cast<double>(fpsMil) / 1000.0);
-                video.fps = fps;
+                swprintf_s(fps, L"%.2f fps", static_cast<double>(fpsMil) / 1000.0);
+                datos.fps = fps;
             }
             elemento->Release();
         }
-        return video;
+        return datos;
     }
 
     std::shared_ptr<ServicioReproductorVideoV2> m_reproductor;
@@ -2119,6 +2195,128 @@ private:
 
 } // namespace SideViewV2
 /**** ended inlining v2/nucleo/servicio_comparador_videos.hpp ****/
+/**** start inlining v2/nucleo/servicio_diff.hpp ****/
+
+/**** skipping file: v2/nucleo/servicio_comparador_archivos.hpp ****/
+/**** skipping file: v2/nucleo/servicio_texto.hpp ****/
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
+
+enum class TipoLineaDiffV2 { Igual, Agregada, Eliminada, Modificada };
+
+struct LineaDiffV2 {
+    TipoLineaDiffV2 tipo{TipoLineaDiffV2::Igual};
+    std::size_t lineaIzquierda{0};
+    std::size_t lineaDerecha{0};
+    std::wstring izquierda;
+    std::wstring derecha;
+};
+
+struct EstadoDiffV2 {
+    std::vector<LineaDiffV2> lineas;
+    std::wstring mensaje;
+};
+
+// Contrato general de diff. Cada tipo de archivo puede aportar otra estrategia
+// sin modificar la vista ni el comparador padre.
+class ServicioDiffViewV2 : public ServicioComparadorArchivosV2 {
+public:
+    ~ServicioDiffViewV2() override = default;
+    virtual EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const = 0;
+};
+
+class ServicioComparadorTextoV2 final : public ServicioDiffViewV2 {
+public:
+    explicit ServicioComparadorTextoV2(std::shared_ptr<ServicioTextoV2> texto)
+        : m_texto(std::move(texto)) {}
+
+    EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const override {
+        EstadoDiffV2 resultado;
+        if (seleccion.size() != 2 || !m_texto) {
+            resultado.mensaje = L"Selecciona exactamente dos archivos de texto.";
+            return resultado;
+        }
+        DocumentoTextoV2 izquierda = m_texto->Cargar(seleccion[0]);
+        DocumentoTextoV2 derecha = m_texto->Cargar(seleccion[1]);
+        resultado = CompararLineas(izquierda.lineas, derecha.lineas);
+        resultado.mensaje = L"Diff de texto listo.";
+        return resultado;
+    }
+
+private:
+    static EstadoDiffV2 CompararLineas(const std::vector<std::wstring>& izquierda,
+                                        const std::vector<std::wstring>& derecha) {
+        EstadoDiffV2 resultado;
+        std::size_t i = 0;
+        std::size_t j = 0;
+        constexpr std::size_t ventana = 24;
+        while (i < izquierda.size() || j < derecha.size()) {
+            if (i < izquierda.size() && j < derecha.size() && izquierda[i] == derecha[j]) {
+                resultado.lineas.push_back({TipoLineaDiffV2::Igual, i + 1, j + 1,
+                                            izquierda[i], derecha[j]});
+                ++i;
+                ++j;
+                continue;
+            }
+
+            std::size_t siguienteDerecha = derecha.size();
+            for (std::size_t k = j + 1; k < std::min(derecha.size(), j + ventana); ++k) {
+                if (i < izquierda.size() && izquierda[i] == derecha[k]) {
+                    siguienteDerecha = k;
+                    break;
+                }
+            }
+            std::size_t siguienteIzquierda = izquierda.size();
+            for (std::size_t k = i + 1; k < std::min(izquierda.size(), i + ventana); ++k) {
+                if (j < derecha.size() && izquierda[k] == derecha[j]) {
+                    siguienteIzquierda = k;
+                    break;
+                }
+            }
+
+            if (siguienteDerecha != derecha.size() &&
+                (siguienteIzquierda == izquierda.size() ||
+                 siguienteDerecha - j <= siguienteIzquierda - i)) {
+                resultado.lineas.push_back({TipoLineaDiffV2::Agregada, 0, j + 1,
+                                            L"", derecha[j]});
+                ++j;
+            } else if (siguienteIzquierda != izquierda.size()) {
+                resultado.lineas.push_back({TipoLineaDiffV2::Eliminada, i + 1, 0,
+                                            izquierda[i], L""});
+                ++i;
+            } else {
+                resultado.lineas.push_back({TipoLineaDiffV2::Modificada,
+                                            i < izquierda.size() ? i + 1 : 0,
+                                            j < derecha.size() ? j + 1 : 0,
+                                            i < izquierda.size() ? izquierda[i] : L"",
+                                            j < derecha.size() ? derecha[j] : L""});
+                if (i < izquierda.size()) ++i;
+                if (j < derecha.size()) ++j;
+            }
+        }
+        return resultado;
+    }
+
+    std::shared_ptr<ServicioTextoV2> m_texto;
+};
+
+class ServicioComparadorDocumentosV2 final : public ServicioComparadorArchivosV2 {
+public:
+    EstadoComparadorArchivosV2 CrearComparacion(
+        const std::vector<std::wstring>& seleccion) const override {
+        EstadoComparadorArchivosV2 estado =
+            ServicioComparadorArchivosV2::CrearComparacion(seleccion);
+        estado.mensaje = L"Comparación documental preparada; el contenido se mostrará por tipo de documento.";
+        return estado;
+    }
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/servicio_diff.hpp ****/
 /**** skipping file: v2/nucleo/servicio_reproductor_video.hpp ****/
 #include <memory>
 namespace SideViewV2 {
@@ -2130,6 +2328,9 @@ struct DependenciasVistaV2 {
     std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(L"imagenes")};
     std::shared_ptr<ServicioAbrirConV2> abrirConVideos{std::make_shared<ServicioAbrirConV2>(L"videos")};
     std::shared_ptr<ServicioTextoV2> texto{std::make_shared<ServicioTextoV2>()};
+    std::shared_ptr<ServicioComparadorArchivosV2> comparadorArchivos{std::make_shared<ServicioComparadorArchivosV2>()};
+    std::shared_ptr<ServicioComparadorTextoV2> comparadorTexto{std::make_shared<ServicioComparadorTextoV2>(texto)};
+    std::shared_ptr<ServicioComparadorDocumentosV2> comparadorDocumentos{std::make_shared<ServicioComparadorDocumentosV2>()};
     std::shared_ptr<ServicioContenidoComprimidoV2> contenidoComprimido{std::make_shared<ServicioContenidoComprimidoV2>()};
     std::shared_ptr<ServicioEnlacesV2> enlaces{std::make_shared<ServicioEnlacesV2>()};
     std::shared_ptr<ServicioPrevisualizacionMediaV2> previsualizacionMedia{std::make_shared<ServicioPrevisualizacionMediaV2>()};
@@ -2200,6 +2401,12 @@ public:
             // Botón Abrir Con
             if (PtInRect(&m_rcBotonAbrirCon, pt)) {
                 EjecutarAbrirCon(hwndPanel);
+                return true;
+            }
+            if (PtInRect(&m_rcBotonComparar, pt)) {
+                if (m_archivos.size() == 2) {
+                    PostMessageW(hwndPanel, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+                }
                 return true;
             }
             // Botón Desplegable Formatos
@@ -2307,9 +2514,15 @@ public:
         etiqueta += programa.empty() ? L"(click para seleccionar programa) ▾" : PathFindFileNameW(programa.c_str());
         DibujarBoton(hdc, m_rcBotonAbrirCon, etiqueta.c_str(), tema, true);
 
+        int yComparar = yAbrir - altoBotones - 8;
+        m_rcBotonComparar = {rect.left + margen, yComparar,
+                             rect.left + margen + 126, yComparar + altoBotones};
+        DibujarBoton(hdc, m_rcBotonComparar, L"Comparar archivos", tema,
+                     m_archivos.size() == 2);
+
         // Área de Contenido: Árbol de archivos comprimidos
         int topLista = yBarra + altoBotones + 14;
-        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yAbrir - 12};
+        RECT rcContenedorLista{rect.left + margen, topLista, rect.right - margen, yComparar - 12};
         DibujarContenedor(hdc, rcContenedorLista, tema);
 
         // Header de la lista
@@ -2470,6 +2683,7 @@ private:
     RECT m_rcBotonAbrirCon{};
     RECT m_rcBotonDesplegableFormato{};
     RECT m_rcBotonCambiarExtension{};
+    RECT m_rcBotonComparar{};
 };
 
 } // namespace SideViewV2
@@ -2480,27 +2694,6 @@ private:
 /**** skipping file: v2/ui/ventana_base.hpp ****/
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 /**** skipping file: v2/nucleo/servicio_com.hpp ****/
-/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
-
-#include <atomic>
-
-namespace SideViewV2 {
-
-// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
-// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
-inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
-inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
-
-inline bool ComparadorVideosExperimentalDisponibleV2() {
-    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
-}
-
-inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
-    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
-}
-
-} // namespace SideViewV2
-/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -2608,12 +2801,11 @@ public:
     explicit VistaCarpetas(std::shared_ptr<ServicioAbrirConV2> servicio,
                            std::shared_ptr<ServicioNavegacionV2> navegacion,
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
-                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
-                           std::shared_ptr<ServicioComparadorVideosV2> comparadorVideos)
+                           std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
-          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
-          m_comparadorVideos(std::move(comparadorVideos)) {
-        m_programasRecordados = m_servicio->Programas();
+          m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)) {
+        m_programasRecordados = m_servicio ? m_servicio->Programas()
+                                           : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
     }
 
@@ -2731,15 +2923,10 @@ public:
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
             }
-            // El comparador sólo se expone en la vista general, sin carpetas
-            // seleccionadas. El flujo real queda aislado detrás del servicio.
+            // El acceso permanece visible en la vista general, pero el
+            // comparador sólo se activa al seleccionar exactamente dos videos.
             if (m_carpetasSeleccionadas.empty() &&
-                PtInRect(&m_rcBotonCompararVideos, pt) &&
-                ComparadorVideosExperimentalDisponibleV2()) {
-                if (m_comparadorVideos &&
-                    !m_comparadorVideos->CrearFlujoSimulado().izquierda.nombre.empty()) {
-                    PostMessageW(hwndPanel, WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS, 0, 0);
-                }
+                PtInRect(&m_rcBotonCompararVideos, pt)) {
                 return true;
             }
             // Botón Fusionar Carpetas (si hay múltiples seleccionadas)
@@ -2989,14 +3176,13 @@ public:
 
         yCursor += 38;
 
-        // Activador experimental: sólo existe en el estado general de
-        // carpetas. Al desactivarlo desaparece también su zona de interacción.
-        if (m_carpetasSeleccionadas.empty() &&
-            ComparadorVideosExperimentalDisponibleV2()) {
+        // Acceso fijo del comparador experimental. El flujo real se activa
+        // automáticamente cuando Explorer entrega dos videos seleccionados.
+        if (m_carpetasSeleccionadas.empty()) {
             m_rcBotonCompararVideos = {rect.left + margen, yCursor,
                                        rect.right - margen, yCursor + 32};
             DibujarBoton(hdc, m_rcBotonCompararVideos,
-                         L"Comparador de videos · experimental", tema, true);
+                         L"Comparador de videos · selecciona 2 videos", tema, false);
             yCursor += 40;
         }
 
@@ -3389,7 +3575,6 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioFusionCarpetasV2> m_fusion;
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
-    std::shared_ptr<ServicioComparadorVideosV2> m_comparadorVideos;
     bool m_fusionEnCurso{false};
     std::wstring m_destinoFusion;
 
@@ -3414,6 +3599,7 @@ private:
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
 /**** skipping file: v2/ui/ventana_base.hpp ****/
+#include <windowsx.h>
 
 namespace SideViewV2 {
 
@@ -3425,6 +3611,16 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
         m_archivos = archivos;
         m_carpeta = carpeta;
+    }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam, HWND hwnd) override {
+        if (msg != WM_LBUTTONDOWN) return false;
+        POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (!PtInRect(&m_rcComparar, punto)) return false;
+        if (m_archivos.size() == 2) {
+            PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+        }
+        return true;
     }
 
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
@@ -3488,7 +3684,7 @@ public:
         // Tarjeta Central informativa
         int margen = 20;
         int topTarjeta = rect.top + altoCabecera + 24;
-        RECT rcTarjeta{rect.left + margen, topTarjeta, rect.right - margen, topTarjeta + 220};
+        RECT rcTarjeta{rect.left + margen, topTarjeta, rect.right - margen, topTarjeta + 260};
 
         HBRUSH brTarjeta = CreateSolidBrush(tema.fondoTarjeta);
         FillRect(hdc, &rcTarjeta, brTarjeta);
@@ -3540,8 +3736,19 @@ public:
         } else {
             infoSeleccion = L"Selección múltiple: " + std::to_wstring(m_archivos.size()) + L" elementos";
         }
-        RECT rcModSel{rcTarjeta.left + 16, rcTarjeta.top + 180, rcTarjeta.right - 16, rcTarjeta.bottom - 10};
+        RECT rcModSel{rcTarjeta.left + 16, rcTarjeta.top + 180, rcTarjeta.right - 176, rcTarjeta.bottom - 48};
         DrawTextW(hdc, infoSeleccion.c_str(), -1, &rcModSel, DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        m_rcComparar = {rcTarjeta.right - 158, rcTarjeta.bottom - 42,
+                        rcTarjeta.right - 16, rcTarjeta.bottom - 14};
+        HBRUSH fondoComparar = CreateSolidBrush(m_archivos.size() == 2
+            ? tema.botonFondo : tema.fondoCabecera);
+        FillRect(hdc, &m_rcComparar, fondoComparar);
+        DeleteObject(fondoComparar);
+        SetTextColor(hdc, m_archivos.size() == 2
+            ? tema.textoPrincipal : tema.textoSecundario);
+        DrawTextW(hdc, L"Comparar archivos", -1, &m_rcComparar,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
         SelectObject(hdc, fuenteVieja);
         DeleteObject(fuenteTitulo);
@@ -3556,6 +3763,7 @@ private:
     std::wstring m_descripcion;
     std::vector<std::wstring> m_archivos;
     std::wstring m_carpeta;
+    RECT m_rcComparar{};
 };
 
 } // namespace SideViewV2
@@ -3615,6 +3823,12 @@ public:
         if (PtInRect(&m_rcCambiarExtension, pt)) {
             MostrarMenuExtensiones(hwnd); return true;
         }
+        if (PtInRect(&m_rcComparar, pt)) {
+            if (m_archivos.size() == 2) {
+                PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+            }
+            return true;
+        }
         return false;
     }
 
@@ -3647,6 +3861,9 @@ public:
         DibujarBoton(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
         m_rcCambiarExtension = {rect.right - 170, yBoton, rect.right - 16, yBoton + 30};
         DibujarBoton(hdc, m_rcCambiarExtension, L"Cambiar extensión", tema, true);
+        m_rcComparar = {rect.right - 296, yBoton, rect.right - 178, yBoton + 30};
+        DibujarBoton(hdc, m_rcComparar, L"Comparar archivos", tema,
+                     m_archivos.size() == 2);
 
         // Contenedor cuadrado con grid fijo 2x2. Evita que los covers se
         // conviertan en una fila horizontal y mantiene una composición
@@ -3765,7 +3982,7 @@ private:
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioPrevisualizacionMediaV2> m_previsualizacion;
     size_t m_indice{0};
-    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcCambiarExtension{};
+    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcCambiarExtension{}, m_rcComparar{};
 };
 }
 /**** ended inlining v2/vistas/vista_comics.hpp ****/
@@ -3824,6 +4041,12 @@ protected:
             if (m_abrirCon->ProgramaActual().empty()) m_abrirCon->AbrirDialogo(hwnd);
             m_abrirCon->Ejecutar({m_archivos[m_indice]}); return true;
         }
+        if (MostrarComparador() && PtInRect(&m_rcComparar, pt)) {
+            if (m_archivos.size() == 2) {
+                PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+            }
+            return true;
+        }
         return false;
     }
 
@@ -3840,9 +4063,14 @@ protected:
         int y = rect.top + 72;
         m_rcAnterior = {rect.left + 16, y, rect.left + 52, y + 30};
         m_rcSiguiente = {rect.left + 58, y, rect.left + 94, y + 30};
+        m_rcComparar = {rect.right - 250, y, rect.right - 148, y + 30};
         m_rcAbrirCon = {rect.right - 140, y, rect.right - 16, y + 30};
         DibujarBotonMediaV2(hdc, m_rcAnterior, L"◀", tema, m_archivos.size() > 1);
         DibujarBotonMediaV2(hdc, m_rcSiguiente, L"▶", tema, m_archivos.size() > 1);
+        if (MostrarComparador()) {
+            DibujarBotonMediaV2(hdc, m_rcComparar, L"Comparar", tema,
+                                m_archivos.size() == 2);
+        }
         DibujarBotonMediaV2(hdc, m_rcAbrirCon, L"Abrir con", tema);
     }
 
@@ -3880,11 +4108,12 @@ protected:
     }
 
     virtual void CargarActual() = 0;
+    virtual bool MostrarComparador() const { return true; }
     std::vector<std::wstring> m_archivos; size_t m_indice{0}; HBITMAP m_preview{nullptr};
     std::shared_ptr<ServicioNavegacionV2> m_navegacion;
     std::shared_ptr<ServicioAbrirConV2> m_abrirCon;
     std::shared_ptr<ServicioPrevisualizacionMediaV2> m_previsualizacion;
-    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcAbrirCon{};
+    RECT m_rcAnterior{}, m_rcSiguiente{}, m_rcAbrirCon{}, m_rcComparar{};
 };
 
 class VistaImagenes final : public VistaMediaV2 {
@@ -3909,6 +4138,7 @@ public:
     void Liberar() override { if (m_preview) DeleteObject(m_preview); m_preview = nullptr; }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
 private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
+protected: bool MostrarComparador() const override { return false; }
 };
 }
 /**** ended inlining v2/vistas/vista_medios.hpp ****/
@@ -3934,6 +4164,12 @@ public:
         if (PtInRect(&m_rcSiguiente,p)) { Cambiar(1,hwnd); return true; }
         if (PtInRect(&m_rcCopiar,p)) { m_texto->Copiar(Unir()); return true; }
         if (PtInRect(&m_rcRenombrar,p) && !m_documento.ruta.empty()) { if(m_texto->Renombrar(hwnd,m_documento.ruta)) Cargar(); return true; }
+        if (PtInRect(&m_rcComparar, p)) {
+            if (m_archivos.size() == 2) {
+                PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
+            }
+            return true;
+        }
         for (size_t i=0;i<m_documento.indice.size();++i) { RECT r{m_rcIndice.left,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right,m_rcIndice.top+static_cast<int>((i+1)*22)}; if(PtInRect(&r,p)){m_lineaInicial=m_documento.indice[i];InvalidateRect(hwnd,nullptr,FALSE);return true;} }
         return PtInRect(&m_rcIndice,p);
     }
@@ -3942,8 +4178,8 @@ public:
     }
     void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
         HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); SetBkMode(hdc,TRANSPARENT);
-        int top=8; m_rcAnterior={rect.left+8,rect.top+top,rect.left+72,rect.top+top+28}; m_rcSiguiente={rect.left+78,rect.top+top,rect.left+142,rect.top+top+28}; m_rcCopiar={rect.right-170,rect.top+top,rect.right-88,rect.top+top+28}; m_rcRenombrar={rect.right-82,rect.top+top,rect.right-8,rect.top+top+28};
-        DibujarBoton(hdc,m_rcAnterior,L"◀",tema); DibujarBoton(hdc,m_rcSiguiente,L"▶",tema); DibujarBoton(hdc,m_rcCopiar,L"Copiar",tema); DibujarBoton(hdc,m_rcRenombrar,L"Renombrar",tema);
+        int top=8; m_rcAnterior={rect.left+8,rect.top+top,rect.left+72,rect.top+top+28}; m_rcSiguiente={rect.left+78,rect.top+top,rect.left+142,rect.top+top+28}; m_rcComparar={rect.right-300,rect.top+top,rect.right-178,rect.top+top+28}; m_rcCopiar={rect.right-170,rect.top+top,rect.right-88,rect.top+top+28}; m_rcRenombrar={rect.right-82,rect.top+top,rect.right-8,rect.top+top+28};
+        DibujarBoton(hdc,m_rcAnterior,L"◀",tema); DibujarBoton(hdc,m_rcSiguiente,L"▶",tema); DibujarBoton(hdc,m_rcComparar,L"Comparar",tema); DibujarBoton(hdc,m_rcCopiar,L"Copiar",tema); DibujarBoton(hdc,m_rcRenombrar,L"Renombrar",tema);
         SetTextColor(hdc,tema.textoPrincipal); RECT titulo{rect.left+154,rect.top+top,rect.right-180,rect.top+top+28}; std::wstring nombre=m_documento.ruta; size_t p=nombre.find_last_of(L"\\/"); if(p!=std::wstring::npos) nombre=nombre.substr(p+1); DrawTextW(hdc,nombre.c_str(),-1,&titulo,DT_SINGLELINE|DT_VCENTER|DT_END_ELLIPSIS|DT_NOPREFIX);
         m_rcIndice={rect.left+8,rect.top+48,rect.left+190,rect.bottom-8}; HBRUSH bi=CreateSolidBrush(tema.fondoCabecera); FillRect(hdc,&m_rcIndice,bi); DeleteObject(bi); SetTextColor(hdc,tema.textoSecundario); size_t filasIndice = m_rcIndice.bottom > m_rcIndice.top ? static_cast<size_t>((m_rcIndice.bottom-m_rcIndice.top)/22) : 0; size_t entradasIndice = std::min(filasIndice,m_documento.indice.size()); for(size_t i=0;i<entradasIndice;++i){size_t n=m_documento.indice[i];RECT r{m_rcIndice.left+8,m_rcIndice.top+static_cast<int>(i*22),m_rcIndice.right-4,m_rcIndice.top+static_cast<int>((i+1)*22)}; DrawTextW(hdc,m_documento.lineas[n].c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
         bool mostrarNumeros=g_mostrarNumerosLineaV2.load(); int x=rect.left+202,y=rect.top+54; SetTextColor(hdc,tema.textoPrincipal); for(size_t i=m_lineaInicial;i<m_documento.lineas.size() && y<rect.bottom-8;++i,y+=20){if(mostrarNumeros){SetTextColor(hdc,tema.textoSecundario); wchar_t no[32]; swprintf_s(no,L"%5zu",i+1); TextOutW(hdc,x,y,no,static_cast<int>(wcslen(no)));} const std::wstring& linea=m_documento.lineas[i]; bool encabezado=!linea.empty() && linea[0]==L'#'; bool lista=linea.size()>1 && (linea[0]==L'-'||linea[0]==L'*'||linea[0]==L'>'); COLORREF color=m_codigo&&EsClave(linea)?RGB(180,100,220):(encabezado?RGB(70,150,230):(lista?RGB(90,180,120):tema.textoPrincipal)); SetTextColor(hdc,color); RECT r{x+ (mostrarNumeros?52:4),y,rect.right-8,y+20}; DrawTextW(hdc,linea.c_str(),-1,&r,DT_SINGLELINE|DT_END_ELLIPSIS|DT_NOPREFIX);}
@@ -3954,15 +4190,226 @@ private:
     std::wstring Unir()const{size_t capacidad=0;for(const auto& l:m_documento.lineas) capacidad+=l.size()+2;std::wstring r;r.reserve(capacidad);for(const auto& l:m_documento.lineas){r+=l;r+=L"\r\n";}return r;}
     static bool EsClave(const std::wstring& l){static const wchar_t* k[]={L"class ",L"struct ",L"void ",L"int ",L"return ",L"#include",L"function ",L"const ",L"public:",L"private:"};for(auto s:k)if(l.find(s)!=std::wstring::npos)return true;return false;}
     void DibujarBoton(HDC hdc,const RECT& r,const wchar_t* t,const TemaVisual& tema){HBRUSH b=CreateSolidBrush(tema.botonFondo);FillRect(hdc,&r,b);DeleteObject(b);SetTextColor(hdc,tema.textoPrincipal);DrawTextW(hdc,t,-1,const_cast<RECT*>(&r),DT_CENTER|DT_VCENTER|DT_SINGLELINE|DT_NOPREFIX);}
-    std::shared_ptr<ServicioTextoV2> m_texto; std::shared_ptr<ServicioNavegacionV2> m_nav; bool m_codigo{}; std::vector<std::wstring> m_archivos; size_t m_indiceArchivo{}; size_t m_lineaInicial{}; DocumentoTextoV2 m_documento; RECT m_rcAnterior{},m_rcSiguiente{},m_rcCopiar{},m_rcRenombrar{},m_rcIndice{};
+    std::shared_ptr<ServicioTextoV2> m_texto; std::shared_ptr<ServicioNavegacionV2> m_nav; bool m_codigo{}; std::vector<std::wstring> m_archivos; size_t m_indiceArchivo{}; size_t m_lineaInicial{}; DocumentoTextoV2 m_documento; RECT m_rcAnterior{},m_rcSiguiente{},m_rcComparar{},m_rcCopiar{},m_rcRenombrar{},m_rcIndice{};
 };
 }
 /**** ended inlining v2/vistas/vista_texto_codigo.hpp ****/
 /**** start inlining v2/vistas/vista_comparador_videos.hpp ****/
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
-/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
+/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
+
+#include <atomic>
+
+namespace SideViewV2 {
+
+// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
+// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
+inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
+inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
+
+inline bool ComparadorVideosExperimentalDisponibleV2() {
+    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
+}
+
+inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
+    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
+}
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
 /**** skipping file: v2/nucleo/servicio_comparador_videos.hpp ****/
+/**** start inlining v2/vistas/vista_comparador_archivos.hpp ****/
+
+/**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/nucleo/servicio_comparador_archivos.hpp ****/
+#include <windowsx.h>
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <vector>
+
+namespace SideViewV2 {
+
+class VistaComparadorArchivosV2 : public IPanelContenido {
+public:
+    explicit VistaComparadorArchivosV2(
+        std::shared_ptr<ServicioComparadorArchivosV2> servicio)
+        : m_servicio(std::move(servicio)) {}
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring&) override {
+        m_archivos = archivos;
+        CargarComparacionComun(archivos);
+    }
+
+    void AlActivar(HWND panel) override { m_panel = panel; }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam,
+                              HWND hwndPanel) override {
+        if (msg == WM_LBUTTONDOWN) {
+            POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (PtInRect(&m_rcVolver, punto)) {
+                PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
+                return true;
+            }
+        }
+        if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
+            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
+            return true;
+        }
+        return false;
+    }
+
+    bool ProcesarMensajeTeclado(UINT msg, WPARAM wParam, LPARAM lParam,
+                                HWND hwndPanel) override {
+        return ProcesarMensajeRaton(msg, wParam, lParam, hwndPanel);
+    }
+
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        if (!hdc || rect.right <= rect.left || rect.bottom <= rect.top) return;
+        HBRUSH fondo = CreateSolidBrush(tema.fondo);
+        FillRect(hdc, &rect, fondo);
+        DeleteObject(fondo);
+        SetBkMode(hdc, TRANSPARENT);
+
+        HFONT titulo = CrearFuente(-17, FW_SEMIBOLD);
+        HFONT texto = CrearFuente(-12, FW_NORMAL);
+        HFONT anterior = static_cast<HFONT>(SelectObject(hdc, titulo));
+        const int margen = 16;
+        m_rcVolver = {rect.left + margen, rect.top + 12,
+                      rect.left + 124, rect.top + 40};
+        DibujarBoton(hdc, m_rcVolver, L"←  Volver", tema);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT encabezado{rect.left + 142, rect.top + 12, rect.right - margen, rect.top + 40};
+        DrawTextW(hdc, NombreVista(), -1, &encabezado,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        RECT info{rect.left + margen, rect.top + 58, rect.right - margen, rect.top + 194};
+        DibujarInformacionComun(hdc, info, tema, texto);
+        m_rcAreaEspecifica = {rect.left + margen, rect.top + 208,
+                              rect.right - margen, rect.bottom - margen};
+        RenderizarContenido(hdc, m_rcAreaEspecifica, tema, texto);
+
+        SelectObject(hdc, anterior);
+        DeleteObject(titulo);
+        DeleteObject(texto);
+    }
+
+protected:
+    virtual const wchar_t* NombreVista() const { return L"Comparar archivos"; }
+
+    virtual void RenderizarContenido(HDC hdc, const RECT& rect,
+                                     const TemaVisual& tema, HFONT fuente) {
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT mensaje = rect;
+        DrawTextW(hdc, m_estado.mensaje.c_str(), -1, &mensaje,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    void CargarComparacionComun(const std::vector<std::wstring>& archivos) {
+        m_estado = m_servicio ? m_servicio->CrearComparacion(archivos)
+                               : EstadoComparadorArchivosV2{};
+    }
+
+    const EstadoComparadorArchivosV2& EstadoComun() const { return m_estado; }
+    const RECT& AreaEspecifica() const { return m_rcAreaEspecifica; }
+
+    void DibujarInformacionComun(HDC hdc, const RECT& info,
+                                 const TemaVisual& tema, HFONT fuente) {
+        HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta);
+        FillRect(hdc, &info, fondo);
+        DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+        RoundRect(hdc, info.left, info.top, info.right, info.bottom, 8, 8);
+        SelectObject(hdc, anteriorBrocha);
+        SelectObject(hdc, anterior);
+        DeleteObject(borde);
+
+        SelectObject(hdc, fuente);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT titulo{info.left + 12, info.top + 8, info.right - 12, info.top + 28};
+        DrawTextW(hdc, L"INFORMACIÓN GENERAL", -1, &titulo,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        const int mitad = (info.right - info.left) / 2;
+        DibujarDato(hdc, info, info.left + 12, info.left + mitad - 12,
+                    m_estado.izquierda, L"Archivo 1", tema);
+        DibujarDato(hdc, info, info.left + mitad + 12, info.right - 12,
+                    m_estado.derecha, L"Archivo 2", tema);
+        SetTextColor(hdc, tema.acento);
+        RECT diferencia{info.left + 12, info.bottom - 26, info.right - 12, info.bottom - 8};
+        std::wstring peso = L"Diferencia de peso: " +
+            (m_servicio ? m_servicio->FormatearDiferencia(
+                m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
+        DrawTextW(hdc, peso.c_str(), -1, &diferencia,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    void DibujarContenedor(HDC hdc, const RECT& rect, const TemaVisual& tema) {
+        HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta);
+        FillRect(hdc, &rect, fondo);
+        DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 8, 8);
+        SelectObject(hdc, anteriorBrocha);
+        SelectObject(hdc, anterior);
+        DeleteObject(borde);
+    }
+
+    void DibujarBoton(HDC hdc, const RECT& rect, const wchar_t* texto,
+                      const TemaVisual& tema) {
+        HBRUSH fondo = CreateSolidBrush(tema.botonFondo);
+        FillRect(hdc, &rect, fondo);
+        DeleteObject(fondo);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT textoRect = rect;
+        DrawTextW(hdc, texto, -1, &textoRect,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    static HFONT CrearFuente(int altura, int peso) {
+        return CreateFontW(altura, 0, 0, 0, peso, FALSE, FALSE, FALSE,
+                           DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                           CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
+                           L"Segoe UI Variable Text");
+    }
+
+private:
+    void DibujarDato(HDC hdc, const RECT& info, int izquierda, int derecha,
+                     const DatosArchivoComparacionV2& datos,
+                     const wchar_t* etiqueta, const TemaVisual& tema) {
+        RECT nombre{izquierda, info.top + 36, derecha, info.top + 58};
+        SetTextColor(hdc, tema.textoPrincipal);
+        std::wstring texto = std::wstring(etiqueta) + L": " + datos.nombre;
+        DrawTextW(hdc, texto.c_str(), -1, &nombre,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT tamano{izquierda, info.top + 60, derecha, info.top + 82};
+        SetTextColor(hdc, tema.textoSecundario);
+        std::wstring peso = L"Peso: " + (m_servicio ? m_servicio->FormatearTamano(datos.bytes) : L"0 B");
+        DrawTextW(hdc, peso.c_str(), -1, &tamano,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        RECT hash{izquierda, info.top + 84, derecha, info.top + 106};
+        std::wstring sha = L"SHA-256: " + datos.sha256;
+        DrawTextW(hdc, sha.c_str(), -1, &hash,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    std::shared_ptr<ServicioComparadorArchivosV2> m_servicio;
+    EstadoComparadorArchivosV2 m_estado;
+    std::vector<std::wstring> m_archivos;
+    HWND m_panel{nullptr};
+    RECT m_rcVolver{};
+    RECT m_rcAreaEspecifica{};
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/vistas/vista_comparador_archivos.hpp ****/
 #include <windows.h>
 #include <windowsx.h>
 #include <algorithm>
@@ -3972,15 +4419,16 @@ private:
 
 namespace SideViewV2 {
 
-class VistaComparadorVideos final : public IPanelContenido {
+class VistaComparadorVideos final : public VistaComparadorArchivosV2 {
 public:
     explicit VistaComparadorVideos(std::shared_ptr<ServicioComparadorVideosV2> servicio)
-        : m_servicio(std::move(servicio)) {}
+        : VistaComparadorArchivosV2(servicio), m_servicio(std::move(servicio)) {}
 
     ~VistaComparadorVideos() override { Liberar(); }
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
+        CargarComparacionComun(archivos);
         LiberarReproductores();
         m_estado = m_servicio ? m_servicio->CrearFlujo(archivos)
                                : EstadoComparadorVideosV2{};
@@ -4057,7 +4505,7 @@ public:
         SetFocus(hwndPanel);
 
         if (PtInRect(&m_rcVolver, punto)) {
-            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS, 0, 0);
+            PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
             return true;
         }
         if (ComparadorVideosPantallaCompletaDisponibleV2()) {
@@ -4193,7 +4641,7 @@ public:
 
         const int yInfo = yBotones + 46;
         RECT info{rect.left + margen, yInfo, rect.right - margen,
-                  std::max(yInfo + 116, static_cast<int>(rect.bottom - margen))};
+                  std::max(yInfo + 148, static_cast<int>(rect.bottom - margen))};
         DibujarContenedor(hdc, info, tema);
         SelectObject(hdc, negrita);
         SetTextColor(hdc, tema.textoPrincipal);
@@ -4212,6 +4660,19 @@ public:
                 m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
         DrawTextW(hdc, diferenciaTexto.c_str(), -1, &diferencia,
                   DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT hashIzquierda{info.left + 12, info.top + 124,
+                           info.left + (info.right - info.left) / 2 - 12,
+                           info.top + 144};
+        RECT hashDerecha{info.left + (info.right - info.left) / 2 + 12,
+                         info.top + 124, info.right - 12, info.top + 144};
+        std::wstring shaIzquierda = L"SHA-256: " + m_estado.izquierda.sha256;
+        std::wstring shaDerecha = L"SHA-256: " + m_estado.derecha.sha256;
+        DrawTextW(hdc, shaIzquierda.c_str(), -1, &hashIzquierda,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        DrawTextW(hdc, shaDerecha.c_str(), -1, &hashDerecha,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
         SetTextColor(hdc, tema.textoSecundario);
         RECT mensaje{info.left + 12, info.top + 34,
@@ -4478,6 +4939,152 @@ private:
 
 } // namespace SideViewV2
 /**** ended inlining v2/vistas/vista_comparador_videos.hpp ****/
+/**** skipping file: v2/vistas/vista_comparador_archivos.hpp ****/
+/**** start inlining v2/vistas/vista_comparador_texto.hpp ****/
+
+/**** skipping file: v2/vistas/vista_comparador_archivos.hpp ****/
+/**** skipping file: v2/nucleo/servicio_diff.hpp ****/
+#include <windowsx.h>
+#include <algorithm>
+#include <memory>
+
+namespace SideViewV2 {
+
+class VistaComparadorTextoV2 final : public VistaComparadorArchivosV2 {
+public:
+    explicit VistaComparadorTextoV2(std::shared_ptr<ServicioComparadorTextoV2> servicio)
+        : VistaComparadorArchivosV2(servicio), m_diff(std::move(servicio)) {}
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring& carpeta) override {
+        VistaComparadorArchivosV2::AlCambiarSeleccion(archivos, carpeta);
+        m_estadoDiff = m_diff ? m_diff->CrearDiff(archivos) : EstadoDiffV2{};
+        m_scroll = 0;
+    }
+
+    bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam,
+                              HWND hwndPanel) override {
+        if (VistaComparadorArchivosV2::ProcesarMensajeRaton(msg, wParam, lParam, hwndPanel)) return true;
+        if (msg == WM_MOUSEWHEEL) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -3 : 3;
+            const int filas = static_cast<int>(m_estadoDiff.lineas.size());
+            m_scroll = std::max(0, std::min(m_scroll + delta, std::max(0, filas - 8)));
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        return false;
+    }
+
+protected:
+    const wchar_t* NombreVista() const override { return L"Comparar texto · Diff estilo GitHub"; }
+
+    void RenderizarContenido(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                             HFONT fuente) override {
+        DibujarContenedor(hdc, rect, tema);
+        RECT cabeceraIzquierda{rect.left + 10, rect.top + 8,
+                               rect.left + (rect.right - rect.left) / 2 - 6, rect.top + 32};
+        RECT cabeceraDerecha{rect.left + (rect.right - rect.left) / 2 + 6, rect.top + 8,
+                             rect.right - 10, rect.top + 32};
+        SetTextColor(hdc, tema.textoPrincipal);
+        DrawTextW(hdc, L"Archivo 1", -1, &cabeceraIzquierda,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(hdc, L"Archivo 2", -1, &cabeceraDerecha,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+        const int mitad = (rect.right - rect.left) / 2;
+        const int altoFila = 22;
+        const int inicio = rect.top + 36;
+        const int visibles = std::max(0, static_cast<int>(
+            (rect.bottom - inicio - 6) / altoFila));
+        SelectObject(hdc, fuente);
+        for (int visible = 0; visible < visibles; ++visible) {
+            const std::size_t indice = static_cast<std::size_t>(m_scroll + visible);
+            if (indice >= m_estadoDiff.lineas.size()) break;
+            const LineaDiffV2& linea = m_estadoDiff.lineas[indice];
+            const int y = inicio + visible * altoFila;
+            COLORREF color = tema.fondoTarjeta;
+            if (linea.tipo == TipoLineaDiffV2::Agregada) color = RGB(218, 245, 220);
+            else if (linea.tipo == TipoLineaDiffV2::Eliminada) color = RGB(250, 220, 220);
+            else if (linea.tipo == TipoLineaDiffV2::Modificada) color = RGB(250, 240, 204);
+            HBRUSH fondoFila = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
+            RECT filaIzq{rect.left + 2, y, rect.left + mitad - 2, y + altoFila};
+            RECT filaDer{rect.left + mitad + 2, y, rect.right - 2, y + altoFila};
+            FillRect(hdc, &filaIzq, fondoFila);
+            FillRect(hdc, &filaDer, fondoFila);
+            DeleteObject(fondoFila);
+            SetTextColor(hdc, tema.textoSecundario);
+            wchar_t numeroIzq[24]{}, numeroDer[24]{};
+            swprintf_s(numeroIzq, L"%4zu", linea.lineaIzquierda);
+            swprintf_s(numeroDer, L"%4zu", linea.lineaDerecha);
+            RECT ni{filaIzq.left + 4, y, filaIzq.left + 42, y + altoFila};
+            RECT nd{filaDer.left + 4, y, filaDer.left + 42, y + altoFila};
+            DrawTextW(hdc, numeroIzq, -1, &ni, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            DrawTextW(hdc, numeroDer, -1, &nd, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+            SetTextColor(hdc, linea.tipo == TipoLineaDiffV2::Agregada ? RGB(25, 130, 50) :
+                               linea.tipo == TipoLineaDiffV2::Eliminada ? RGB(170, 40, 40) :
+                               tema.textoPrincipal);
+            RECT ti{filaIzq.left + 50, y, filaIzq.right - 6, y + altoFila};
+            RECT td{filaDer.left + 50, y, filaDer.right - 6, y + altoFila};
+            DrawTextW(hdc, linea.izquierda.c_str(), -1, &ti,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            DrawTextW(hdc, linea.derecha.c_str(), -1, &td,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT estado{rect.left + 10, rect.bottom - 24, rect.right - 10, rect.bottom - 6};
+        DrawTextW(hdc, m_estadoDiff.mensaje.c_str(), -1, &estado,
+                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+private:
+    static COLORREF Mezclar(COLORREF frente, COLORREF fondo, int porcentaje) {
+        const int p = std::clamp(porcentaje, 0, 100);
+        return RGB((GetRValue(frente) * p + GetRValue(fondo) * (100 - p)) / 100,
+                   (GetGValue(frente) * p + GetGValue(fondo) * (100 - p)) / 100,
+                   (GetBValue(frente) * p + GetBValue(fondo) * (100 - p)) / 100);
+    }
+
+    std::shared_ptr<ServicioComparadorTextoV2> m_diff;
+    EstadoDiffV2 m_estadoDiff;
+    int m_scroll{0};
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/vistas/vista_comparador_texto.hpp ****/
+/**** start inlining v2/vistas/vista_comparador_documentos.hpp ****/
+
+/**** skipping file: v2/vistas/vista_comparador_archivos.hpp ****/
+/**** skipping file: v2/nucleo/servicio_diff.hpp ****/
+
+namespace SideViewV2 {
+
+class VistaComparadorDocumentosV2 final : public VistaComparadorArchivosV2 {
+public:
+    explicit VistaComparadorDocumentosV2(
+        std::shared_ptr<ServicioComparadorDocumentosV2> servicio)
+        : VistaComparadorArchivosV2(std::move(servicio)) {}
+
+protected:
+    const wchar_t* NombreVista() const override { return L"Comparar documentos"; }
+
+    void RenderizarContenido(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                             HFONT) override {
+        DibujarContenedor(hdc, rect, tema);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT titulo{rect.left + 16, rect.top + 20, rect.right - 16, rect.top + 48};
+        DrawTextW(hdc, L"Comparación documental", -1, &titulo,
+                  DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT mensaje{rect.left + 24, rect.top + 64, rect.right - 24, rect.bottom - 24};
+        DrawTextW(hdc,
+                  L"El comparador documental hereda nombre, peso y SHA-256.\n"
+                  L"La extracción visual específica del formato se conectará mediante otro adaptador.",
+                  -1, &mensaje, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+    }
+};
+
+} // namespace SideViewV2
+/**** ended inlining v2/vistas/vista_comparador_documentos.hpp ****/
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 /**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 #include <memory>
@@ -4500,17 +5107,57 @@ public:
         return vista;
     }
 
+    static bool SeleccionaDosDelMismoTipo(
+        const std::vector<std::wstring>& seleccion,
+        TipoVistaContenido* tipoResultado = nullptr) {
+        if (seleccion.size() != 2) return false;
+        const TipoVistaContenido primero = ClasificarRuta(seleccion[0].c_str());
+        const TipoVistaContenido segundo = ClasificarRuta(seleccion[1].c_str());
+        if (tipoResultado) *tipoResultado = primero;
+        return primero == segundo &&
+               primero != TipoVistaContenido::Tutorial &&
+               primero != TipoVistaContenido::Carpetas &&
+               primero != TipoVistaContenido::Desconocido;
+    }
+
+    static bool DebeCrearComparador(
+        const std::vector<std::wstring>& seleccion) {
+        TipoVistaContenido tipo{};
+        if (!SeleccionaDosDelMismoTipo(seleccion, &tipo)) return false;
+        return tipo != TipoVistaContenido::Video ||
+               ComparadorVideosExperimentalDisponibleV2();
+    }
+
     static std::shared_ptr<IPanelContenido> CrearVistaParaSeleccion(
         const std::vector<std::wstring>& seleccion,
         const std::wstring& carpeta,
-        bool excluirComparadorExperimental = false) {
+        bool forzarVistaNormal = false) {
 
         TipoVistaContenido tipo = ClasificarSeleccion(seleccion, carpeta);
 
-        if (!excluirComparadorExperimental &&
-            tipo == TipoVistaContenido::Video && seleccion.size() == 2 &&
-            ComparadorVideosExperimentalDisponibleV2()) {
-            return CrearVistaComparadorVideos(seleccion);
+        if (!forzarVistaNormal && DebeCrearComparador(seleccion)) {
+            TipoVistaContenido tipoComparador{};
+            SeleccionaDosDelMismoTipo(seleccion, &tipoComparador);
+            if (tipoComparador == TipoVistaContenido::Video) {
+                return CrearVistaComparadorVideos(seleccion);
+            }
+            if (tipoComparador == TipoVistaContenido::Texto ||
+                tipoComparador == TipoVistaContenido::Codigo) {
+                auto vista = std::make_shared<VistaComparadorTextoV2>(
+                    Dependencias().comparadorTexto);
+                vista->AlCambiarSeleccion(seleccion, carpeta);
+                return vista;
+            }
+            if (tipoComparador == TipoVistaContenido::Documentos) {
+                auto vista = std::make_shared<VistaComparadorDocumentosV2>(
+                    Dependencias().comparadorDocumentos);
+                vista->AlCambiarSeleccion(seleccion, carpeta);
+                return vista;
+            }
+            auto vista = std::make_shared<VistaComparadorArchivosV2>(
+                Dependencias().comparadorArchivos);
+            vista->AlCambiarSeleccion(seleccion, carpeta);
+            return vista;
         }
 
         std::shared_ptr<IPanelContenido> vista;
@@ -4531,7 +5178,7 @@ public:
             case TipoVistaContenido::Carpetas:
                 vista = std::make_shared<VistaCarpetas>(Dependencias().abrirConCarpetas,
                     Dependencias().navegacion, Dependencias().fusionCarpetas,
-                    Dependencias().inspeccionCarpetas, Dependencias().comparadorVideos);
+                    Dependencias().inspeccionCarpetas);
                 break;
 
             case TipoVistaContenido::Texto:
@@ -4753,10 +5400,9 @@ inline UINT WM_SIDEVIEW_SETTINGS = 0;
 inline std::mutex g_bloqueoEstados;
 inline std::map<HWND, EstadoPanelV2*> g_estadosPorVentana;
 
-inline bool EsComparadorVideosActivoPorSeleccionV2(
+inline bool EsComparadorArchivosActivoPorSeleccionV2(
     const std::vector<std::wstring>& seleccion) {
-    return ComparadorVideosExperimentalDisponibleV2() && seleccion.size() == 2 &&
-           ClasificarSeleccion(seleccion, L"") == TipoVistaContenido::Video;
+    return FabricaVistas::DebeCrearComparador(seleccion);
 }
 
 LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -4839,7 +5485,7 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
 
     // El comparador es una experiencia temporal a pantalla completa dentro
     // del contenedor de Explorer. Al salir se vuelve al layout lateral normal.
-    if (estado->comparadorVideosActivo) {
+    if (estado->comparadorArchivosActivo) {
         SetWindowPos(estado->view, nullptr, estado->viewOriginal.left,
                      estado->viewOriginal.top, 1, altoVista,
                      SWP_NOZORDER | SWP_NOACTIVATE);
@@ -5002,7 +5648,7 @@ inline void AlternarSideView(HWND top) {
 
             // Inyectar dinámicamente la vista correspondiente mediante la Fábrica
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(archivos, carpeta);
-            estado->comparadorVideosActivo = EsComparadorVideosActivoPorSeleccionV2(archivos);
+            estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(archivos);
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(estado->panel);
         } else {
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion({}, L"");
@@ -5020,24 +5666,12 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
     EstadoPanelV2* estado = reinterpret_cast<EstadoPanelV2*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
 
     if (estado && estado->vistaContenido) {
-        if (msg == WM_SIDEVIEW_OPEN_COMPARADOR_VIDEOS &&
-            ComparadorVideosExperimentalDisponibleV2() &&
-            !estado->comparadorVideosActivo) {
-            estado->vistaContenido->Liberar();
-            estado->vistaContenido = FabricaVistas::CrearVistaComparadorVideos();
-            estado->comparadorVideosActivo = true;
-            if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
-            DisponerPanel(estado);
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
-        }
-
-        if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_VIDEOS &&
-            estado->comparadorVideosActivo) {
+        if (msg == WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS &&
+            estado->comparadorArchivosActivo) {
             estado->vistaContenido->Liberar();
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                 estado->archivosSeleccionados, estado->carpetaContenedora, true);
-            estado->comparadorVideosActivo = false;
+            estado->comparadorArchivosActivo = false;
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
             DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
@@ -5045,24 +5679,37 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
         }
 
         if (msg == WM_SIDEVIEW_SETTINGS) {
-            if (estado->comparadorVideosActivo &&
-                !ComparadorVideosExperimentalDisponibleV2()) {
+            if (estado->comparadorArchivosActivo &&
+                !EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
                 estado->vistaContenido->Liberar();
                 estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
                     estado->archivosSeleccionados, estado->carpetaContenedora);
-                estado->comparadorVideosActivo = false;
+                estado->comparadorArchivosActivo = false;
                 if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                 DisponerPanel(estado);
-            } else if (!estado->comparadorVideosActivo &&
-                       EsComparadorVideosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
+            } else if (!estado->comparadorArchivosActivo &&
+                       EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
                 estado->vistaContenido->Liberar();
-                estado->vistaContenido = FabricaVistas::CrearVistaComparadorVideos(
-                    estado->archivosSeleccionados);
-                estado->comparadorVideosActivo = true;
+                estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
+                    estado->archivosSeleccionados, estado->carpetaContenedora);
+                estado->comparadorArchivosActivo = true;
                 if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                 DisponerPanel(estado);
             }
             estado->vistaContenido->ActualizarConfiguracion();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        if (msg == WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS &&
+            !estado->comparadorArchivosActivo &&
+            EsComparadorArchivosActivoPorSeleccionV2(estado->archivosSeleccionados)) {
+            estado->vistaContenido->Liberar();
+            estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(
+                estado->archivosSeleccionados, estado->carpetaContenedora);
+            estado->comparadorArchivosActivo = true;
+            if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
+            DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -5114,21 +5761,21 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                         estado->carpetaContenedora = carpeta;
 
                         const bool mantenerComparador =
-                            estado->comparadorVideosActivo &&
-                            EsComparadorVideosActivoPorSeleccionV2(seleccion);
+                            estado->comparadorArchivosActivo &&
+                            EsComparadorArchivosActivoPorSeleccionV2(seleccion);
 
                         // Si el comparador sigue recibiendo exactamente dos
                         // videos, sólo renueva sus fuentes; no desmonta la UX.
                         if (mantenerComparador) {
                             estado->vistaContenido->AlCambiarSeleccion(seleccion, carpeta);
-                        } else if (estado->comparadorVideosActivo ||
+                        } else if (estado->comparadorArchivosActivo ||
                                    tipoPrevio != tipoNuevo ||
-                                   EsComparadorVideosActivoPorSeleccionV2(seleccion) !=
-                                       estado->comparadorVideosActivo ||
+                                   EsComparadorArchivosActivoPorSeleccionV2(seleccion) !=
+                                       estado->comparadorArchivosActivo ||
                                    !estado->vistaContenido) {
                             if (estado->vistaContenido) estado->vistaContenido->Liberar();
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
-                            estado->comparadorVideosActivo = EsComparadorVideosActivoPorSeleccionV2(seleccion);
+                            estado->comparadorArchivosActivo = EsComparadorArchivosActivoPorSeleccionV2(seleccion);
                             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                             DisponerPanel(estado);
                         } else {
