@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.3
+// @version         4.1.4
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -34,6 +34,11 @@
 - ajusteLineaTextoCodigo: true
   $name: Ajuste de línea (text wrapping)
   $description: Ajusta las líneas largas al ancho disponible en las vistas de texto, Markdown y código.
+- reproductorVideoEnVista: false
+  $name: Usar reproductor en la vista de videos
+  $description: >-
+    Sustituye la miniatura por el reproductor Media Foundation en la vista de un
+    video. Desactivado por defecto para conservar la vista previa ligera.
 - comparadorVideosExperimental: true
   $name: Comparador de videos (experimental)
   $description: >-
@@ -64,7 +69,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.3)
+# Useful Side View V2 (4.1.4)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -1991,7 +1996,8 @@ public:
 
 class MediaEngineNotifyV2 final : public IMFMediaEngineNotify {
 public:
-    explicit MediaEngineNotifyV2(HWND destino) : m_destino(destino) {}
+    MediaEngineNotifyV2(HWND destino, DWORD generacion)
+        : m_destino(destino), m_generacion(generacion) {}
 
     void Desconectar() { m_destino.store(nullptr, std::memory_order_release); }
 
@@ -2018,15 +2024,22 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE EventNotify(DWORD evento, DWORD_PTR param1,
-                                           DWORD) override {
+                                           DWORD param2) override {
         if (evento == MF_MEDIA_ENGINE_EVENT_NOTIFYSTABLESTATE) {
             if (param1) SetEvent(reinterpret_cast<HANDLE>(param1));
             return S_OK;
         }
         HWND destino = m_destino.load(std::memory_order_acquire);
         if (destino) {
+            // El callback de Media Foundation puede entregar eventos después
+            // de que el archivo anterior se haya desmontado. Empaquetar el
+            // código y HRESULT, y transportar la generación, evita que un
+            // evento tardío cambie el estado del reproductor nuevo.
+            const ULONGLONG paquete =
+                (static_cast<ULONGLONG>(param2) << 32) | evento;
             PostMessageW(destino, WM_SIDEVIEW_VIDEO_EVENT_V2,
-                         static_cast<WPARAM>(evento), static_cast<LPARAM>(param1));
+                         static_cast<WPARAM>(m_generacion),
+                         static_cast<LPARAM>(paquete));
         }
         return S_OK;
     }
@@ -2035,6 +2048,7 @@ private:
     ~MediaEngineNotifyV2() = default;
     LONG m_referencias{1};
     std::atomic<HWND> m_destino{nullptr};
+    DWORD m_generacion{0};
 };
 
 class ReproductorMediaFoundationV2 final : public IReproductorVideoV2 {
@@ -2043,6 +2057,7 @@ public:
 
     bool Montar(HWND panel, int ranura, const std::wstring& ruta) override {
         Liberar();
+        ++m_generacion;
         m_panel = panel;
         m_ranura = ranura;
         m_mensaje.clear();
@@ -2078,7 +2093,8 @@ public:
         }
         m_mfIniciado = true;
 
-        MediaEngineNotifyV2* callback = new (std::nothrow) MediaEngineNotifyV2(m_ventana);
+        MediaEngineNotifyV2* callback =
+            new (std::nothrow) MediaEngineNotifyV2(m_ventana, m_generacion);
         if (!callback) {
             m_mensaje = L"No hubo memoria suficiente para iniciar el reproductor.";
             Liberar();
@@ -2142,9 +2158,14 @@ public:
         render.right = std::max(render.left + 1, render.right - 1);
         render.top += 30; // Reserva la franja superior para título y controles.
         render.bottom = std::max(render.top + 1, render.bottom - 1);
-        SetWindowPos(m_ventana, HWND_TOP, render.left, render.top,
-                     render.right - render.left, render.bottom - render.top,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if (!m_rectValido || !EqualRect(&m_rectActual, &render) ||
+            !IsWindowVisible(m_ventana)) {
+            SetWindowPos(m_ventana, HWND_TOP, render.left, render.top,
+                         render.right - render.left, render.bottom - render.top,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            m_rectActual = render;
+            m_rectValido = true;
+        }
         if (m_engineEx) ActualizarFrame();
     }
 
@@ -2199,6 +2220,8 @@ public:
         m_reproduciendo = false;
         m_reproduccionSolicitada = false;
         m_posicionPendiente = 0.0;
+        m_rectActual = {};
+        m_rectValido = false;
     }
 
 private:
@@ -2238,6 +2261,12 @@ private:
         switch (mensaje) {
             case WM_ERASEBKGND:
                 return 1;
+            case WM_SHOWWINDOW:
+                if (!wParam) reproductor->Pausar();
+                return 0;
+            case WM_DESTROY:
+                KillTimer(hwnd, kTimerReproductor);
+                return 0;
             case WM_SIZE:
                 reproductor->ActualizarFrame();
                 return 0;
@@ -2260,7 +2289,12 @@ private:
                 PAINTSTRUCT ps{};
                 HDC hdc = BeginPaint(hwnd, &ps);
                 if (reproductor->m_listo && reproductor->m_engineEx) {
+                    // Media Foundation pinta el frame en la superficie
+                    // asociada al HWND. No rellenar de negro antes de cada
+                    // frame evita el destello que aparecía entre eventos.
+                    EndPaint(hwnd, &ps);
                     reproductor->ActualizarFrame();
+                    return 0;
                 } else {
                     RECT rect{};
                     GetClientRect(hwnd, &rect);
@@ -2275,8 +2309,16 @@ private:
                 return 0;
             }
             case WM_SIDEVIEW_VIDEO_EVENT_V2:
-                reproductor->ProcesarEvento(static_cast<DWORD>(wParam),
-                                             static_cast<HRESULT>(lParam));
+                if (static_cast<DWORD>(wParam) != reproductor->m_generacion) {
+                    return 0;
+                }
+                {
+                    const ULONGLONG paquete = static_cast<ULONGLONG>(lParam);
+                    const DWORD evento = static_cast<DWORD>(paquete & 0xffffffffULL);
+                    const HRESULT error = static_cast<HRESULT>(
+                        static_cast<DWORD>(paquete >> 32));
+                    reproductor->ProcesarEvento(evento, error);
+                }
                 return 0;
         }
         return DefWindowProcW(hwnd, mensaje, wParam, lParam);
@@ -2308,7 +2350,6 @@ private:
             case MF_MEDIA_ENGINE_EVENT_PLAYING:
                 m_listo = true;
                 m_reproduciendo = true;
-                m_mensaje.clear();
                 SetTimer(m_ventana, kTimerReproductor, 33, nullptr);
                 break;
             case MF_MEDIA_ENGINE_EVENT_PAUSE:
@@ -2376,6 +2417,9 @@ private:
     bool m_reproduciendo{false};
     bool m_reproduccionSolicitada{false};
     double m_posicionPendiente{0.0};
+    DWORD m_generacion{0};
+    RECT m_rectActual{};
+    bool m_rectValido{false};
     std::wstring m_mensaje;
     IMFMediaEngine* m_engine{nullptr};
     IMFMediaEngineEx* m_engineEx{nullptr};
@@ -2743,7 +2787,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.3";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.4";
 
 class ServicioVersionModV2 final {
 public:
@@ -3772,6 +3816,7 @@ inline std::atomic_bool g_sincronizacionNotasWinKlokV2{false};
 inline std::atomic<int> g_tamanoFuenteTextoV2{10};
 inline std::atomic<int> g_tamanoFuenteCodigoV2{10};
 inline std::atomic_bool g_ajusteLineaTextoCodigoV2{true};
+inline std::atomic_bool g_reproductorVideoEnVistaV2{false};
 
 inline int NormalizarTamanoFuenteV2(int valor) {
     // Un valor 0 puede aparecer si se instala una versión que todavía no
@@ -3810,6 +3855,10 @@ inline int TamanoFuenteCodigoV2() {
 
 inline bool AjusteLineaTextoCodigoDisponibleV2() {
     return g_ajusteLineaTextoCodigoV2.load(std::memory_order_acquire);
+}
+
+inline bool ReproductorVideoEnVistaDisponibleV2() {
+    return g_reproductorVideoEnVistaV2.load(std::memory_order_acquire);
 }
 
 } // namespace SideViewV2
@@ -5697,6 +5746,7 @@ private:
 /**** start inlining v2/vistas/vista_medios.hpp ****/
 
 /**** skipping file: v2/ui/panel_interfaz.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 /**** skipping file: v2/nucleo/enrutador_vistas.hpp ****/
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 #include <windows.h>
@@ -5847,14 +5897,109 @@ private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? n
 
 class VistaVideos final : public VistaMediaV2 {
 public:
-    VistaVideos(std::shared_ptr<ServicioNavegacionV2> n, std::shared_ptr<ServicioAbrirConV2> a, std::shared_ptr<ServicioPrevisualizacionMediaV2> p) : VistaMediaV2(std::move(n), std::move(a), std::move(p)) {}
+    VistaVideos(std::shared_ptr<ServicioNavegacionV2> n,
+                std::shared_ptr<ServicioAbrirConV2> a,
+                std::shared_ptr<ServicioPrevisualizacionMediaV2> p,
+                std::shared_ptr<ServicioReproductorVideoV2> r)
+        : VistaMediaV2(std::move(n), std::move(a), std::move(p)),
+          m_servicioReproductor(std::move(r)) {}
     ~VistaVideos() override { Liberar(); }
-    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
+    void AlActivar(HWND panel) override {
+        m_panel = panel;
+        CargarActual();
+    }
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring&) override {
+        HWND panel = m_panel;
+        Liberar();
+        m_panel = panel;
+        m_archivos = archivos;
+        m_indice = 0;
+        CargarActual();
+    }
+    void ActualizarConfiguracion() override {
+        const bool debeUsarReproductor = ReproductorVideoEnVistaDisponibleV2();
+        if (debeUsarReproductor == (m_reproductor != nullptr)) return;
+        DesmontarReproductor();
+        ReemplazarPreview(nullptr);
+        CargarActual();
+    }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
-private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
-protected: bool MostrarComparador() const override { return false; }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        HBRUSH b = CreateSolidBrush(tema.fondo);
+        FillRect(hdc, &rect, b);
+        DeleteObject(b);
+
+        const std::wstring nombre = m_archivos.empty()
+            ? L"Sin videos" : PathFindFileNameW(m_archivos[m_indice].c_str());
+        DibujarCabecera(
+            hdc, rect, tema,
+            ReproductorVideoEnVistaDisponibleV2()
+                ? L"🎬 Videos · Reproductor"
+                : L"🎬 Videos · Vista previa",
+            nombre);
+
+        const RECT contenedor{rect.left + 16, rect.top + 118,
+                              rect.right - 16, rect.bottom - 16};
+        if (m_reproductor) {
+            // El reproductor reserva internamente la franja superior del
+            // marco para que el título permanezca dibujado por la vista.
+            RECT ranura = contenedor;
+            ranura.top -= 30;
+            m_reproductor->ActualizarRect(ranura, false);
+        } else {
+            DibujarPreview(hdc, rect, tema, m_preview);
+        }
+    }
+
+    void Liberar() override {
+        DesmontarReproductor();
+        VistaMediaV2::Liberar();
+        m_panel = nullptr;
+    }
+
+private:
+    void CargarActual() override {
+        if (m_archivos.empty() || m_indice >= m_archivos.size()) {
+            DesmontarReproductor();
+            ReemplazarPreview(nullptr);
+            return;
+        }
+
+        if (ReproductorVideoEnVistaDisponibleV2() && MontarReproductorActual()) {
+            ReemplazarPreview(nullptr);
+            return;
+        }
+
+        DesmontarReproductor();
+        ReemplazarPreview(m_previsualizacion
+            ? m_previsualizacion->CargarMiniatura(m_archivos[m_indice])
+            : nullptr);
+    }
+
+    bool MontarReproductorActual() {
+        if (!m_panel || !m_servicioReproductor) return false;
+        DesmontarReproductor();
+        std::unique_ptr<IReproductorVideoV2> reproductor =
+            m_servicioReproductor->Crear();
+        if (!reproductor || !reproductor->Montar(m_panel, 0, m_archivos[m_indice])) {
+            return false;
+        }
+        m_reproductor = std::move(reproductor);
+        return true;
+    }
+
+    void DesmontarReproductor() {
+        if (m_reproductor) {
+            m_reproductor->Liberar();
+            m_reproductor.reset();
+        }
+    }
+
+    HWND m_panel{nullptr};
+    std::shared_ptr<ServicioReproductorVideoV2> m_servicioReproductor;
+    std::unique_ptr<IReproductorVideoV2> m_reproductor;
 };
 }
 /**** ended inlining v2/vistas/vista_medios.hpp ****/
@@ -7687,7 +7832,11 @@ public:
                 break;
 
             case TipoVistaContenido::Video:
-                vista = std::make_shared<VistaVideos>(Dependencias().navegacion, Dependencias().abrirConVideos, Dependencias().previsualizacionMedia);
+                vista = std::make_shared<VistaVideos>(
+                    Dependencias().navegacion,
+                    Dependencias().abrirConVideos,
+                    Dependencias().previsualizacionMedia,
+                    Dependencias().reproductorVideo);
                 break;
 
             case TipoVistaContenido::Documentos:
@@ -8776,6 +8925,9 @@ inline void CargarConfiguracionesV2() {
         std::memory_order_release);
     g_ajusteLineaTextoCodigoV2.store(
         Wh_GetIntSetting(L"ajusteLineaTextoCodigo") != 0,
+        std::memory_order_release);
+    g_reproductorVideoEnVistaV2.store(
+        Wh_GetIntSetting(L"reproductorVideoEnVista") != 0,
         std::memory_order_release);
     g_comparadorVideosExperimentalV2.store(
         Wh_GetIntSetting(L"comparadorVideosExperimental") != 0,

@@ -115,7 +115,11 @@ public:
                 break;
 
             case TipoVistaContenido::Video:
-                vista = std::make_shared<VistaVideos>(Dependencias().navegacion, Dependencias().abrirConVideos, Dependencias().previsualizacionMedia);
+                vista = std::make_shared<VistaVideos>(
+                    Dependencias().navegacion,
+                    Dependencias().abrirConVideos,
+                    Dependencias().previsualizacionMedia,
+                    Dependencias().reproductorVideo);
                 break;
 
             case TipoVistaContenido::Documentos:

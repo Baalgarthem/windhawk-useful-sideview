@@ -34,7 +34,8 @@ public:
 
 class MediaEngineNotifyV2 final : public IMFMediaEngineNotify {
 public:
-    explicit MediaEngineNotifyV2(HWND destino) : m_destino(destino) {}
+    MediaEngineNotifyV2(HWND destino, DWORD generacion)
+        : m_destino(destino), m_generacion(generacion) {}
 
     void Desconectar() { m_destino.store(nullptr, std::memory_order_release); }
 
@@ -61,15 +62,22 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE EventNotify(DWORD evento, DWORD_PTR param1,
-                                           DWORD) override {
+                                           DWORD param2) override {
         if (evento == MF_MEDIA_ENGINE_EVENT_NOTIFYSTABLESTATE) {
             if (param1) SetEvent(reinterpret_cast<HANDLE>(param1));
             return S_OK;
         }
         HWND destino = m_destino.load(std::memory_order_acquire);
         if (destino) {
+            // El callback de Media Foundation puede entregar eventos después
+            // de que el archivo anterior se haya desmontado. Empaquetar el
+            // código y HRESULT, y transportar la generación, evita que un
+            // evento tardío cambie el estado del reproductor nuevo.
+            const ULONGLONG paquete =
+                (static_cast<ULONGLONG>(param2) << 32) | evento;
             PostMessageW(destino, WM_SIDEVIEW_VIDEO_EVENT_V2,
-                         static_cast<WPARAM>(evento), static_cast<LPARAM>(param1));
+                         static_cast<WPARAM>(m_generacion),
+                         static_cast<LPARAM>(paquete));
         }
         return S_OK;
     }
@@ -78,6 +86,7 @@ private:
     ~MediaEngineNotifyV2() = default;
     LONG m_referencias{1};
     std::atomic<HWND> m_destino{nullptr};
+    DWORD m_generacion{0};
 };
 
 class ReproductorMediaFoundationV2 final : public IReproductorVideoV2 {
@@ -86,6 +95,7 @@ public:
 
     bool Montar(HWND panel, int ranura, const std::wstring& ruta) override {
         Liberar();
+        ++m_generacion;
         m_panel = panel;
         m_ranura = ranura;
         m_mensaje.clear();
@@ -121,7 +131,8 @@ public:
         }
         m_mfIniciado = true;
 
-        MediaEngineNotifyV2* callback = new (std::nothrow) MediaEngineNotifyV2(m_ventana);
+        MediaEngineNotifyV2* callback =
+            new (std::nothrow) MediaEngineNotifyV2(m_ventana, m_generacion);
         if (!callback) {
             m_mensaje = L"No hubo memoria suficiente para iniciar el reproductor.";
             Liberar();
@@ -185,9 +196,14 @@ public:
         render.right = std::max(render.left + 1, render.right - 1);
         render.top += 30; // Reserva la franja superior para título y controles.
         render.bottom = std::max(render.top + 1, render.bottom - 1);
-        SetWindowPos(m_ventana, HWND_TOP, render.left, render.top,
-                     render.right - render.left, render.bottom - render.top,
-                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        if (!m_rectValido || !EqualRect(&m_rectActual, &render) ||
+            !IsWindowVisible(m_ventana)) {
+            SetWindowPos(m_ventana, HWND_TOP, render.left, render.top,
+                         render.right - render.left, render.bottom - render.top,
+                         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+            m_rectActual = render;
+            m_rectValido = true;
+        }
         if (m_engineEx) ActualizarFrame();
     }
 
@@ -242,6 +258,8 @@ public:
         m_reproduciendo = false;
         m_reproduccionSolicitada = false;
         m_posicionPendiente = 0.0;
+        m_rectActual = {};
+        m_rectValido = false;
     }
 
 private:
@@ -281,6 +299,12 @@ private:
         switch (mensaje) {
             case WM_ERASEBKGND:
                 return 1;
+            case WM_SHOWWINDOW:
+                if (!wParam) reproductor->Pausar();
+                return 0;
+            case WM_DESTROY:
+                KillTimer(hwnd, kTimerReproductor);
+                return 0;
             case WM_SIZE:
                 reproductor->ActualizarFrame();
                 return 0;
@@ -303,7 +327,12 @@ private:
                 PAINTSTRUCT ps{};
                 HDC hdc = BeginPaint(hwnd, &ps);
                 if (reproductor->m_listo && reproductor->m_engineEx) {
+                    // Media Foundation pinta el frame en la superficie
+                    // asociada al HWND. No rellenar de negro antes de cada
+                    // frame evita el destello que aparecía entre eventos.
+                    EndPaint(hwnd, &ps);
                     reproductor->ActualizarFrame();
+                    return 0;
                 } else {
                     RECT rect{};
                     GetClientRect(hwnd, &rect);
@@ -318,8 +347,16 @@ private:
                 return 0;
             }
             case WM_SIDEVIEW_VIDEO_EVENT_V2:
-                reproductor->ProcesarEvento(static_cast<DWORD>(wParam),
-                                             static_cast<HRESULT>(lParam));
+                if (static_cast<DWORD>(wParam) != reproductor->m_generacion) {
+                    return 0;
+                }
+                {
+                    const ULONGLONG paquete = static_cast<ULONGLONG>(lParam);
+                    const DWORD evento = static_cast<DWORD>(paquete & 0xffffffffULL);
+                    const HRESULT error = static_cast<HRESULT>(
+                        static_cast<DWORD>(paquete >> 32));
+                    reproductor->ProcesarEvento(evento, error);
+                }
                 return 0;
         }
         return DefWindowProcW(hwnd, mensaje, wParam, lParam);
@@ -351,7 +388,6 @@ private:
             case MF_MEDIA_ENGINE_EVENT_PLAYING:
                 m_listo = true;
                 m_reproduciendo = true;
-                m_mensaje.clear();
                 SetTimer(m_ventana, kTimerReproductor, 33, nullptr);
                 break;
             case MF_MEDIA_ENGINE_EVENT_PAUSE:
@@ -419,6 +455,9 @@ private:
     bool m_reproduciendo{false};
     bool m_reproduccionSolicitada{false};
     double m_posicionPendiente{0.0};
+    DWORD m_generacion{0};
+    RECT m_rectActual{};
+    bool m_rectValido{false};
     std::wstring m_mensaje;
     IMFMediaEngine* m_engine{nullptr};
     IMFMediaEngineEx* m_engineEx{nullptr};

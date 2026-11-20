@@ -1,6 +1,7 @@
 #pragma once
 
 #include "v2/ui/panel_interfaz.hpp"
+#include "v2/nucleo/configuracion_v2.hpp"
 #include "v2/nucleo/enrutador_vistas.hpp"
 #include "v2/nucleo/servicios_vistas.hpp"
 #include <windows.h>
@@ -151,13 +152,108 @@ private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? n
 
 class VistaVideos final : public VistaMediaV2 {
 public:
-    VistaVideos(std::shared_ptr<ServicioNavegacionV2> n, std::shared_ptr<ServicioAbrirConV2> a, std::shared_ptr<ServicioPrevisualizacionMediaV2> p) : VistaMediaV2(std::move(n), std::move(a), std::move(p)) {}
+    VistaVideos(std::shared_ptr<ServicioNavegacionV2> n,
+                std::shared_ptr<ServicioAbrirConV2> a,
+                std::shared_ptr<ServicioPrevisualizacionMediaV2> p,
+                std::shared_ptr<ServicioReproductorVideoV2> r)
+        : VistaMediaV2(std::move(n), std::move(a), std::move(p)),
+          m_servicioReproductor(std::move(r)) {}
     ~VistaVideos() override { Liberar(); }
-    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
+    void AlActivar(HWND panel) override {
+        m_panel = panel;
+        CargarActual();
+    }
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring&) override {
+        HWND panel = m_panel;
+        Liberar();
+        m_panel = panel;
+        m_archivos = archivos;
+        m_indice = 0;
+        CargarActual();
+    }
+    void ActualizarConfiguracion() override {
+        const bool debeUsarReproductor = ReproductorVideoEnVistaDisponibleV2();
+        if (debeUsarReproductor == (m_reproductor != nullptr)) return;
+        DesmontarReproductor();
+        ReemplazarPreview(nullptr);
+        CargarActual();
+    }
     bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin videos":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🎬 Videos · Vista previa",n); DibujarPreview(hdc,rect,tema,m_preview); }
-private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarMiniatura(m_archivos[m_indice])); }
-protected: bool MostrarComparador() const override { return false; }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        HBRUSH b = CreateSolidBrush(tema.fondo);
+        FillRect(hdc, &rect, b);
+        DeleteObject(b);
+
+        const std::wstring nombre = m_archivos.empty()
+            ? L"Sin videos" : PathFindFileNameW(m_archivos[m_indice].c_str());
+        DibujarCabecera(
+            hdc, rect, tema,
+            ReproductorVideoEnVistaDisponibleV2()
+                ? L"🎬 Videos · Reproductor"
+                : L"🎬 Videos · Vista previa",
+            nombre);
+
+        const RECT contenedor{rect.left + 16, rect.top + 118,
+                              rect.right - 16, rect.bottom - 16};
+        if (m_reproductor) {
+            // El reproductor reserva internamente la franja superior del
+            // marco para que el título permanezca dibujado por la vista.
+            RECT ranura = contenedor;
+            ranura.top -= 30;
+            m_reproductor->ActualizarRect(ranura, false);
+        } else {
+            DibujarPreview(hdc, rect, tema, m_preview);
+        }
+    }
+
+    void Liberar() override {
+        DesmontarReproductor();
+        VistaMediaV2::Liberar();
+        m_panel = nullptr;
+    }
+
+private:
+    void CargarActual() override {
+        if (m_archivos.empty() || m_indice >= m_archivos.size()) {
+            DesmontarReproductor();
+            ReemplazarPreview(nullptr);
+            return;
+        }
+
+        if (ReproductorVideoEnVistaDisponibleV2() && MontarReproductorActual()) {
+            ReemplazarPreview(nullptr);
+            return;
+        }
+
+        DesmontarReproductor();
+        ReemplazarPreview(m_previsualizacion
+            ? m_previsualizacion->CargarMiniatura(m_archivos[m_indice])
+            : nullptr);
+    }
+
+    bool MontarReproductorActual() {
+        if (!m_panel || !m_servicioReproductor) return false;
+        DesmontarReproductor();
+        std::unique_ptr<IReproductorVideoV2> reproductor =
+            m_servicioReproductor->Crear();
+        if (!reproductor || !reproductor->Montar(m_panel, 0, m_archivos[m_indice])) {
+            return false;
+        }
+        m_reproductor = std::move(reproductor);
+        return true;
+    }
+
+    void DesmontarReproductor() {
+        if (m_reproductor) {
+            m_reproductor->Liberar();
+            m_reproductor.reset();
+        }
+    }
+
+    HWND m_panel{nullptr};
+    std::shared_ptr<ServicioReproductorVideoV2> m_servicioReproductor;
+    std::unique_ptr<IReproductorVideoV2> m_reproductor;
 };
 }

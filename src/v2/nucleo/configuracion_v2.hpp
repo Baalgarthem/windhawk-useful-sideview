@@ -15,6 +15,7 @@ inline std::atomic_bool g_sincronizacionNotasWinKlokV2{false};
 inline std::atomic<int> g_tamanoFuenteTextoV2{10};
 inline std::atomic<int> g_tamanoFuenteCodigoV2{10};
 inline std::atomic_bool g_ajusteLineaTextoCodigoV2{true};
+inline std::atomic_bool g_reproductorVideoEnVistaV2{false};
 
 inline int NormalizarTamanoFuenteV2(int valor) {
     // Un valor 0 puede aparecer si se instala una versión que todavía no
@@ -53,6 +54,10 @@ inline int TamanoFuenteCodigoV2() {
 
 inline bool AjusteLineaTextoCodigoDisponibleV2() {
     return g_ajusteLineaTextoCodigoV2.load(std::memory_order_acquire);
+}
+
+inline bool ReproductorVideoEnVistaDisponibleV2() {
+    return g_reproductorVideoEnVistaV2.load(std::memory_order_acquire);
 }
 
 } // namespace SideViewV2

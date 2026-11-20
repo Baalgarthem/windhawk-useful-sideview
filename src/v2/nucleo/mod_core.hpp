@@ -83,6 +83,9 @@ inline void CargarConfiguracionesV2() {
     g_ajusteLineaTextoCodigoV2.store(
         Wh_GetIntSetting(L"ajusteLineaTextoCodigo") != 0,
         std::memory_order_release);
+    g_reproductorVideoEnVistaV2.store(
+        Wh_GetIntSetting(L"reproductorVideoEnVista") != 0,
+        std::memory_order_release);
     g_comparadorVideosExperimentalV2.store(
         Wh_GetIntSetting(L"comparadorVideosExperimental") != 0,
         std::memory_order_release);
