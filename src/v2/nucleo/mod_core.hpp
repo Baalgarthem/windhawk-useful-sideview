@@ -83,6 +83,12 @@ inline void CargarConfiguracionesV2() {
     g_mostrarVersionModV2.store(
         Wh_GetIntSetting(L"mostrarVersionMod") != 0,
         std::memory_order_release);
+    g_modoSemanticoDiffViewV2.store(
+        Wh_GetIntSetting(L"modoSemanticoDiffView") != 0,
+        std::memory_order_release);
+    g_sincronizacionNotasWinKlokV2.store(
+        Wh_GetIntSetting(L"sincronizacionNotasWinKlok") != 0,
+        std::memory_order_release);
 }
 
 inline bool InicializarModV2() {

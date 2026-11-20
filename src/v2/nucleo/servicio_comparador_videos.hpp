@@ -18,8 +18,12 @@ using DatosVideoComparacionV2 = DatosArchivoComparacionV2;
 struct EstadoComparadorVideosV2 : public EstadoComparadorArchivosV2 {
     double posicionSegundos{0.0};
     double duracionSegundos{600.0};
+    double duracionIzquierda{0.0};
+    double duracionDerecha{0.0};
     bool reproduciendo{false};
     bool simulado{true};
+    bool sincronizacionConfirmada{false};
+    bool duracionesSimetricas{false};
     bool modoPantallaCompleta{false};
     int indicePantallaCompleta{0};
 };
@@ -41,7 +45,7 @@ public:
         estado.derecha = EnriquecerVideo(comun.derecha);
         estado.simulado = seleccion.size() != 2;
         estado.mensaje = seleccion.size() == 2
-            ? L"Sincronización estricta activa."
+            ? L"Confirma la sincronización para validar la duración de ambos videos."
             : L"Selecciona dos videos para iniciar la comparación.";
         return estado;
     }
@@ -83,6 +87,41 @@ public:
         if (derecha) derecha->Buscar(estado.posicionSegundos);
     }
 
+    void ActualizarDuraciones(EstadoComparadorVideosV2& estado,
+                              double izquierda, double derecha) const {
+        estado.duracionIzquierda = std::max(0.0, izquierda);
+        estado.duracionDerecha = std::max(0.0, derecha);
+        if (estado.sincronizacionConfirmada) {
+            estado.duracionSegundos = LimiteSincronizacion(estado);
+            estado.posicionSegundos = std::clamp(
+                estado.posicionSegundos, 0.0, estado.duracionSegundos);
+            return;
+        }
+        if (estado.duracionIzquierda > 0.0 && estado.duracionDerecha > 0.0) {
+            estado.duracionSegundos = std::max(estado.duracionIzquierda, estado.duracionDerecha);
+        } else if (estado.duracionIzquierda > 0.0) {
+            estado.duracionSegundos = estado.duracionIzquierda;
+        } else if (estado.duracionDerecha > 0.0) {
+            estado.duracionSegundos = estado.duracionDerecha;
+        }
+    }
+
+    void ConfirmarSincronizacion(EstadoComparadorVideosV2& estado) const {
+        if (estado.duracionIzquierda <= 0.0 || estado.duracionDerecha <= 0.0) {
+            estado.mensaje = L"Espera a que ambos videos carguen para confirmar la sincronización.";
+            return;
+        }
+        estado.sincronizacionConfirmada = true;
+        estado.duracionesSimetricas = std::abs(
+            estado.duracionIzquierda - estado.duracionDerecha) < 0.05;
+        estado.duracionSegundos = LimiteSincronizacion(estado);
+        estado.posicionSegundos = std::clamp(
+            estado.posicionSegundos, 0.0, estado.duracionSegundos);
+        estado.mensaje = estado.duracionesSimetricas
+            ? L"Sincronización confirmada: ambos videos tienen la misma duración."
+            : L"Sincronización confirmada con límite: el video más corto marca el final.";
+    }
+
     std::wstring FormatearTiempo(double segundos) const {
         const int total = std::max(0, static_cast<int>(std::lround(segundos)));
         wchar_t buffer[32]{};
@@ -91,6 +130,14 @@ public:
     }
 
 private:
+    static double LimiteSincronizacion(const EstadoComparadorVideosV2& estado) {
+        if (estado.duracionIzquierda > 0.0 && estado.duracionDerecha > 0.0) {
+            return std::min(estado.duracionIzquierda, estado.duracionDerecha);
+        }
+        return estado.duracionIzquierda > 0.0 ? estado.duracionIzquierda :
+               estado.duracionDerecha > 0.0 ? estado.duracionDerecha : 0.0;
+    }
+
     static DatosVideoComparacionV2 EnriquecerVideo(DatosVideoComparacionV2 datos) {
         if (datos.ruta.empty()) return datos;
         IShellItem2* elemento = nullptr;

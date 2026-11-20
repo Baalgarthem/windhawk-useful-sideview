@@ -42,10 +42,21 @@ public:
         const TipoVistaContenido primero = ClasificarRuta(seleccion[0].c_str());
         const TipoVistaContenido segundo = ClasificarRuta(seleccion[1].c_str());
         if (tipoResultado) *tipoResultado = primero;
-        return primero == segundo &&
-               primero != TipoVistaContenido::Tutorial &&
-               primero != TipoVistaContenido::Carpetas &&
-               primero != TipoVistaContenido::Desconocido;
+        if (primero != segundo ||
+            primero == TipoVistaContenido::Tutorial ||
+            primero == TipoVistaContenido::Carpetas ||
+            primero == TipoVistaContenido::Desconocido) {
+            return false;
+        }
+        if (primero == TipoVistaContenido::Documentos) {
+            const wchar_t* extIzquierda = PathFindExtensionW(seleccion[0].c_str());
+            const wchar_t* extDerecha = PathFindExtensionW(seleccion[1].c_str());
+            return EsExtensionDocumentoAdmitidoParaComparacion(extIzquierda) &&
+                   EsExtensionDocumentoAdmitidoParaComparacion(extDerecha) &&
+                   FamiliaDocumentoComparacionV2(extIzquierda) ==
+                       FamiliaDocumentoComparacionV2(extDerecha);
+        }
+        return true;
     }
 
     static bool DebeCrearComparador(

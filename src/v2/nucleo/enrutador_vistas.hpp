@@ -121,6 +121,27 @@ inline bool EsExtensionDocumento(const wchar_t* extension) {
     return CoincideExtension(ext, EXT_DOCS, ARRAYSIZE(EXT_DOCS));
 }
 
+inline bool EsExtensionDocumentoAdmitidoParaComparacion(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    static const wchar_t* const EXT_COMPARABLES[] = {
+        L".doc", L".docx", L".pdf", L".pps", L".ppsx", L".ppt", L".pptx"
+    };
+    return CoincideExtension(ext, EXT_COMPARABLES, ARRAYSIZE(EXT_COMPARABLES));
+}
+
+inline int FamiliaDocumentoComparacionV2(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return 0;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    if (wcscmp(ext, L".pdf") == 0) return 1;
+    if (wcscmp(ext, L".doc") == 0 || wcscmp(ext, L".docx") == 0) return 2;
+    if (wcscmp(ext, L".pps") == 0 || wcscmp(ext, L".ppsx") == 0 ||
+        wcscmp(ext, L".ppt") == 0 || wcscmp(ext, L".pptx") == 0) return 3;
+    return 0;
+}
+
 inline bool EsRutaCarpeta(const wchar_t* ruta) {
     if (!ruta || *ruta == L'\0') return false;
     DWORD attr = GetFileAttributesW(ruta);

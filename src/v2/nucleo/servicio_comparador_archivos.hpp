@@ -18,6 +18,8 @@ struct DatosArchivoComparacionV2 {
     std::wstring extension;
     std::wstring fps{L"Pendiente"};
     std::uintmax_t bytes{0};
+    std::uintmax_t lineas{0};
+    std::uintmax_t paginas{0};
     std::wstring sha256{L"No disponible"};
 };
 

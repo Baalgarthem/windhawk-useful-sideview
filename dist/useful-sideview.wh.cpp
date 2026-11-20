@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.0.4
+// @version         4.1.0
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -40,12 +40,22 @@
   $description: >-
     Muestra la versión actual de Useful Side View en la vista general de
     carpetas cuando no hay una carpeta seleccionada.
+- modoSemanticoDiffView: true
+  $name: Modo semántico para diff view
+  $description: >-
+    Explica los cambios del diff con lenguaje didáctico para facilitar la lectura
+    a personas que no programan.
+- sincronizacionNotasWinKlok: false
+  $name: Sincronización de notas con WinKlok (experimental)
+  $description: >-
+    Permite importar y exportar notas con WinKlok. Está desactivado por defecto;
+    mientras permanezca desactivado, las notas de Useful Side View son atómicas.
 */
 // ==/WindhawkModSettings==
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.0.4)
+# Useful Side View V2 (4.1.0)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -56,10 +66,10 @@ Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - **Suite Funcional de Inspección de Carpetas**: Árbol jerárquico recursivo, cálculo de peso, Top 4 subcarpetas pesadas, enlaces simbólicos, copia de estructura y limpieza de carpetas vacías.
 - **Vistas Especializadas Modulares**: Texto, Markdown, Imágenes, Video y Código con servicios inyectados.
 - **Comparadores polimórficos**: Comparador general de nombres, peso y SHA-256; comparadores especializados de texto/documentos y video mediante servicios inyectables.
-- **Comparador de texto**: Diff clásico de dos columnas, estilo GitHub, con navegación y metadatos comunes.
+- **Comparadores de texto y documentos**: panel 50/50 con sliders individuales y sincronizados, resumen fijo de tres columnas y Diff View ampliado; el modo semántico explica los cambios en lenguaje claro.
 - **Comparador de videos experimental**: Dos reproductores Media Foundation 50/50, sincronización estricta, pantalla completa con PiP, swap de roles e información de archivos, activable desde Ajustes y únicamente para dos videos.
 - **Persistencia nativa**: Historial de programas de "Abrir con" por categoría, migrado y validado con valores persistentes de Windhawk.
-- **Toolbox de notas**: La vista general permite crear, editar, copiar y eliminar notas persistentes; distingue notas nativas de notas sincronizadas desde WinKlok y ofrece sincronización forzada.
+- **Toolbox de notas**: La vista general permite crear, editar, copiar y eliminar notas persistentes. La sincronización con WinKlok es experimental y está desactivada por defecto.
 - **Versión visible**: La vista general puede mostrar la versión actual desde el ajuste correspondiente.
 - **Compatibilidad GPU**: El panel coopera con `gpu-accelerated-explorer-view` usando su overlay visual sin alterar su layout DirectComposition.
 */
@@ -510,6 +520,27 @@ inline bool EsExtensionDocumento(const wchar_t* extension) {
         L".pdf", L".pps", L".ppsx", L".ppt", L".pptx", L".rtf", L".xls", L".xlsx"
     };
     return CoincideExtension(ext, EXT_DOCS, ARRAYSIZE(EXT_DOCS));
+}
+
+inline bool EsExtensionDocumentoAdmitidoParaComparacion(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    static const wchar_t* const EXT_COMPARABLES[] = {
+        L".doc", L".docx", L".pdf", L".pps", L".ppsx", L".ppt", L".pptx"
+    };
+    return CoincideExtension(ext, EXT_COMPARABLES, ARRAYSIZE(EXT_COMPARABLES));
+}
+
+inline int FamiliaDocumentoComparacionV2(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return 0;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    if (wcscmp(ext, L".pdf") == 0) return 1;
+    if (wcscmp(ext, L".doc") == 0 || wcscmp(ext, L".docx") == 0) return 2;
+    if (wcscmp(ext, L".pps") == 0 || wcscmp(ext, L".ppsx") == 0 ||
+        wcscmp(ext, L".ppt") == 0 || wcscmp(ext, L".pptx") == 0) return 3;
+    return 0;
 }
 
 inline bool EsRutaCarpeta(const wchar_t* ruta) {
@@ -1754,6 +1785,8 @@ struct DatosArchivoComparacionV2 {
     std::wstring extension;
     std::wstring fps{L"Pendiente"};
     std::uintmax_t bytes{0};
+    std::uintmax_t lineas{0};
+    std::uintmax_t paginas{0};
     std::wstring sha256{L"No disponible"};
 };
 
@@ -2341,8 +2374,12 @@ using DatosVideoComparacionV2 = DatosArchivoComparacionV2;
 struct EstadoComparadorVideosV2 : public EstadoComparadorArchivosV2 {
     double posicionSegundos{0.0};
     double duracionSegundos{600.0};
+    double duracionIzquierda{0.0};
+    double duracionDerecha{0.0};
     bool reproduciendo{false};
     bool simulado{true};
+    bool sincronizacionConfirmada{false};
+    bool duracionesSimetricas{false};
     bool modoPantallaCompleta{false};
     int indicePantallaCompleta{0};
 };
@@ -2364,7 +2401,7 @@ public:
         estado.derecha = EnriquecerVideo(comun.derecha);
         estado.simulado = seleccion.size() != 2;
         estado.mensaje = seleccion.size() == 2
-            ? L"Sincronización estricta activa."
+            ? L"Confirma la sincronización para validar la duración de ambos videos."
             : L"Selecciona dos videos para iniciar la comparación.";
         return estado;
     }
@@ -2406,6 +2443,41 @@ public:
         if (derecha) derecha->Buscar(estado.posicionSegundos);
     }
 
+    void ActualizarDuraciones(EstadoComparadorVideosV2& estado,
+                              double izquierda, double derecha) const {
+        estado.duracionIzquierda = std::max(0.0, izquierda);
+        estado.duracionDerecha = std::max(0.0, derecha);
+        if (estado.sincronizacionConfirmada) {
+            estado.duracionSegundos = LimiteSincronizacion(estado);
+            estado.posicionSegundos = std::clamp(
+                estado.posicionSegundos, 0.0, estado.duracionSegundos);
+            return;
+        }
+        if (estado.duracionIzquierda > 0.0 && estado.duracionDerecha > 0.0) {
+            estado.duracionSegundos = std::max(estado.duracionIzquierda, estado.duracionDerecha);
+        } else if (estado.duracionIzquierda > 0.0) {
+            estado.duracionSegundos = estado.duracionIzquierda;
+        } else if (estado.duracionDerecha > 0.0) {
+            estado.duracionSegundos = estado.duracionDerecha;
+        }
+    }
+
+    void ConfirmarSincronizacion(EstadoComparadorVideosV2& estado) const {
+        if (estado.duracionIzquierda <= 0.0 || estado.duracionDerecha <= 0.0) {
+            estado.mensaje = L"Espera a que ambos videos carguen para confirmar la sincronización.";
+            return;
+        }
+        estado.sincronizacionConfirmada = true;
+        estado.duracionesSimetricas = std::abs(
+            estado.duracionIzquierda - estado.duracionDerecha) < 0.05;
+        estado.duracionSegundos = LimiteSincronizacion(estado);
+        estado.posicionSegundos = std::clamp(
+            estado.posicionSegundos, 0.0, estado.duracionSegundos);
+        estado.mensaje = estado.duracionesSimetricas
+            ? L"Sincronización confirmada: ambos videos tienen la misma duración."
+            : L"Sincronización confirmada con límite: el video más corto marca el final.";
+    }
+
     std::wstring FormatearTiempo(double segundos) const {
         const int total = std::max(0, static_cast<int>(std::lround(segundos)));
         wchar_t buffer[32]{};
@@ -2414,6 +2486,14 @@ public:
     }
 
 private:
+    static double LimiteSincronizacion(const EstadoComparadorVideosV2& estado) {
+        if (estado.duracionIzquierda > 0.0 && estado.duracionDerecha > 0.0) {
+            return std::min(estado.duracionIzquierda, estado.duracionDerecha);
+        }
+        return estado.duracionIzquierda > 0.0 ? estado.duracionIzquierda :
+               estado.duracionDerecha > 0.0 ? estado.duracionDerecha : 0.0;
+    }
+
     static DatosVideoComparacionV2 EnriquecerVideo(DatosVideoComparacionV2 datos) {
         if (datos.ruta.empty()) return datos;
         IShellItem2* elemento = nullptr;
@@ -2440,6 +2520,8 @@ private:
 
 /**** skipping file: v2/nucleo/servicio_comparador_archivos.hpp ****/
 /**** skipping file: v2/nucleo/servicio_texto.hpp ****/
+#include <propkey.h>
+#include <shobjidl.h>
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -2462,35 +2544,17 @@ struct EstadoDiffV2 {
     std::wstring mensaje;
 };
 
-// Contrato general de diff. Cada tipo de archivo puede aportar otra estrategia
-// sin modificar la vista ni el comparador padre.
+// Contrato inyectable para cualquier diff. El algoritmo de alineación común
+// vive aquí para que texto, documentos y futuras variantes compartan reglas.
 class ServicioDiffViewV2 : public ServicioComparadorArchivosV2 {
 public:
     ~ServicioDiffViewV2() override = default;
     virtual EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const = 0;
-};
 
-class ServicioComparadorTextoV2 final : public ServicioDiffViewV2 {
-public:
-    explicit ServicioComparadorTextoV2(std::shared_ptr<ServicioTextoV2> texto)
-        : m_texto(std::move(texto)) {}
-
-    EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const override {
-        EstadoDiffV2 resultado;
-        if (seleccion.size() != 2 || !m_texto) {
-            resultado.mensaje = L"Selecciona exactamente dos archivos de texto.";
-            return resultado;
-        }
-        DocumentoTextoV2 izquierda = m_texto->Cargar(seleccion[0]);
-        DocumentoTextoV2 derecha = m_texto->Cargar(seleccion[1]);
-        resultado = CompararLineas(izquierda.lineas, derecha.lineas);
-        resultado.mensaje = L"Diff de texto listo.";
-        return resultado;
-    }
-
-private:
-    static EstadoDiffV2 CompararLineas(const std::vector<std::wstring>& izquierda,
-                                        const std::vector<std::wstring>& derecha) {
+protected:
+    static EstadoDiffV2 CompararLineasGenerico(
+        const std::vector<std::wstring>& izquierda,
+        const std::vector<std::wstring>& derecha) {
         EstadoDiffV2 resultado;
         std::size_t i = 0;
         std::size_t j = 0;
@@ -2542,17 +2606,95 @@ private:
         return resultado;
     }
 
-    std::shared_ptr<ServicioTextoV2> m_texto;
+    static std::vector<std::wstring> DatosComoLineas(
+        const DatosArchivoComparacionV2& datos) {
+        std::vector<std::wstring> lineas;
+        lineas.push_back(L"Nombre: " + datos.nombre);
+        lineas.push_back(L"Formato: " + datos.extension);
+        lineas.push_back(L"SHA-256: " + datos.sha256);
+        lineas.push_back(L"Peso en bytes: " + std::to_wstring(datos.bytes));
+        lineas.push_back(datos.paginas ? L"Páginas: " + std::to_wstring(datos.paginas)
+                                       : L"Páginas: No disponible");
+        lineas.push_back(L"Contenido: el adaptador documental compara metadatos hasta habilitar extracción segura.");
+        return lineas;
+    }
 };
 
-class ServicioComparadorDocumentosV2 final : public ServicioComparadorArchivosV2 {
+class ServicioComparadorTextoV2 final : public ServicioDiffViewV2 {
 public:
+    explicit ServicioComparadorTextoV2(std::shared_ptr<ServicioTextoV2> texto)
+        : m_texto(std::move(texto)) {}
+
     EstadoComparadorArchivosV2 CrearComparacion(
         const std::vector<std::wstring>& seleccion) const override {
         EstadoComparadorArchivosV2 estado =
             ServicioComparadorArchivosV2::CrearComparacion(seleccion);
-        estado.mensaje = L"Comparación documental preparada; el contenido se mostrará por tipo de documento.";
+        if (seleccion.size() != 2 || !m_texto) return estado;
+        const DocumentoTextoV2 izquierda = m_texto->Cargar(seleccion[0]);
+        const DocumentoTextoV2 derecha = m_texto->Cargar(seleccion[1]);
+        estado.izquierda.lineas = izquierda.lineas.size();
+        estado.derecha.lineas = derecha.lineas.size();
+        estado.mensaje = L"Comparación de texto lista.";
         return estado;
+    }
+
+    EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const override {
+        EstadoDiffV2 resultado;
+        if (seleccion.size() != 2 || !m_texto) {
+            resultado.mensaje = L"Selecciona exactamente dos archivos de texto.";
+            return resultado;
+        }
+        const DocumentoTextoV2 izquierda = m_texto->Cargar(seleccion[0]);
+        const DocumentoTextoV2 derecha = m_texto->Cargar(seleccion[1]);
+        resultado = CompararLineasGenerico(izquierda.lineas, derecha.lineas);
+        resultado.mensaje = L"Diff de texto listo.";
+        return resultado;
+    }
+
+private:
+    std::shared_ptr<ServicioTextoV2> m_texto;
+};
+
+class ServicioComparadorDocumentosV2 final : public ServicioDiffViewV2 {
+public:
+    ServicioComparadorDocumentosV2() = default;
+
+    EstadoComparadorArchivosV2 CrearComparacion(
+        const std::vector<std::wstring>& seleccion) const override {
+        EstadoComparadorArchivosV2 estado =
+            ServicioComparadorArchivosV2::CrearComparacion(seleccion);
+        if (seleccion.size() != 2) return estado;
+        estado.izquierda.paginas = LeerPaginas(estado.izquierda.ruta);
+        estado.derecha.paginas = LeerPaginas(estado.derecha.ruta);
+        estado.mensaje = L"Comparación documental lista para Diff View.";
+        return estado;
+    }
+
+    EstadoDiffV2 CrearDiff(const std::vector<std::wstring>& seleccion) const override {
+        EstadoDiffV2 resultado;
+        if (seleccion.size() != 2) {
+            resultado.mensaje = L"Selecciona exactamente dos documentos del mismo formato.";
+            return resultado;
+        }
+        const EstadoComparadorArchivosV2 estado = CrearComparacion(seleccion);
+        resultado = CompararLineasGenerico(
+            DatosComoLineas(estado.izquierda), DatosComoLineas(estado.derecha));
+        resultado.mensaje = L"Diff documental preparado con un resumen semántico.";
+        return resultado;
+    }
+
+private:
+    static std::uintmax_t LeerPaginas(const std::wstring& ruta) {
+        IShellItem2* elemento = nullptr;
+        if (FAILED(SHCreateItemFromParsingName(
+                ruta.c_str(), nullptr, IID_IShellItem2,
+                reinterpret_cast<void**>(&elemento))) || !elemento) {
+            return 0;
+        }
+        ULONG paginas = 0;
+        const HRESULT resultado = elemento->GetUInt32(PKEY_Document_PageCount, &paginas);
+        elemento->Release();
+        return SUCCEEDED(resultado) ? static_cast<std::uintmax_t>(paginas) : 0;
     }
 };
 
@@ -2568,7 +2710,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.0.4";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.0";
 
 class ServicioVersionModV2 final {
 public:
@@ -2589,6 +2731,7 @@ public:
 #include <cstddef>
 #include <cwchar>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -3027,15 +3170,18 @@ private:
 
 class ServicioNotasV2 final {
 public:
-    explicit ServicioNotasV2(std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia)
-        : m_persistencia(std::move(persistencia)) {}
+    explicit ServicioNotasV2(
+        std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia,
+        std::function<bool()> politicaSincronizacion = {})
+        : m_persistencia(std::move(persistencia)),
+          m_politicaSincronizacion(std::move(politicaSincronizacion)) {}
 
     void Cargar() {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_cargado) return;
         CargarNativas();
         m_cargado = true;
-        SincronizarBloqueado(false);
+        ActualizarPuenteWinKlokBloqueado();
     }
 
     void Recargar() {
@@ -3046,7 +3192,7 @@ public:
         } else {
             CargarNativas();
         }
-        SincronizarBloqueado(false);
+        ActualizarPuenteWinKlokBloqueado();
     }
 
     const std::vector<NotaV2>& Notas() const { return m_notas; }
@@ -3066,7 +3212,7 @@ public:
         nota.modificado = Ahora();
         m_notas.insert(m_notas.begin(), nota);
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return nota.id;
     }
 
@@ -3080,7 +3226,7 @@ public:
         nota->modificado = Ahora();
         OrdenarBloqueado();
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return true;
     }
 
@@ -3092,7 +3238,7 @@ public:
         if (it->idWinKlok > 0) m_eliminadosWinKlok.push_back(it->idWinKlok);
         m_notas.erase(it);
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return true;
     }
 
@@ -3121,6 +3267,10 @@ public:
     ResultadoSincronizacionNotasV2 ForzarSincronizacion() {
         std::lock_guard<std::mutex> lock(m_mutex);
         CargarSiHaceFaltaBloqueado();
+        if (!SincronizacionActiva()) {
+            return {false, false, 0, 0,
+                    L"Activa \"Sincronización de notas con WinKlok (experimental)\" en Ajustes para usar esta función."};
+        }
         return SincronizarBloqueado(true);
     }
 
@@ -3344,6 +3494,43 @@ private:
         if (m_cargado) return;
         CargarNativas();
         m_cargado = true;
+        ActualizarPuenteWinKlokBloqueado();
+    }
+
+    bool SincronizacionActiva() const {
+        return m_politicaSincronizacion && m_politicaSincronizacion();
+    }
+
+    void ActualizarPuenteWinKlokBloqueado() {
+        if (SincronizacionActiva()) {
+            SincronizarBloqueado(false);
+            return;
+        }
+
+        // Al desactivar la opción, las notas importadas dejan de formar parte
+        // del modelo local y las nativas pierden el vínculo externo. Así el
+        // modo predeterminado queda completamente atómico y reversible sin
+        // escribir ni borrar datos del otro mod.
+        bool cambio = !m_eliminadosWinKlok.empty();
+        for (auto it = m_notas.begin(); it != m_notas.end();) {
+            if (it->fuente == FuenteNotaV2::WinKlok) {
+                BorrarCadenaFragmentada(ClaveNota(it->id));
+                it = m_notas.erase(it);
+                cambio = true;
+                continue;
+            }
+            if (it->idWinKlok != 0) {
+                it->idWinKlok = 0;
+                cambio = true;
+            }
+            ++it;
+        }
+        m_eliminadosWinKlok.clear();
+        m_winKlokDisponible = false;
+        if (cambio) {
+            OrdenarBloqueado();
+            GuardarNativasBloqueado();
+        }
     }
 
     void CargarNativas() {
@@ -3520,6 +3707,7 @@ private:
     }
 
     std::shared_ptr<ServicioPersistenciaWindhawkV2> m_persistencia;
+    std::function<bool()> m_politicaSincronizacion;
     mutable std::mutex m_mutex;
     mutable AlmacenNotasWinKlokV2 m_almacenWinKlok;
     std::vector<NotaV2> m_notas;
@@ -3531,6 +3719,42 @@ private:
 
 } // namespace SideViewV2
 /**** ended inlining v2/nucleo/servicio_notas.hpp ****/
+/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
+
+#include <atomic>
+
+namespace SideViewV2 {
+
+// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
+// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
+inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
+inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
+inline std::atomic_bool g_mostrarVersionModV2{true};
+inline std::atomic_bool g_modoSemanticoDiffViewV2{true};
+inline std::atomic_bool g_sincronizacionNotasWinKlokV2{false};
+
+inline bool ComparadorVideosExperimentalDisponibleV2() {
+    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
+}
+
+inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
+    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
+}
+
+inline bool MostrarVersionModDisponibleV2() {
+    return g_mostrarVersionModV2.load(std::memory_order_acquire);
+}
+
+inline bool ModoSemanticoDiffViewDisponibleV2() {
+    return g_modoSemanticoDiffViewV2.load(std::memory_order_acquire);
+}
+
+inline bool SincronizacionNotasWinKlokDisponibleV2() {
+    return g_sincronizacionNotasWinKlokV2.load(std::memory_order_acquire);
+}
+
+} // namespace SideViewV2
+/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
 #include <memory>
 namespace SideViewV2 {
 struct DependenciasVistaV2 {
@@ -3539,7 +3763,8 @@ struct DependenciasVistaV2 {
     std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia{std::make_shared<ServicioPersistenciaWindhawkV2>()};
     std::shared_ptr<ServicioVersionModV2> versionMod{std::make_shared<ServicioVersionModV2>()};
     std::shared_ptr<ServicioCompatibilidadGpuV2> compatibilidadGpu{std::make_shared<ServicioCompatibilidadGpuV2>()};
-    std::shared_ptr<ServicioNotasV2> notas{std::make_shared<ServicioNotasV2>(persistencia)};
+    std::shared_ptr<ServicioNotasV2> notas{std::make_shared<ServicioNotasV2>(
+        persistencia, [] { return SincronizacionNotasWinKlokDisponibleV2(); })};
     std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(persistencia, L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
     std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(persistencia, L"comprimidos")};
     std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(persistencia, L"imagenes")};
@@ -3911,32 +4136,7 @@ private:
 /**** skipping file: v2/ui/ventana_base.hpp ****/
 /**** skipping file: v2/nucleo/servicios_vistas.hpp ****/
 /**** skipping file: v2/nucleo/servicio_com.hpp ****/
-/**** start inlining v2/nucleo/configuracion_v2.hpp ****/
-
-#include <atomic>
-
-namespace SideViewV2 {
-
-// Interruptor de seguridad para la funcionalidad experimental. Mantenerlo
-// aislado permite desactivar el flujo completo sin acoplarlo a las vistas.
-inline std::atomic_bool g_comparadorVideosExperimentalV2{true};
-inline std::atomic_bool g_comparadorVideosPantallaCompletaV2{true};
-inline std::atomic_bool g_mostrarVersionModV2{true};
-
-inline bool ComparadorVideosExperimentalDisponibleV2() {
-    return g_comparadorVideosExperimentalV2.load(std::memory_order_acquire);
-}
-
-inline bool ComparadorVideosPantallaCompletaDisponibleV2() {
-    return g_comparadorVideosPantallaCompletaV2.load(std::memory_order_acquire);
-}
-
-inline bool MostrarVersionModDisponibleV2() {
-    return g_mostrarVersionModV2.load(std::memory_order_acquire);
-}
-
-} // namespace SideViewV2
-/**** ended inlining v2/nucleo/configuracion_v2.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 #include <windows.h>
 #include <shellapi.h>
 #include <shlobj.h>
@@ -5649,12 +5849,15 @@ private:
 /**** skipping file: v2/nucleo/servicio_comparador_archivos.hpp ****/
 #include <windowsx.h>
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 namespace SideViewV2 {
 
+// Chrome común del comparador. La vista dibuja y enruta eventos; las reglas
+// de comparación y navegación permanecen en los servicios inyectados.
 class VistaComparadorArchivosV2 : public IPanelContenido {
 public:
     explicit VistaComparadorArchivosV2(
@@ -5664,6 +5867,7 @@ public:
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
                             const std::wstring&) override {
         m_archivos = archivos;
+        m_modoDiffView = false;
         CargarComparacionComun(archivos);
     }
 
@@ -5677,12 +5881,18 @@ public:
                 PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
                 return true;
             }
+            if (TieneDiffView() && PtInRect(&m_rcBotonDiffView, punto)) {
+                m_modoDiffView = !m_modoDiffView;
+                AlCambiarModoDiff(m_modoDiffView);
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+                return true;
+            }
         }
         if (msg == WM_KEYDOWN && wParam == VK_ESCAPE) {
             PostMessageW(hwndPanel, WM_SIDEVIEW_CLOSE_COMPARADOR_ARCHIVOS, 0, 0);
             return true;
         }
-        return false;
+        return ProcesarMensajeContenido(msg, wParam, lParam, hwndPanel);
     }
 
     bool ProcesarMensajeTeclado(UINT msg, WPARAM wParam, LPARAM lParam,
@@ -5704,16 +5914,34 @@ public:
         m_rcVolver = {rect.left + margen, rect.top + 12,
                       rect.left + 124, rect.top + 40};
         DibujarBoton(hdc, m_rcVolver, L"←  Volver", tema);
+
         SetTextColor(hdc, tema.textoPrincipal);
         RECT encabezado{rect.left + 142, rect.top + 12, rect.right - margen, rect.top + 40};
         DrawTextW(hdc, NombreVista(), -1, &encabezado,
                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
 
-        RECT info{rect.left + margen, rect.top + 58, rect.right - margen, rect.top + 194};
-        DibujarInformacionComun(hdc, info, tema, texto);
-        m_rcAreaEspecifica = {rect.left + margen, rect.top + 208,
-                              rect.right - margen, rect.bottom - margen};
-        RenderizarContenido(hdc, m_rcAreaEspecifica, tema, texto);
+        m_rcBotonDiffView = {};
+        if (TieneDiffView()) {
+            m_rcBotonDiffView = {rect.right - 178, rect.top + 12,
+                                 rect.right - margen, rect.top + 40};
+            DibujarBoton(hdc, m_rcBotonDiffView,
+                         m_modoDiffView ? L"Vista lado a lado" : L"Diff View", tema);
+        }
+
+        const int altoResumen = 154;
+        m_rcAreaEspecifica = {rect.left + margen, rect.top + 54,
+                              rect.right - margen,
+                              std::max(rect.top + 56, rect.bottom - altoResumen - 24)};
+        m_rcResumen = {rect.left + margen, m_rcAreaEspecifica.bottom + 12,
+                       rect.right - margen, rect.bottom - margen};
+
+        SelectObject(hdc, texto);
+        if (m_modoDiffView && TieneDiffView()) {
+            RenderizarDiffView(hdc, m_rcAreaEspecifica, tema, texto);
+        } else {
+            RenderizarContenido(hdc, m_rcAreaEspecifica, tema, texto);
+        }
+        DibujarResumenTresColumnas(hdc, m_rcResumen, tema, texto);
 
         SelectObject(hdc, anterior);
         DeleteObject(titulo);
@@ -5722,13 +5950,23 @@ public:
 
 protected:
     virtual const wchar_t* NombreVista() const { return L"Comparar archivos"; }
+    virtual bool TieneDiffView() const { return false; }
+    virtual void AlCambiarModoDiff(bool) {}
+    virtual bool ProcesarMensajeContenido(UINT, WPARAM, LPARAM, HWND) { return false; }
 
     virtual void RenderizarContenido(HDC hdc, const RECT& rect,
                                      const TemaVisual& tema, HFONT fuente) {
+        DibujarContenedor(hdc, rect, tema);
+        SelectObject(hdc, fuente);
         SetTextColor(hdc, tema.textoSecundario);
         RECT mensaje = rect;
         DrawTextW(hdc, m_estado.mensaje.c_str(), -1, &mensaje,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    virtual void RenderizarDiffView(HDC hdc, const RECT& rect,
+                                    const TemaVisual& tema, HFONT fuente) {
+        RenderizarContenido(hdc, rect, tema, fuente);
     }
 
     void CargarComparacionComun(const std::vector<std::wstring>& archivos) {
@@ -5738,41 +5976,11 @@ protected:
 
     const EstadoComparadorArchivosV2& EstadoComun() const { return m_estado; }
     const RECT& AreaEspecifica() const { return m_rcAreaEspecifica; }
+    bool EstaEnDiffView() const { return m_modoDiffView; }
+    std::shared_ptr<ServicioComparadorArchivosV2> ServicioComun() const { return m_servicio; }
 
-    void DibujarInformacionComun(HDC hdc, const RECT& info,
-                                 const TemaVisual& tema, HFONT fuente) {
-        HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta);
-        FillRect(hdc, &info, fondo);
-        DeleteObject(fondo);
-        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
-        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
-        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
-        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
-        RoundRect(hdc, info.left, info.top, info.right, info.bottom, 8, 8);
-        SelectObject(hdc, anteriorBrocha);
-        SelectObject(hdc, anterior);
-        DeleteObject(borde);
-
-        SelectObject(hdc, fuente);
-        SetTextColor(hdc, tema.textoPrincipal);
-        RECT titulo{info.left + 12, info.top + 8, info.right - 12, info.top + 28};
-        DrawTextW(hdc, L"INFORMACIÓN GENERAL", -1, &titulo,
-                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-        const int mitad = (info.right - info.left) / 2;
-        DibujarDato(hdc, info, info.left + 12, info.left + mitad - 12,
-                    m_estado.izquierda, L"Archivo 1", tema);
-        DibujarDato(hdc, info, info.left + mitad + 12, info.right - 12,
-                    m_estado.derecha, L"Archivo 2", tema);
-        SetTextColor(hdc, tema.acento);
-        RECT diferencia{info.left + 12, info.bottom - 26, info.right - 12, info.bottom - 8};
-        std::wstring peso = L"Diferencia de peso: " +
-            (m_servicio ? m_servicio->FormatearDiferencia(
-                m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B");
-        DrawTextW(hdc, peso.c_str(), -1, &diferencia,
-                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-    }
-
-    void DibujarContenedor(HDC hdc, const RECT& rect, const TemaVisual& tema) {
+    void DibujarContenedor(HDC hdc, const RECT& rect, const TemaVisual& tema) const {
+        if (rect.right <= rect.left || rect.bottom <= rect.top) return;
         HBRUSH fondo = CreateSolidBrush(tema.fondoTarjeta);
         FillRect(hdc, &rect, fondo);
         DeleteObject(fondo);
@@ -5787,14 +5995,22 @@ protected:
     }
 
     void DibujarBoton(HDC hdc, const RECT& rect, const wchar_t* texto,
-                      const TemaVisual& tema) {
+                      const TemaVisual& tema) const {
         HBRUSH fondo = CreateSolidBrush(tema.botonFondo);
         FillRect(hdc, &rect, fondo);
         DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anterior = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+        RoundRect(hdc, rect.left, rect.top, rect.right, rect.bottom, 6, 6);
+        SelectObject(hdc, anteriorBrocha);
+        SelectObject(hdc, anterior);
+        DeleteObject(borde);
         SetTextColor(hdc, tema.textoPrincipal);
         RECT textoRect = rect;
         DrawTextW(hdc, texto, -1, &textoRect,
-                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
 
     static HFONT CrearFuente(int altura, int peso) {
@@ -5804,32 +6020,108 @@ protected:
                            L"Segoe UI Variable Text");
     }
 
-private:
-    void DibujarDato(HDC hdc, const RECT& info, int izquierda, int derecha,
-                     const DatosArchivoComparacionV2& datos,
-                     const wchar_t* etiqueta, const TemaVisual& tema) {
-        RECT nombre{izquierda, info.top + 36, derecha, info.top + 58};
-        SetTextColor(hdc, tema.textoPrincipal);
-        std::wstring texto = std::wstring(etiqueta) + L": " + datos.nombre;
-        DrawTextW(hdc, texto.c_str(), -1, &nombre,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        RECT tamano{izquierda, info.top + 60, derecha, info.top + 82};
-        SetTextColor(hdc, tema.textoSecundario);
-        std::wstring peso = L"Peso: " + (m_servicio ? m_servicio->FormatearTamano(datos.bytes) : L"0 B");
-        DrawTextW(hdc, peso.c_str(), -1, &tamano,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-        RECT hash{izquierda, info.top + 84, derecha, info.top + 106};
-        std::wstring sha = L"SHA-256: " + datos.sha256;
-        DrawTextW(hdc, sha.c_str(), -1, &hash,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    static std::wstring TextoConteo(std::uintmax_t valor) {
+        return valor == 0 ? L"No aplica" : std::to_wstring(valor);
     }
 
-    std::shared_ptr<ServicioComparadorArchivosV2> m_servicio;
-    EstadoComparadorArchivosV2 m_estado;
-    std::vector<std::wstring> m_archivos;
+    void DibujarResumenTresColumnas(HDC hdc, const RECT& rect,
+                                    const TemaVisual& tema, HFONT fuente) const {
+        DibujarContenedor(hdc, rect, tema);
+        SelectObject(hdc, fuente);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT titulo{rect.left + 12, rect.top + 8, rect.right - 12, rect.top + 28};
+        DrawTextW(hdc, L"RESUMEN DE LA COMPARACIÓN", -1, &titulo,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
+        const int anchoColumna = (rect.right - rect.left - 24) / 3;
+        const int yEncabezado = rect.top + 30;
+        const int yDatos = rect.top + 50;
+        const int altoFila = 18;
+        const RECT columnas[3] = {
+            {rect.left + 12, rect.left + 12 + anchoColumna, 0, 0},
+            {rect.left + 12 + anchoColumna, rect.left + 12 + anchoColumna * 2, 0, 0},
+            {rect.left + 12 + anchoColumna * 2, rect.right - 12, 0, 0}};
+        const wchar_t* encabezados[] = {L"ARCHIVO 1", L"ARCHIVO 2", L"DIFERENCIAS"};
+        for (int i = 0; i < 3; ++i) {
+            RECT cab{columnas[i].left, yEncabezado, columnas[i].right, yEncabezado + 18};
+            SetTextColor(hdc, tema.acento);
+            DrawTextW(hdc, encabezados[i], -1, &cab,
+                      DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        }
+
+        const std::wstring diferenciasSha =
+            m_estado.izquierda.sha256 == L"No disponible" ||
+            m_estado.derecha.sha256 == L"No disponible"
+                ? L"No aplica"
+                : (m_estado.izquierda.sha256 == m_estado.derecha.sha256 ? L"Iguales" : L"Diferentes");
+        const std::wstring diferenciaLineas =
+            m_estado.izquierda.lineas && m_estado.derecha.lineas
+                ? std::to_wstring(static_cast<long long>(m_estado.derecha.lineas) -
+                                  static_cast<long long>(m_estado.izquierda.lineas))
+                : L"No aplica";
+        const std::wstring diferenciaPaginas =
+            m_estado.izquierda.paginas && m_estado.derecha.paginas
+                ? std::to_wstring(static_cast<long long>(m_estado.derecha.paginas) -
+                                  static_cast<long long>(m_estado.izquierda.paginas))
+                : L"No aplica";
+        const std::wstring filas[5][3] = {
+            {m_estado.izquierda.nombre, m_estado.derecha.nombre, L"No aplica"},
+            {m_estado.izquierda.sha256, m_estado.derecha.sha256, diferenciasSha},
+            {m_servicio ? m_servicio->FormatearTamano(m_estado.izquierda.bytes) : L"0 B",
+             m_servicio ? m_servicio->FormatearTamano(m_estado.derecha.bytes) : L"0 B",
+             m_servicio ? m_servicio->FormatearDiferencia(m_estado.izquierda.bytes, m_estado.derecha.bytes) : L"+0 B"},
+            {TextoConteo(m_estado.izquierda.lineas), TextoConteo(m_estado.derecha.lineas), diferenciaLineas},
+            {TextoConteo(m_estado.izquierda.paginas), TextoConteo(m_estado.derecha.paginas), diferenciaPaginas}
+        };
+        const wchar_t* etiquetas[] = {L"Nombre: ", L"SHA-256: ", L"Peso: ", L"Líneas: ", L"Páginas: "};
+        for (int fila = 0; fila < 5; ++fila) {
+            for (int columna = 0; columna < 3; ++columna) {
+                RECT dato{columnas[columna].left, yDatos + fila * altoFila,
+                          columnas[columna].right, yDatos + fila * altoFila + altoFila};
+                SetTextColor(hdc, columna == 2 ? tema.acento : tema.textoSecundario);
+                std::wstring valor = (columna == 0 ? etiquetas[fila] : L"") + filas[fila][columna];
+                DrawTextW(hdc, valor.c_str(), -1, &dato,
+                          DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+            }
+        }
+    }
+
+    void DibujarControlDesplazamiento(HDC hdc, const RECT& rect,
+                                       std::size_t maximo, std::size_t actual,
+                                       const TemaVisual& tema) const {
+        if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+        const int y = rect.top + (rect.bottom - rect.top) / 2;
+        RECT linea{rect.left + 8, y - 2, rect.right - 8, y + 2};
+        HBRUSH brocha = CreateSolidBrush(tema.borde);
+        FillRect(hdc, &linea, brocha);
+        DeleteObject(brocha);
+        const double proporcion = maximo == 0 ? 0.0 :
+            static_cast<double>(std::min(actual, maximo)) / static_cast<double>(maximo);
+        const int x = linea.left + static_cast<int>((linea.right - linea.left) * proporcion);
+        brocha = CreateSolidBrush(tema.acento);
+        Ellipse(hdc, x - 6, y - 6, x + 6, y + 6);
+        DeleteObject(brocha);
+    }
+
+    std::size_t DesplazamientoDesdePunto(const RECT& rect, POINT punto,
+                                         std::size_t maximo) const {
+        const int inicio = rect.left + 8;
+        const int fin = rect.right - 8;
+        if (fin <= inicio || maximo == 0) return 0;
+        const double proporcion = std::clamp(
+            static_cast<double>(punto.x - inicio) / static_cast<double>(fin - inicio), 0.0, 1.0);
+        return static_cast<std::size_t>(proporcion * static_cast<double>(maximo));
+    }
+
     HWND m_panel{nullptr};
     RECT m_rcVolver{};
+    RECT m_rcBotonDiffView{};
     RECT m_rcAreaEspecifica{};
+    RECT m_rcResumen{};
+    bool m_modoDiffView{false};
+    std::vector<std::wstring> m_archivos;
+    EstadoComparadorArchivosV2 m_estado;
+    std::shared_ptr<ServicioComparadorArchivosV2> m_servicio;
 };
 
 } // namespace SideViewV2
@@ -5969,6 +6261,17 @@ public:
             InvalidateRect(hwndPanel, nullptr, FALSE);
             return true;
         }
+        if (PtInRect(&m_rcConfirmarSincronizacion, punto)) {
+            if (m_servicio) {
+                m_servicio->ActualizarDuraciones(
+                    m_estado,
+                    m_reproductorIzquierda ? m_reproductorIzquierda->Duracion() : 0.0,
+                    m_reproductorDerecha ? m_reproductorDerecha->Duracion() : 0.0);
+                m_servicio->ConfirmarSincronizacion(m_estado);
+            }
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
         return false;
     }
 
@@ -6047,14 +6350,19 @@ public:
                           m_rcRetroceder.right + 116, yBotones + 30};
         m_rcAvanzar = {m_rcReproducir.right + 8, yBotones,
                        m_rcReproducir.right + 100, yBotones + 30};
+        m_rcConfirmarSincronizacion = {m_rcAvanzar.right + 8, yBotones,
+                                       m_rcAvanzar.right + 190, yBotones + 30};
         DibujarBoton(hdc, m_rcRetroceder, L"-10 s", tema, true);
         DibujarBoton(hdc, m_rcReproducir,
                      m_estado.reproduciendo ? L"Pausar" : L"Reproducir", tema, true);
         DibujarBoton(hdc, m_rcAvanzar, L"+10 s", tema, true);
+        DibujarBoton(hdc, m_rcConfirmarSincronizacion,
+                     m_estado.sincronizacionConfirmada ? L"Sincronización confirmada" : L"Confirmar sincronización",
+                     tema, m_estado.sincronizacionConfirmada);
 
         SelectObject(hdc, texto);
         SetTextColor(hdc, tema.textoSecundario);
-        RECT tiempo{m_rcAvanzar.right + 12, yBotones,
+        RECT tiempo{m_rcConfirmarSincronizacion.right + 12, yBotones,
                     rect.right - margen, yBotones + 30};
         std::wstring etiquetaTiempo = m_servicio
             ? m_servicio->FormatearTiempo(m_estado.posicionSegundos) + L" / " +
@@ -6158,12 +6466,8 @@ private:
             ? m_reproductorIzquierda->Duracion() : 0.0;
         const double duracionDerecha = m_reproductorDerecha
             ? m_reproductorDerecha->Duracion() : 0.0;
-        if (duracionIzquierda > 0.0 && duracionDerecha > 0.0) {
-            m_estado.duracionSegundos = std::min(duracionIzquierda, duracionDerecha);
-        } else if (duracionIzquierda > 0.0) {
-            m_estado.duracionSegundos = duracionIzquierda;
-        } else if (duracionDerecha > 0.0) {
-            m_estado.duracionSegundos = duracionDerecha;
+        if (m_servicio) {
+            m_servicio->ActualizarDuraciones(m_estado, duracionIzquierda, duracionDerecha);
         }
 
         IReproductorVideoV2* reloj = m_reproductorIzquierda &&
@@ -6359,6 +6663,7 @@ private:
     RECT m_rcRetroceder{};
     RECT m_rcReproducir{};
     RECT m_rcAvanzar{};
+    RECT m_rcConfirmarSincronizacion{};
 };
 
 } // namespace SideViewV2
@@ -6367,6 +6672,7 @@ private:
 /**** start inlining v2/vistas/vista_comparador_texto.hpp ****/
 
 /**** skipping file: v2/vistas/vista_comparador_archivos.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 /**** skipping file: v2/nucleo/servicio_diff.hpp ****/
 #include <windowsx.h>
 #include <algorithm>
@@ -6383,46 +6689,136 @@ public:
                             const std::wstring& carpeta) override {
         VistaComparadorArchivosV2::AlCambiarSeleccion(archivos, carpeta);
         m_estadoDiff = m_diff ? m_diff->CrearDiff(archivos) : EstadoDiffV2{};
-        m_scroll = 0;
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
     }
 
-    bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam,
-                              HWND hwndPanel) override {
-        if (VistaComparadorArchivosV2::ProcesarMensajeRaton(msg, wParam, lParam, hwndPanel)) return true;
+protected:
+    const wchar_t* NombreVista() const override { return L"Comparar texto"; }
+    bool TieneDiffView() const override { return true; }
+
+    void AlCambiarModoDiff(bool) override {
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+        m_sliderActivo = 0;
+    }
+
+    bool ProcesarMensajeContenido(UINT msg, WPARAM wParam, LPARAM lParam,
+                                  HWND hwndPanel) override {
+        const int maximo = MaximoDesplazamiento();
         if (msg == WM_MOUSEWHEEL) {
             const int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -3 : 3;
-            const int filas = static_cast<int>(m_estadoDiff.lineas.size());
-            m_scroll = std::max(0, std::min(m_scroll + delta, std::max(0, filas - 8)));
+            if (EstaEnDiffView()) {
+                m_scrollGeneral = std::clamp(m_scrollGeneral + delta, 0, maximo);
+            } else {
+                m_scrollIzquierda = std::clamp(m_scrollIzquierda + delta, 0, maximoIzquierda());
+                m_scrollDerecha = std::clamp(m_scrollDerecha + delta, 0, maximoDerecha());
+            }
             InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (msg == WM_KEYDOWN) {
+            if (wParam == VK_UP || wParam == VK_DOWN) {
+                const int delta = wParam == VK_UP ? -1 : 1;
+                if (EstaEnDiffView()) m_scrollGeneral = std::clamp(m_scrollGeneral + delta, 0, maximo);
+                else {
+                    m_scrollIzquierda = std::clamp(m_scrollIzquierda + delta, 0, maximoIzquierda());
+                    m_scrollDerecha = std::clamp(m_scrollDerecha + delta, 0, maximoDerecha());
+                }
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+                return true;
+            }
+        }
+        if (msg == WM_LBUTTONDOWN) {
+            POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (EstaEnDiffView() && PtInRect(&m_rcSliderGeneral, punto)) m_sliderActivo = 3;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderIzquierda, punto)) m_sliderActivo = 1;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderDerecha, punto)) m_sliderActivo = 2;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderGeneral, punto)) m_sliderActivo = 3;
+            else return false;
+            ActualizarSlider(punto, hwndPanel);
+            SetCapture(hwndPanel);
+            return true;
+        }
+        if (msg == WM_MOUSEMOVE && m_sliderActivo != 0) {
+            ActualizarSlider(POINT{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, hwndPanel);
+            return true;
+        }
+        if (msg == WM_LBUTTONUP && m_sliderActivo != 0) {
+            m_sliderActivo = 0;
+            ReleaseCapture();
             return true;
         }
         return false;
     }
 
-protected:
-    const wchar_t* NombreVista() const override { return L"Comparar texto · Diff estilo GitHub"; }
-
     void RenderizarContenido(HDC hdc, const RECT& rect, const TemaVisual& tema,
                              HFONT fuente) override {
         DibujarContenedor(hdc, rect, tema);
-        RECT cabeceraIzquierda{rect.left + 10, rect.top + 8,
-                               rect.left + (rect.right - rect.left) / 2 - 6, rect.top + 32};
-        RECT cabeceraDerecha{rect.left + (rect.right - rect.left) / 2 + 6, rect.top + 8,
-                             rect.right - 10, rect.top + 32};
-        SetTextColor(hdc, tema.textoPrincipal);
-        DrawTextW(hdc, L"Archivo 1", -1, &cabeceraIzquierda,
-                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-        DrawTextW(hdc, L"Archivo 2", -1, &cabeceraDerecha,
-                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
-
         const int mitad = (rect.right - rect.left) / 2;
         const int altoFila = 22;
-        const int inicio = rect.top + 36;
-        const int visibles = std::max(0, static_cast<int>(
-            (rect.bottom - inicio - 6) / altoFila));
+        const int inicio = rect.top + 34;
+        const int pie = rect.bottom - 58;
+        const int visibles = std::max(0, (pie - inicio) / altoFila);
+        RECT izquierda{rect.left + 8, rect.top + 8, rect.left + mitad - 4, rect.top + 28};
+        RECT derecha{rect.left + mitad + 4, rect.top + 8, rect.right - 8, rect.top + 28};
+        SetTextColor(hdc, tema.textoPrincipal);
+        DrawTextW(hdc, L"Archivo 1", -1, &izquierda, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(hdc, L"Archivo 2", -1, &derecha, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+
         SelectObject(hdc, fuente);
         for (int visible = 0; visible < visibles; ++visible) {
-            const std::size_t indice = static_cast<std::size_t>(m_scroll + visible);
+            const int y = inicio + visible * altoFila;
+            const std::size_t indiceIzquierda = static_cast<std::size_t>(m_scrollIzquierda + visible);
+            const std::size_t indiceDerecha = static_cast<std::size_t>(m_scrollDerecha + visible);
+            DibujarLinea(hdc, rect, mitad, y, altoFila,
+                         indiceIzquierda < m_estadoDiff.lineas.size()
+                             ? &m_estadoDiff.lineas[indiceIzquierda] : nullptr,
+                         true, tema);
+            DibujarLinea(hdc, rect, mitad, y, altoFila,
+                         indiceDerecha < m_estadoDiff.lineas.size()
+                             ? &m_estadoDiff.lineas[indiceDerecha] : nullptr,
+                         false, tema);
+        }
+
+        m_rcSliderIzquierda = {rect.left + 10, rect.bottom - 38,
+                               rect.left + mitad - 8, rect.bottom - 24};
+        m_rcSliderDerecha = {rect.left + mitad + 8, rect.bottom - 38,
+                             rect.right - 10, rect.bottom - 24};
+        m_rcSliderGeneral = {rect.left + 10, rect.bottom - 20,
+                             rect.right - 10, rect.bottom - 6};
+        DibujarControlDesplazamiento(hdc, m_rcSliderIzquierda,
+                                     static_cast<std::size_t>(maximoIzquierda()),
+                                     static_cast<std::size_t>(m_scrollIzquierda), tema);
+        DibujarControlDesplazamiento(hdc, m_rcSliderDerecha,
+                                     static_cast<std::size_t>(maximoDerecha()),
+                                     static_cast<std::size_t>(m_scrollDerecha), tema);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT estado{rect.left + 10, rect.bottom - 54, rect.right - 10, rect.bottom - 40};
+        DrawTextW(hdc, L"Arriba: desplazamiento independiente · Abajo: sincronizado",
+                  -1, &estado, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+        DibujarControlDesplazamiento(hdc, m_rcSliderGeneral,
+                                     static_cast<std::size_t>(std::min(maximoIzquierda(), maximoDerecha())),
+                                     static_cast<std::size_t>(std::min(m_scrollIzquierda, m_scrollDerecha)), tema);
+    }
+
+    void RenderizarDiffView(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                            HFONT fuente) override {
+        DibujarContenedor(hdc, rect, tema);
+        const int altoFila = 24;
+        const int inicio = rect.top + 34;
+        const int pie = rect.bottom - 30;
+        const int visibles = std::max(0, (pie - inicio) / altoFila);
+        const bool semantico = ModoSemanticoDiffViewDisponibleV2();
+        RECT encabezado{rect.left + 12, rect.top + 8, rect.right - 12, rect.top + 30};
+        SetTextColor(hdc, tema.acento);
+        DrawTextW(hdc, semantico ? L"Diff semántico · lectura guiada" : L"Diff clásico",
+                  -1, &encabezado, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, fuente);
+        for (int visible = 0; visible < visibles; ++visible) {
+            const std::size_t indice = static_cast<std::size_t>(m_scrollGeneral + visible);
             if (indice >= m_estadoDiff.lineas.size()) break;
             const LineaDiffV2& linea = m_estadoDiff.lineas[indice];
             const int y = inicio + visible * altoFila;
@@ -6430,34 +6826,23 @@ protected:
             if (linea.tipo == TipoLineaDiffV2::Agregada) color = RGB(218, 245, 220);
             else if (linea.tipo == TipoLineaDiffV2::Eliminada) color = RGB(250, 220, 220);
             else if (linea.tipo == TipoLineaDiffV2::Modificada) color = RGB(250, 240, 204);
-            HBRUSH fondoFila = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
-            RECT filaIzq{rect.left + 2, y, rect.left + mitad - 2, y + altoFila};
-            RECT filaDer{rect.left + mitad + 2, y, rect.right - 2, y + altoFila};
-            FillRect(hdc, &filaIzq, fondoFila);
-            FillRect(hdc, &filaDer, fondoFila);
-            DeleteObject(fondoFila);
-            SetTextColor(hdc, tema.textoSecundario);
-            wchar_t numeroIzq[24]{}, numeroDer[24]{};
-            swprintf_s(numeroIzq, L"%4zu", linea.lineaIzquierda);
-            swprintf_s(numeroDer, L"%4zu", linea.lineaDerecha);
-            RECT ni{filaIzq.left + 4, y, filaIzq.left + 42, y + altoFila};
-            RECT nd{filaDer.left + 4, y, filaDer.left + 42, y + altoFila};
-            DrawTextW(hdc, numeroIzq, -1, &ni, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            DrawTextW(hdc, numeroDer, -1, &nd, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
-            SetTextColor(hdc, linea.tipo == TipoLineaDiffV2::Agregada ? RGB(25, 130, 50) :
-                               linea.tipo == TipoLineaDiffV2::Eliminada ? RGB(170, 40, 40) :
-                               tema.textoPrincipal);
-            RECT ti{filaIzq.left + 50, y, filaIzq.right - 6, y + altoFila};
-            RECT td{filaDer.left + 50, y, filaDer.right - 6, y + altoFila};
-            DrawTextW(hdc, linea.izquierda.c_str(), -1, &ti,
-                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
-            DrawTextW(hdc, linea.derecha.c_str(), -1, &td,
+            HBRUSH fila = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
+            RECT fondoFila{rect.left + 4, y, rect.right - 4, y + altoFila};
+            FillRect(hdc, &fondoFila, fila);
+            DeleteObject(fila);
+            std::wstring texto = semantico ? TextoSemantico(linea) : TextoClasico(linea);
+            SetTextColor(hdc, linea.tipo == TipoLineaDiffV2::Igual
+                                   ? tema.textoPrincipal : tema.acento);
+            RECT lineaRect{fondoFila.left + 8, y, fondoFila.right - 8, y + altoFila};
+            DrawTextW(hdc, texto.c_str(), -1, &lineaRect,
                       DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
         }
-        SetTextColor(hdc, tema.textoSecundario);
-        RECT estado{rect.left + 10, rect.bottom - 24, rect.right - 10, rect.bottom - 6};
-        DrawTextW(hdc, m_estadoDiff.mensaje.c_str(), -1, &estado,
-                  DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        m_rcSliderGeneral = {rect.left + 12, rect.bottom - 24, rect.right - 12, rect.bottom - 8};
+        m_rcSliderIzquierda = {};
+        m_rcSliderDerecha = {};
+        DibujarControlDesplazamiento(hdc, m_rcSliderGeneral,
+                                     static_cast<std::size_t>(MaximoDesplazamiento()),
+                                     static_cast<std::size_t>(m_scrollGeneral), tema);
     }
 
 private:
@@ -6468,9 +6853,88 @@ private:
                    (GetBValue(frente) * p + GetBValue(fondo) * (100 - p)) / 100);
     }
 
+    static std::wstring TextoClasico(const LineaDiffV2& linea) {
+        return L"[" + std::to_wstring(linea.lineaIzquierda) + L" | " +
+               std::to_wstring(linea.lineaDerecha) + L"] " + linea.izquierda +
+               (linea.tipo == TipoLineaDiffV2::Modificada ? L"  →  " : L"") + linea.derecha;
+    }
+
+    static std::wstring TextoSemantico(const LineaDiffV2& linea) {
+        switch (linea.tipo) {
+            case TipoLineaDiffV2::Agregada: return L"Añadido en el archivo 2: " + linea.derecha;
+            case TipoLineaDiffV2::Eliminada: return L"Eliminado del archivo 1: " + linea.izquierda;
+            case TipoLineaDiffV2::Modificada: return L"Cambio: " + linea.izquierda + L"  →  " + linea.derecha;
+            case TipoLineaDiffV2::Igual: return L"Sin cambios: " + linea.izquierda;
+        }
+        return {};
+    }
+
+    void DibujarLinea(HDC hdc, const RECT& rect, int mitad, int y, int alto,
+                      const LineaDiffV2* linea, bool izquierda,
+                      const TemaVisual& tema) const {
+        const int inicio = izquierda ? rect.left + 2 : rect.left + mitad + 2;
+        const int fin = izquierda ? rect.left + mitad - 2 : rect.right - 2;
+        RECT fila{inicio, y, fin, y + alto};
+        if (!linea) return;
+        COLORREF color = tema.fondoTarjeta;
+        if (linea->tipo == TipoLineaDiffV2::Agregada) color = RGB(218, 245, 220);
+        else if (linea->tipo == TipoLineaDiffV2::Eliminada) color = RGB(250, 220, 220);
+        else if (linea->tipo == TipoLineaDiffV2::Modificada) color = RGB(250, 240, 204);
+        HBRUSH brocha = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
+        FillRect(hdc, &fila, brocha);
+        DeleteObject(brocha);
+        const std::wstring& texto = izquierda ? linea->izquierda : linea->derecha;
+        const std::size_t numero = izquierda ? linea->lineaIzquierda : linea->lineaDerecha;
+        wchar_t numeroTexto[24]{};
+        swprintf_s(numeroTexto, L"%4zu", numero);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT numeroRect{fila.left + 4, y, fila.left + 42, y + alto};
+        DrawTextW(hdc, numeroTexto, -1, &numeroRect,
+                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT contenido{fila.left + 50, y, fila.right - 6, y + alto};
+        DrawTextW(hdc, texto.c_str(), -1, &contenido,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    int MaximoDesplazamiento() const {
+        const int alto = static_cast<int>(AreaEspecifica().bottom - AreaEspecifica().top);
+        const int visibles = std::max(1, (alto - 64) / 24);
+        return std::max(0, static_cast<int>(m_estadoDiff.lineas.size()) - visibles);
+    }
+
+    int maximoIzquierda() const { return MaximoDesplazamiento(); }
+    int maximoDerecha() const { return MaximoDesplazamiento(); }
+
+    void ActualizarSlider(POINT punto, HWND hwndPanel) {
+        if (m_sliderActivo == 3) {
+            m_scrollGeneral = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderGeneral, punto, static_cast<std::size_t>(MaximoDesplazamiento())));
+            if (!EstaEnDiffView()) {
+                const int limite = std::min(maximoIzquierda(), maximoDerecha());
+                m_scrollIzquierda = std::min(m_scrollGeneral, maximoIzquierda());
+                m_scrollDerecha = std::min(m_scrollGeneral, maximoDerecha());
+                m_scrollGeneral = std::min(m_scrollGeneral, limite);
+            }
+        } else if (m_sliderActivo == 1) {
+            m_scrollIzquierda = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderIzquierda, punto, static_cast<std::size_t>(maximoIzquierda())));
+        } else if (m_sliderActivo == 2) {
+            m_scrollDerecha = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderDerecha, punto, static_cast<std::size_t>(maximoDerecha())));
+        }
+        InvalidateRect(hwndPanel, nullptr, FALSE);
+    }
+
     std::shared_ptr<ServicioComparadorTextoV2> m_diff;
     EstadoDiffV2 m_estadoDiff;
-    int m_scroll{0};
+    int m_scrollIzquierda{0};
+    int m_scrollDerecha{0};
+    int m_scrollGeneral{0};
+    int m_sliderActivo{0};
+    RECT m_rcSliderIzquierda{};
+    RECT m_rcSliderDerecha{};
+    RECT m_rcSliderGeneral{};
 };
 
 } // namespace SideViewV2
@@ -6478,7 +6942,11 @@ private:
 /**** start inlining v2/vistas/vista_comparador_documentos.hpp ****/
 
 /**** skipping file: v2/vistas/vista_comparador_archivos.hpp ****/
+/**** skipping file: v2/nucleo/configuracion_v2.hpp ****/
 /**** skipping file: v2/nucleo/servicio_diff.hpp ****/
+#include <windowsx.h>
+#include <algorithm>
+#include <memory>
 
 namespace SideViewV2 {
 
@@ -6486,25 +6954,257 @@ class VistaComparadorDocumentosV2 final : public VistaComparadorArchivosV2 {
 public:
     explicit VistaComparadorDocumentosV2(
         std::shared_ptr<ServicioComparadorDocumentosV2> servicio)
-        : VistaComparadorArchivosV2(std::move(servicio)) {}
+        : VistaComparadorArchivosV2(servicio), m_diff(std::move(servicio)) {}
+
+    void AlCambiarSeleccion(const std::vector<std::wstring>& archivos,
+                            const std::wstring& carpeta) override {
+        VistaComparadorArchivosV2::AlCambiarSeleccion(archivos, carpeta);
+        m_estadoDiff = m_diff ? m_diff->CrearDiff(archivos) : EstadoDiffV2{};
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+    }
 
 protected:
     const wchar_t* NombreVista() const override { return L"Comparar documentos"; }
+    bool TieneDiffView() const override { return true; }
+
+    void AlCambiarModoDiff(bool) override {
+        m_scrollIzquierda = 0;
+        m_scrollDerecha = 0;
+        m_scrollGeneral = 0;
+        m_sliderActivo = 0;
+    }
+
+    bool ProcesarMensajeContenido(UINT msg, WPARAM wParam, LPARAM lParam,
+                                  HWND hwndPanel) override {
+        if (msg == WM_MOUSEWHEEL) {
+            const int delta = GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -3 : 3;
+            if (EstaEnDiffView()) {
+                m_scrollGeneral = std::clamp(m_scrollGeneral + delta, 0, MaximoGeneral());
+            } else {
+                m_scrollIzquierda = std::clamp(m_scrollIzquierda + delta, 0, MaximoIzquierda());
+                m_scrollDerecha = std::clamp(m_scrollDerecha + delta, 0, MaximoDerecha());
+            }
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (msg == WM_KEYDOWN && (wParam == VK_UP || wParam == VK_DOWN)) {
+            const int delta = wParam == VK_UP ? -1 : 1;
+            if (EstaEnDiffView()) m_scrollGeneral = std::clamp(m_scrollGeneral + delta, 0, MaximoGeneral());
+            else {
+                m_scrollIzquierda = std::clamp(m_scrollIzquierda + delta, 0, MaximoIzquierda());
+                m_scrollDerecha = std::clamp(m_scrollDerecha + delta, 0, MaximoDerecha());
+            }
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
+        if (msg == WM_LBUTTONDOWN) {
+            const POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            if (EstaEnDiffView() && PtInRect(&m_rcSliderGeneral, punto)) m_sliderActivo = 3;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderIzquierda, punto)) m_sliderActivo = 1;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderDerecha, punto)) m_sliderActivo = 2;
+            else if (!EstaEnDiffView() && PtInRect(&m_rcSliderGeneral, punto)) m_sliderActivo = 3;
+            else return false;
+            ActualizarSlider({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, hwndPanel);
+            SetCapture(hwndPanel);
+            return true;
+        }
+        if (msg == WM_MOUSEMOVE && m_sliderActivo != 0) {
+            ActualizarSlider({GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)}, hwndPanel);
+            return true;
+        }
+        if (msg == WM_LBUTTONUP && m_sliderActivo != 0) {
+            m_sliderActivo = 0;
+            ReleaseCapture();
+            return true;
+        }
+        return false;
+    }
 
     void RenderizarContenido(HDC hdc, const RECT& rect, const TemaVisual& tema,
-                             HFONT) override {
+                             HFONT fuente) override {
         DibujarContenedor(hdc, rect, tema);
+        const int mitad = (rect.right - rect.left) / 2;
+        const int altoFila = 22;
+        const int inicio = rect.top + 34;
+        const int pie = rect.bottom - 58;
+        const int visibles = std::max(0, (pie - inicio) / altoFila);
+        RECT cabeceraIzquierda{rect.left + 8, rect.top + 8, rect.left + mitad - 4, rect.top + 28};
+        RECT cabeceraDerecha{rect.left + mitad + 4, rect.top + 8, rect.right - 8, rect.top + 28};
         SetTextColor(hdc, tema.textoPrincipal);
-        RECT titulo{rect.left + 16, rect.top + 20, rect.right - 16, rect.top + 48};
-        DrawTextW(hdc, L"Comparación documental", -1, &titulo,
-                  DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
-        SetTextColor(hdc, tema.textoSecundario);
-        RECT mensaje{rect.left + 24, rect.top + 64, rect.right - 24, rect.bottom - 24};
-        DrawTextW(hdc,
-                  L"El comparador documental hereda nombre, peso y SHA-256.\n"
-                  L"La extracción visual específica del formato se conectará mediante otro adaptador.",
-                  -1, &mensaje, DT_CENTER | DT_WORDBREAK | DT_NOPREFIX);
+        DrawTextW(hdc, L"Documento 1", -1, &cabeceraIzquierda,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        DrawTextW(hdc, L"Documento 2", -1, &cabeceraDerecha,
+                  DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, fuente);
+        for (int visible = 0; visible < visibles; ++visible) {
+            const int y = inicio + visible * altoFila;
+            const std::size_t izquierda = static_cast<std::size_t>(m_scrollIzquierda + visible);
+            const std::size_t derecha = static_cast<std::size_t>(m_scrollDerecha + visible);
+            DibujarLinea(hdc, rect, mitad, y, altoFila,
+                         izquierda < m_estadoDiff.lineas.size() ? &m_estadoDiff.lineas[izquierda] : nullptr,
+                         true, tema);
+            DibujarLinea(hdc, rect, mitad, y, altoFila,
+                         derecha < m_estadoDiff.lineas.size() ? &m_estadoDiff.lineas[derecha] : nullptr,
+                         false, tema);
+        }
+        DibujarSlidersNormales(hdc, rect, mitad, tema);
     }
+
+    void RenderizarDiffView(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                            HFONT fuente) override {
+        DibujarContenedor(hdc, rect, tema);
+        const int altoFila = 24;
+        const int inicio = rect.top + 34;
+        const int visibles = std::max(0, (static_cast<int>(rect.bottom) - 30 - inicio) / altoFila);
+        const bool semantico = ModoSemanticoDiffViewDisponibleV2();
+        RECT encabezado{rect.left + 12, rect.top + 8, rect.right - 12, rect.top + 30};
+        SetTextColor(hdc, tema.acento);
+        DrawTextW(hdc, semantico ? L"Diff semántico · explicación del documento" : L"Diff clásico del documento",
+                  -1, &encabezado, DT_LEFT | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(hdc, fuente);
+        for (int visible = 0; visible < visibles; ++visible) {
+            const std::size_t indice = static_cast<std::size_t>(m_scrollGeneral + visible);
+            if (indice >= m_estadoDiff.lineas.size()) break;
+            const LineaDiffV2& linea = m_estadoDiff.lineas[indice];
+            const int y = inicio + visible * altoFila;
+            COLORREF color = tema.fondoTarjeta;
+            if (linea.tipo == TipoLineaDiffV2::Agregada) color = RGB(218, 245, 220);
+            else if (linea.tipo == TipoLineaDiffV2::Eliminada) color = RGB(250, 220, 220);
+            else if (linea.tipo == TipoLineaDiffV2::Modificada) color = RGB(250, 240, 204);
+            HBRUSH brocha = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
+            RECT fila{rect.left + 4, y, rect.right - 4, y + altoFila};
+            FillRect(hdc, &fila, brocha);
+            DeleteObject(brocha);
+            const std::wstring texto = semantico ? TextoSemantico(linea) : TextoClasico(linea);
+            SetTextColor(hdc, linea.tipo == TipoLineaDiffV2::Igual ? tema.textoPrincipal : tema.acento);
+            RECT contenido{fila.left + 8, y, fila.right - 8, y + altoFila};
+            DrawTextW(hdc, texto.c_str(), -1, &contenido,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+        }
+        m_rcSliderGeneral = {rect.left + 12, rect.bottom - 24, rect.right - 12, rect.bottom - 8};
+        m_rcSliderIzquierda = {};
+        m_rcSliderDerecha = {};
+        DibujarControlDesplazamiento(hdc, m_rcSliderGeneral,
+                                     static_cast<std::size_t>(MaximoGeneral()),
+                                     static_cast<std::size_t>(m_scrollGeneral), tema);
+    }
+
+private:
+    static COLORREF Mezclar(COLORREF frente, COLORREF fondo, int porcentaje) {
+        const int p = std::clamp(porcentaje, 0, 100);
+        return RGB((GetRValue(frente) * p + GetRValue(fondo) * (100 - p)) / 100,
+                   (GetGValue(frente) * p + GetGValue(fondo) * (100 - p)) / 100,
+                   (GetBValue(frente) * p + GetBValue(fondo) * (100 - p)) / 100);
+    }
+
+    static std::wstring TextoClasico(const LineaDiffV2& linea) {
+        return L"[" + std::to_wstring(linea.lineaIzquierda) + L" | " +
+               std::to_wstring(linea.lineaDerecha) + L"] " + linea.izquierda +
+               (linea.tipo == TipoLineaDiffV2::Modificada ? L"  →  " : L"") + linea.derecha;
+    }
+
+    static std::wstring TextoSemantico(const LineaDiffV2& linea) {
+        switch (linea.tipo) {
+            case TipoLineaDiffV2::Agregada: return L"Añadido en el documento 2: " + linea.derecha;
+            case TipoLineaDiffV2::Eliminada: return L"Eliminado del documento 1: " + linea.izquierda;
+            case TipoLineaDiffV2::Modificada: return L"Cambio: " + linea.izquierda + L"  →  " + linea.derecha;
+            case TipoLineaDiffV2::Igual: return L"Sin cambios: " + linea.izquierda;
+        }
+        return {};
+    }
+
+    void DibujarLinea(HDC hdc, const RECT& rect, int mitad, int y, int alto,
+                      const LineaDiffV2* linea, bool izquierda,
+                      const TemaVisual& tema) const {
+        if (!linea) return;
+        const int inicio = izquierda ? rect.left + 2 : rect.left + mitad + 2;
+        const int fin = izquierda ? rect.left + mitad - 2 : rect.right - 2;
+        RECT fila{inicio, y, fin, y + alto};
+        COLORREF color = tema.fondoTarjeta;
+        if (linea->tipo == TipoLineaDiffV2::Agregada) color = RGB(218, 245, 220);
+        else if (linea->tipo == TipoLineaDiffV2::Eliminada) color = RGB(250, 220, 220);
+        else if (linea->tipo == TipoLineaDiffV2::Modificada) color = RGB(250, 240, 204);
+        HBRUSH brocha = CreateSolidBrush(tema.modoOscuro ? Mezclar(color, tema.fondo, 35) : color);
+        FillRect(hdc, &fila, brocha);
+        DeleteObject(brocha);
+        const std::wstring& texto = izquierda ? linea->izquierda : linea->derecha;
+        const std::size_t numero = izquierda ? linea->lineaIzquierda : linea->lineaDerecha;
+        wchar_t numeroTexto[24]{};
+        swprintf_s(numeroTexto, L"%4zu", numero);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT numeroRect{fila.left + 4, y, fila.left + 42, y + alto};
+        DrawTextW(hdc, numeroTexto, -1, &numeroRect,
+                  DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT contenido{fila.left + 50, y, fila.right - 6, y + alto};
+        DrawTextW(hdc, texto.c_str(), -1, &contenido,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
+    }
+
+    void DibujarSlidersNormales(HDC hdc, const RECT& rect, int mitad,
+                                const TemaVisual& tema) {
+        m_rcSliderIzquierda = {rect.left + 10, rect.bottom - 38,
+                               rect.left + mitad - 8, rect.bottom - 24};
+        m_rcSliderDerecha = {rect.left + mitad + 8, rect.bottom - 38,
+                             rect.right - 10, rect.bottom - 24};
+        m_rcSliderGeneral = {rect.left + 10, rect.bottom - 20,
+                             rect.right - 10, rect.bottom - 6};
+        DibujarControlDesplazamiento(hdc, m_rcSliderIzquierda,
+                                     static_cast<std::size_t>(MaximoIzquierda()),
+                                     static_cast<std::size_t>(m_scrollIzquierda), tema);
+        DibujarControlDesplazamiento(hdc, m_rcSliderDerecha,
+                                     static_cast<std::size_t>(MaximoDerecha()),
+                                     static_cast<std::size_t>(m_scrollDerecha), tema);
+        DibujarControlDesplazamiento(hdc, m_rcSliderGeneral,
+                                     static_cast<std::size_t>(std::min(MaximoIzquierda(), MaximoDerecha())),
+                                     static_cast<std::size_t>(std::min(m_scrollIzquierda, m_scrollDerecha)), tema);
+        SetTextColor(hdc, tema.textoSecundario);
+        RECT etiqueta{rect.left + 10, rect.bottom - 54, rect.right - 10, rect.bottom - 40};
+        DrawTextW(hdc, L"Arriba: desplazamiento independiente · Abajo: sincronizado",
+                  -1, &etiqueta, DT_CENTER | DT_SINGLELINE | DT_NOPREFIX);
+    }
+
+    int MaximoGeneral() const { return MaximoContenido(); }
+    int MaximoIzquierda() const { return MaximoContenido(); }
+    int MaximoDerecha() const { return MaximoContenido(); }
+
+    int MaximoContenido() const {
+        const int alto = static_cast<int>(AreaEspecifica().bottom - AreaEspecifica().top);
+        const int visibles = std::max(1, (alto - 64) / 24);
+        return std::max(0, static_cast<int>(m_estadoDiff.lineas.size()) - visibles);
+    }
+
+    void ActualizarSlider(POINT punto, HWND hwndPanel) {
+        if (m_sliderActivo == 3) {
+            const int limite = std::min(MaximoIzquierda(), MaximoDerecha());
+            const int valor = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderGeneral, punto, static_cast<std::size_t>(EstaEnDiffView() ? MaximoGeneral() : limite)));
+            m_scrollGeneral = std::min(valor, MaximoGeneral());
+            if (!EstaEnDiffView()) {
+                m_scrollIzquierda = std::min(valor, MaximoIzquierda());
+                m_scrollDerecha = std::min(valor, MaximoDerecha());
+            }
+        } else if (m_sliderActivo == 1) {
+            m_scrollIzquierda = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderIzquierda, punto, static_cast<std::size_t>(MaximoIzquierda())));
+        } else if (m_sliderActivo == 2) {
+            m_scrollDerecha = static_cast<int>(DesplazamientoDesdePunto(
+                m_rcSliderDerecha, punto, static_cast<std::size_t>(MaximoDerecha())));
+        }
+        InvalidateRect(hwndPanel, nullptr, FALSE);
+    }
+
+    std::shared_ptr<ServicioComparadorDocumentosV2> m_diff;
+    EstadoDiffV2 m_estadoDiff;
+    int m_scrollIzquierda{0};
+    int m_scrollDerecha{0};
+    int m_scrollGeneral{0};
+    int m_sliderActivo{0};
+    RECT m_rcSliderIzquierda{};
+    RECT m_rcSliderDerecha{};
+    RECT m_rcSliderGeneral{};
 };
 
 } // namespace SideViewV2
@@ -6538,10 +7238,21 @@ public:
         const TipoVistaContenido primero = ClasificarRuta(seleccion[0].c_str());
         const TipoVistaContenido segundo = ClasificarRuta(seleccion[1].c_str());
         if (tipoResultado) *tipoResultado = primero;
-        return primero == segundo &&
-               primero != TipoVistaContenido::Tutorial &&
-               primero != TipoVistaContenido::Carpetas &&
-               primero != TipoVistaContenido::Desconocido;
+        if (primero != segundo ||
+            primero == TipoVistaContenido::Tutorial ||
+            primero == TipoVistaContenido::Carpetas ||
+            primero == TipoVistaContenido::Desconocido) {
+            return false;
+        }
+        if (primero == TipoVistaContenido::Documentos) {
+            const wchar_t* extIzquierda = PathFindExtensionW(seleccion[0].c_str());
+            const wchar_t* extDerecha = PathFindExtensionW(seleccion[1].c_str());
+            return EsExtensionDocumentoAdmitidoParaComparacion(extIzquierda) &&
+                   EsExtensionDocumentoAdmitidoParaComparacion(extDerecha) &&
+                   FamiliaDocumentoComparacionV2(extIzquierda) ==
+                       FamiliaDocumentoComparacionV2(extDerecha);
+        }
+        return true;
     }
 
     static bool DebeCrearComparador(
@@ -7699,6 +8410,12 @@ inline void CargarConfiguracionesV2() {
         std::memory_order_release);
     g_mostrarVersionModV2.store(
         Wh_GetIntSetting(L"mostrarVersionMod") != 0,
+        std::memory_order_release);
+    g_modoSemanticoDiffViewV2.store(
+        Wh_GetIntSetting(L"modoSemanticoDiffView") != 0,
+        std::memory_order_release);
+    g_sincronizacionNotasWinKlokV2.store(
+        Wh_GetIntSetting(L"sincronizacionNotasWinKlok") != 0,
         std::memory_order_release);
 }
 

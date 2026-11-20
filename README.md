@@ -1,4 +1,4 @@
-# Useful Side View 4.0.4
+# Useful Side View 4.1.0
 
 **Useful Side View** es un mod para [Windhawk](https://windhawk.net/) que transforma el panel de vista previa de Windows 11 (`Alt + P`) en una suite multimedia integral, ultrarrápida y responsiva para videos, imágenes, cómics, archivos comprimidos y documentos Markdown.
 
@@ -46,8 +46,11 @@
 ### 🔎 7. Comparadores generales y persistencia nativa
 - Dos archivos del mismo tipo activan el comparador correspondiente: general,
   texto/diff, documentos o video.
-- El comparador general muestra nombres, peso y SHA-256; el diff de texto usa
-  una vista de dos columnas estilo GitHub.
+- El comparador general muestra nombres, peso y SHA-256; texto y documentos
+  admitidos (PDF, Word y PowerPoint) usan vista lado a lado, sliders individuales,
+  slider sincronizado limitado por el archivo más corto y resumen de tres columnas.
+- El botón **Diff View** expande temporalmente el comparador y ofrece diff clásico
+  o modo semántico didáctico, alternable desde Ajustes.
 - Los programas elegidos en “Abrir con” se guardan con la persistencia nativa
   de Windhawk por categoría, sobreviven a reinicios de Explorer y se migran
   desde el formato anterior sin perder datos.
@@ -61,8 +64,12 @@
 ### 🗒️ 8. Toolbox de notas y compatibilidad WinKlok
 - La vista general de carpetas incluye notas persistentes con título, contenido, edición, copia y eliminación.
 - Las notas propias se guardan en el almacenamiento local nativo del mod mediante fragmentos acotados para no perder cuerpos largos.
-- Si WinKlok está instalado, se lee y escribe su formato real de `noteIds`, `noteNext` y `note<ID>`; cada nota muestra si su origen es Useful Side View, WinKlok o una nota nativa sincronizada.
-- **Forzar sincronización** permite preparar el almacén de WinKlok aunque esté desactivado, para que ambos mods encuentren la información al volver a iniciarse.
+- La sincronización con WinKlok es experimental, está desactivada por defecto y se
+  puede retirar de forma aislada; mientras está apagada, las notas son atómicas de
+  Useful Side View. Al activarla se lee y escribe el formato real de `noteIds`,
+  `noteNext` y `note<ID>` y cada nota conserva su origen.
+- **Forzar sincronización** sólo se habilita con la opción experimental activa y
+  permite reconciliar ambos almacenes de forma explícita.
 
 ---
 

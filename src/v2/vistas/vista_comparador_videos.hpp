@@ -139,6 +139,17 @@ public:
             InvalidateRect(hwndPanel, nullptr, FALSE);
             return true;
         }
+        if (PtInRect(&m_rcConfirmarSincronizacion, punto)) {
+            if (m_servicio) {
+                m_servicio->ActualizarDuraciones(
+                    m_estado,
+                    m_reproductorIzquierda ? m_reproductorIzquierda->Duracion() : 0.0,
+                    m_reproductorDerecha ? m_reproductorDerecha->Duracion() : 0.0);
+                m_servicio->ConfirmarSincronizacion(m_estado);
+            }
+            InvalidateRect(hwndPanel, nullptr, FALSE);
+            return true;
+        }
         return false;
     }
 
@@ -217,14 +228,19 @@ public:
                           m_rcRetroceder.right + 116, yBotones + 30};
         m_rcAvanzar = {m_rcReproducir.right + 8, yBotones,
                        m_rcReproducir.right + 100, yBotones + 30};
+        m_rcConfirmarSincronizacion = {m_rcAvanzar.right + 8, yBotones,
+                                       m_rcAvanzar.right + 190, yBotones + 30};
         DibujarBoton(hdc, m_rcRetroceder, L"-10 s", tema, true);
         DibujarBoton(hdc, m_rcReproducir,
                      m_estado.reproduciendo ? L"Pausar" : L"Reproducir", tema, true);
         DibujarBoton(hdc, m_rcAvanzar, L"+10 s", tema, true);
+        DibujarBoton(hdc, m_rcConfirmarSincronizacion,
+                     m_estado.sincronizacionConfirmada ? L"Sincronización confirmada" : L"Confirmar sincronización",
+                     tema, m_estado.sincronizacionConfirmada);
 
         SelectObject(hdc, texto);
         SetTextColor(hdc, tema.textoSecundario);
-        RECT tiempo{m_rcAvanzar.right + 12, yBotones,
+        RECT tiempo{m_rcConfirmarSincronizacion.right + 12, yBotones,
                     rect.right - margen, yBotones + 30};
         std::wstring etiquetaTiempo = m_servicio
             ? m_servicio->FormatearTiempo(m_estado.posicionSegundos) + L" / " +
@@ -328,12 +344,8 @@ private:
             ? m_reproductorIzquierda->Duracion() : 0.0;
         const double duracionDerecha = m_reproductorDerecha
             ? m_reproductorDerecha->Duracion() : 0.0;
-        if (duracionIzquierda > 0.0 && duracionDerecha > 0.0) {
-            m_estado.duracionSegundos = std::min(duracionIzquierda, duracionDerecha);
-        } else if (duracionIzquierda > 0.0) {
-            m_estado.duracionSegundos = duracionIzquierda;
-        } else if (duracionDerecha > 0.0) {
-            m_estado.duracionSegundos = duracionDerecha;
+        if (m_servicio) {
+            m_servicio->ActualizarDuraciones(m_estado, duracionIzquierda, duracionDerecha);
         }
 
         IReproductorVideoV2* reloj = m_reproductorIzquierda &&
@@ -529,6 +541,7 @@ private:
     RECT m_rcRetroceder{};
     RECT m_rcReproducir{};
     RECT m_rcAvanzar{};
+    RECT m_rcConfirmarSincronizacion{};
 };
 
 } // namespace SideViewV2

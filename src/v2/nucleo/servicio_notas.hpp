@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cwchar>
 #include <cstring>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -445,15 +446,18 @@ private:
 
 class ServicioNotasV2 final {
 public:
-    explicit ServicioNotasV2(std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia)
-        : m_persistencia(std::move(persistencia)) {}
+    explicit ServicioNotasV2(
+        std::shared_ptr<ServicioPersistenciaWindhawkV2> persistencia,
+        std::function<bool()> politicaSincronizacion = {})
+        : m_persistencia(std::move(persistencia)),
+          m_politicaSincronizacion(std::move(politicaSincronizacion)) {}
 
     void Cargar() {
         std::lock_guard<std::mutex> lock(m_mutex);
         if (m_cargado) return;
         CargarNativas();
         m_cargado = true;
-        SincronizarBloqueado(false);
+        ActualizarPuenteWinKlokBloqueado();
     }
 
     void Recargar() {
@@ -464,7 +468,7 @@ public:
         } else {
             CargarNativas();
         }
-        SincronizarBloqueado(false);
+        ActualizarPuenteWinKlokBloqueado();
     }
 
     const std::vector<NotaV2>& Notas() const { return m_notas; }
@@ -484,7 +488,7 @@ public:
         nota.modificado = Ahora();
         m_notas.insert(m_notas.begin(), nota);
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return nota.id;
     }
 
@@ -498,7 +502,7 @@ public:
         nota->modificado = Ahora();
         OrdenarBloqueado();
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return true;
     }
 
@@ -510,7 +514,7 @@ public:
         if (it->idWinKlok > 0) m_eliminadosWinKlok.push_back(it->idWinKlok);
         m_notas.erase(it);
         GuardarNativasBloqueado();
-        SincronizarBloqueado(false);
+        if (SincronizacionActiva()) SincronizarBloqueado(false);
         return true;
     }
 
@@ -539,6 +543,10 @@ public:
     ResultadoSincronizacionNotasV2 ForzarSincronizacion() {
         std::lock_guard<std::mutex> lock(m_mutex);
         CargarSiHaceFaltaBloqueado();
+        if (!SincronizacionActiva()) {
+            return {false, false, 0, 0,
+                    L"Activa \"Sincronización de notas con WinKlok (experimental)\" en Ajustes para usar esta función."};
+        }
         return SincronizarBloqueado(true);
     }
 
@@ -762,6 +770,43 @@ private:
         if (m_cargado) return;
         CargarNativas();
         m_cargado = true;
+        ActualizarPuenteWinKlokBloqueado();
+    }
+
+    bool SincronizacionActiva() const {
+        return m_politicaSincronizacion && m_politicaSincronizacion();
+    }
+
+    void ActualizarPuenteWinKlokBloqueado() {
+        if (SincronizacionActiva()) {
+            SincronizarBloqueado(false);
+            return;
+        }
+
+        // Al desactivar la opción, las notas importadas dejan de formar parte
+        // del modelo local y las nativas pierden el vínculo externo. Así el
+        // modo predeterminado queda completamente atómico y reversible sin
+        // escribir ni borrar datos del otro mod.
+        bool cambio = !m_eliminadosWinKlok.empty();
+        for (auto it = m_notas.begin(); it != m_notas.end();) {
+            if (it->fuente == FuenteNotaV2::WinKlok) {
+                BorrarCadenaFragmentada(ClaveNota(it->id));
+                it = m_notas.erase(it);
+                cambio = true;
+                continue;
+            }
+            if (it->idWinKlok != 0) {
+                it->idWinKlok = 0;
+                cambio = true;
+            }
+            ++it;
+        }
+        m_eliminadosWinKlok.clear();
+        m_winKlokDisponible = false;
+        if (cambio) {
+            OrdenarBloqueado();
+            GuardarNativasBloqueado();
+        }
     }
 
     void CargarNativas() {
@@ -938,6 +983,7 @@ private:
     }
 
     std::shared_ptr<ServicioPersistenciaWindhawkV2> m_persistencia;
+    std::function<bool()> m_politicaSincronizacion;
     mutable std::mutex m_mutex;
     mutable AlmacenNotasWinKlokV2 m_almacenWinKlok;
     std::vector<NotaV2> m_notas;
