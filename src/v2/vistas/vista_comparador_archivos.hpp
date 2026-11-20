@@ -247,6 +247,19 @@ protected:
                           DT_LEFT | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX);
             }
         }
+
+        HPEN separador = CreatePen(PS_SOLID, 1, tema.borde);
+        HPEN anteriorPen = static_cast<HPEN>(SelectObject(hdc, separador));
+        const int xPrimero = columnas[0].right;
+        const int xSegundo = columnas[1].right;
+        MoveToEx(hdc, xPrimero, yEncabezado - 2, nullptr);
+        LineTo(hdc, xPrimero, rect.bottom - 10);
+        MoveToEx(hdc, xSegundo, yEncabezado - 2, nullptr);
+        LineTo(hdc, xSegundo, rect.bottom - 10);
+        MoveToEx(hdc, rect.left + 12, yEncabezado + 19, nullptr);
+        LineTo(hdc, rect.right - 12, yEncabezado + 19);
+        SelectObject(hdc, anteriorPen);
+        DeleteObject(separador);
     }
 
     void DibujarControlDesplazamiento(HDC hdc, const RECT& rect,

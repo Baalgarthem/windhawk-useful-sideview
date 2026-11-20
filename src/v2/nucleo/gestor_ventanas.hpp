@@ -126,7 +126,7 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
         const int altoVista = estado->viewOriginal.bottom - estado->viewOriginal.top;
         if (anchoVista < 1 || altoVista < 1) return;
 
-        if (estado->comparadorArchivosActivo) {
+        if (estado->comparadorArchivosActivo || estado->panelPantallaCompleta) {
             SetWindowPos(estado->panel, HWND_TOP, estado->viewOriginal.left,
                          estado->viewOriginal.top, anchoVista, altoVista,
                          SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -170,7 +170,7 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
 
     // El comparador es una experiencia temporal a pantalla completa dentro
     // del contenedor de Explorer. Al salir se vuelve al layout lateral normal.
-    if (estado->comparadorArchivosActivo) {
+    if (estado->comparadorArchivosActivo || estado->panelPantallaCompleta) {
         SetWindowPos(estado->view, nullptr, estado->viewOriginal.left,
                      estado->viewOriginal.top, 1, altoVista,
                      SWP_NOZORDER | SWP_NOACTIVATE);
@@ -210,6 +210,7 @@ inline void DisponerPanel(EstadoPanelV2* estado) {
 inline void CerrarEstado(EstadoPanelV2* estado) {
     if (!estado || !estado->abierto) return;
     estado->abierto = false;
+    estado->panelPantallaCompleta = false;
 
     // Contraer el panel no es sólo una operación visual. El contenido deja
     // de estar activo y debe desmontarse para liberar handles de archivos,
@@ -355,6 +356,7 @@ inline void AlternarSideView(HWND top) {
             // La selección sólo habilita el botón. El comparador se crea
             // exclusivamente después de recibir su acción explícita.
             estado->comparadorArchivosActivo = false;
+            estado->panelPantallaCompleta = false;
             if (estado->vistaContenido) estado->vistaContenido->AlActivar(estado->panel);
         } else {
             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion({}, L"");
@@ -396,6 +398,13 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                 DisponerPanel(estado);
             }
             if (estado->vistaContenido) estado->vistaContenido->ActualizarConfiguracion();
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
+        }
+
+        if (msg == WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN) {
+            estado->panelPantallaCompleta = !estado->panelPantallaCompleta;
+            DisponerPanel(estado);
             InvalidateRect(hwnd, nullptr, FALSE);
             return 0;
         }
@@ -484,6 +493,7 @@ inline LRESULT CALLBACK ProcedimientoVentanaPanel(HWND hwnd, UINT msg, WPARAM wP
                             LiberarVistaContenidoV2(estado);
                             estado->vistaContenido = FabricaVistas::CrearVistaParaSeleccion(seleccion, carpeta);
                             estado->comparadorArchivosActivo = false;
+                            estado->panelPantallaCompleta = false;
                             if (estado->vistaContenido) estado->vistaContenido->AlActivar(hwnd);
                             DisponerPanel(estado);
                         } else {

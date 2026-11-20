@@ -46,6 +46,7 @@ struct EstadoPanelV2 {
     RECT parentCliente{};       // Tamaño cliente del contenedor
     bool abierto{false};
     bool comparadorArchivosActivo{false};
+    bool panelPantallaCompleta{false};
     std::atomic_bool destruyendo{false};
     int anchoDIP{380};          // Ancho por defecto en DIP
 

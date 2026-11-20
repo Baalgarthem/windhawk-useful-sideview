@@ -15,7 +15,8 @@ enum class TipoVistaContenido {
     Texto,         // Vista de TXT, Markdown y formatos de texto
     Imagen,        // Vista de PNG, JPG, WebP, GIF, etc.
     Video,         // Vista de MP4, MKV, AVI, etc.
-    Documentos,    // Vista de PDF, DOCX, XLSX, etc. (en desarrollo)
+    Documentos,    // Vista de PDF, DOC y DOCX
+    Presentaciones, // Vista de diapositivas de PPT/PPTX/PPS/PPSX
     Codigo,        // Vista de C++, Python, JS, etc.
     Carpetas,      // Vista de inspección de árbol de carpetas
     Desconocido    // Archivo genérico / visor pendiente (en desarrollo)
@@ -115,10 +116,20 @@ inline bool EsExtensionDocumento(const wchar_t* extension) {
     wchar_t ext[32]{};
     NormalizarExtension(extension, ext, ARRAYSIZE(ext));
     static const wchar_t* const EXT_DOCS[] = {
-        L".doc", L".docx", L".epub", L".mobi", L".odp", L".ods", L".odt",
-        L".pdf", L".pps", L".ppsx", L".ppt", L".pptx", L".rtf", L".xls", L".xlsx"
+        L".doc", L".docx", L".pdf"
     };
     return CoincideExtension(ext, EXT_DOCS, ARRAYSIZE(EXT_DOCS));
+}
+
+inline bool EsExtensionPresentacion(const wchar_t* extension) {
+    if (!extension || *extension == L'\0') return false;
+    wchar_t ext[32]{};
+    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
+    static const wchar_t* const EXT_PRESENTACIONES[] = {
+        L".pps", L".ppsx", L".ppt", L".pptx"
+    };
+    return CoincideExtension(ext, EXT_PRESENTACIONES,
+                             ARRAYSIZE(EXT_PRESENTACIONES));
 }
 
 inline bool EsExtensionDocumentoAdmitidoParaComparacion(const wchar_t* extension) {
@@ -126,20 +137,9 @@ inline bool EsExtensionDocumentoAdmitidoParaComparacion(const wchar_t* extension
     wchar_t ext[32]{};
     NormalizarExtension(extension, ext, ARRAYSIZE(ext));
     static const wchar_t* const EXT_COMPARABLES[] = {
-        L".doc", L".docx", L".pdf", L".pps", L".ppsx", L".ppt", L".pptx"
+        L".doc", L".docx", L".pdf"
     };
     return CoincideExtension(ext, EXT_COMPARABLES, ARRAYSIZE(EXT_COMPARABLES));
-}
-
-inline int FamiliaDocumentoComparacionV2(const wchar_t* extension) {
-    if (!extension || *extension == L'\0') return 0;
-    wchar_t ext[32]{};
-    NormalizarExtension(extension, ext, ARRAYSIZE(ext));
-    if (wcscmp(ext, L".pdf") == 0) return 1;
-    if (wcscmp(ext, L".doc") == 0 || wcscmp(ext, L".docx") == 0) return 2;
-    if (wcscmp(ext, L".pps") == 0 || wcscmp(ext, L".ppsx") == 0 ||
-        wcscmp(ext, L".ppt") == 0 || wcscmp(ext, L".pptx") == 0) return 3;
-    return 0;
 }
 
 inline bool EsRutaCarpeta(const wchar_t* ruta) {
@@ -159,6 +159,7 @@ inline TipoVistaContenido ClasificarRuta(const wchar_t* ruta) {
     if (EsExtensionVideo(ext)) return TipoVistaContenido::Video;
     if (EsExtensionTexto(ext)) return TipoVistaContenido::Texto;
     if (EsExtensionCodigo(ext)) return TipoVistaContenido::Codigo;
+    if (EsExtensionPresentacion(ext)) return TipoVistaContenido::Presentaciones;
     if (EsExtensionDocumento(ext)) return TipoVistaContenido::Documentos;
 
     return TipoVistaContenido::Desconocido;
@@ -183,6 +184,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
     size_t cTexto = 0;
     size_t cCodigo = 0;
     size_t cDocs = 0;
+    size_t cPresentaciones = 0;
     size_t cCarpetas = 0;
     for (const auto& r : seleccion) {
         TipoVistaContenido t = ClasificarRuta(r.c_str());
@@ -194,6 +196,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
             case TipoVistaContenido::Texto: cTexto++; break;
             case TipoVistaContenido::Codigo: cCodigo++; break;
             case TipoVistaContenido::Documentos: cDocs++; break;
+            case TipoVistaContenido::Presentaciones: cPresentaciones++; break;
             case TipoVistaContenido::Carpetas: cCarpetas++; break;
             default: break;
         }
@@ -207,6 +210,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
     if (cTexto == total) return TipoVistaContenido::Texto;
     if (cCarpetas == total) return TipoVistaContenido::Carpetas;
     if (cDocs == total) return TipoVistaContenido::Documentos;
+    if (cPresentaciones == total) return TipoVistaContenido::Presentaciones;
     if (cCodigo == total) return TipoVistaContenido::Codigo;
 
     // Preferencias prioritarias en selecciones mixtas
@@ -216,6 +220,7 @@ inline TipoVistaContenido ClasificarSeleccion(const std::vector<std::wstring>& s
     if (cVideos > 0) return TipoVistaContenido::Video;
     if (cTexto > 0) return TipoVistaContenido::Texto;
     if (cDocs > 0) return TipoVistaContenido::Documentos;
+    if (cPresentaciones > 0) return TipoVistaContenido::Presentaciones;
     if (cCodigo > 0) return TipoVistaContenido::Codigo;
     if (cCarpetas > 0) return TipoVistaContenido::Carpetas;
 
@@ -233,6 +238,7 @@ inline bool PuedeCompararSeleccionV2(
     if (primero != segundo ||
         primero == TipoVistaContenido::Tutorial ||
         primero == TipoVistaContenido::Carpetas ||
+        primero == TipoVistaContenido::Presentaciones ||
         primero == TipoVistaContenido::Desconocido) {
         return false;
     }
@@ -241,9 +247,7 @@ inline bool PuedeCompararSeleccionV2(
         const wchar_t* extIzquierda = PathFindExtensionW(seleccion[0].c_str());
         const wchar_t* extDerecha = PathFindExtensionW(seleccion[1].c_str());
         return EsExtensionDocumentoAdmitidoParaComparacion(extIzquierda) &&
-               EsExtensionDocumentoAdmitidoParaComparacion(extDerecha) &&
-               FamiliaDocumentoComparacionV2(extIzquierda) ==
-                   FamiliaDocumentoComparacionV2(extDerecha);
+               EsExtensionDocumentoAdmitidoParaComparacion(extDerecha);
     }
     return true;
 }

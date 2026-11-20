@@ -144,10 +144,39 @@ public:
     VistaImagenes(std::shared_ptr<ServicioNavegacionV2> n, std::shared_ptr<ServicioAbrirConV2> a, std::shared_ptr<ServicioPrevisualizacionMediaV2> p) : VistaMediaV2(std::move(n), std::move(a), std::move(p)) {}
     ~VistaImagenes() override { Liberar(); }
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override { Liberar(); m_archivos = archivos; m_indice = 0; CargarActual(); }
-    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
+    bool ProcesarMensajeRaton(UINT m, WPARAM w, LPARAM l, HWND h) override {
+        if (m == WM_LBUTTONDOWN) {
+            POINT punto{GET_X_LPARAM(l), GET_Y_LPARAM(l)};
+            if (PtInRect(&m_rcPantallaCompleta, punto)) {
+                PostMessageW(h, WM_SIDEVIEW_TOGGLE_PANEL_FULLSCREEN, 0, 0);
+                return true;
+            }
+        }
+        return ProcesarNavegacion(m, w, l, h);
+    }
     bool ProcesarMensajeTeclado(UINT m, WPARAM w, LPARAM l, HWND h) override { return ProcesarNavegacion(m, w, l, h); }
-    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override { HBRUSH b=CreateSolidBrush(tema.fondo); FillRect(hdc,&rect,b); DeleteObject(b); std::wstring n=m_archivos.empty()?L"Sin imágenes":PathFindFileNameW(m_archivos[m_indice].c_str()); DibujarCabecera(hdc,rect,tema,L"🖼 Imágenes",n); DibujarPreview(hdc,rect,tema,m_preview); }
-private: void CargarActual() override { ReemplazarPreview(m_archivos.empty() ? nullptr : m_previsualizacion->CargarImagen(m_archivos[m_indice])); }
+    void Renderizar(HDC hdc, const RECT& rect, const TemaVisual& tema) override {
+        HBRUSH b = CreateSolidBrush(tema.fondo);
+        FillRect(hdc, &rect, b);
+        DeleteObject(b);
+        const std::wstring nombre = m_archivos.empty()
+            ? L"Sin imágenes" : PathFindFileNameW(m_archivos[m_indice].c_str());
+        DibujarCabecera(hdc, rect, tema, L"🖼 Imágenes", nombre);
+        m_rcPantallaCompleta = {m_rcSiguiente.right + 6, m_rcSiguiente.top,
+                               m_rcSiguiente.right + 42, m_rcSiguiente.bottom};
+        DibujarBotonMediaV2(hdc, m_rcPantallaCompleta, L"⛶", tema, true);
+        DibujarPreview(hdc, rect, tema, m_preview);
+    }
+    void Liberar() override {
+        m_rcPantallaCompleta = {};
+        VistaMediaV2::Liberar();
+    }
+private:
+    void CargarActual() override {
+        ReemplazarPreview(m_archivos.empty() || !m_previsualizacion
+            ? nullptr : m_previsualizacion->CargarImagen(m_archivos[m_indice]));
+    }
+    RECT m_rcPantallaCompleta{};
 };
 
 class VistaVideos final : public VistaMediaV2 {

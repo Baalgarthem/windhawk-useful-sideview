@@ -9,8 +9,12 @@ namespace SideViewV2 {
 
 class VistaEnDesarrollo : public IPanelContenido {
 public:
-    VistaEnDesarrollo(const std::wstring& nombreVista, const std::wstring& iconoVista, const std::wstring& descripcion)
-        : m_nombreVista(nombreVista), m_iconoVista(iconoVista), m_descripcion(descripcion) {}
+    VistaEnDesarrollo(const std::wstring& nombreVista,
+                      const std::wstring& iconoVista,
+                      const std::wstring& descripcion,
+                      bool mostrarAyuda = false)
+        : m_nombreVista(nombreVista), m_iconoVista(iconoVista),
+          m_descripcion(descripcion), m_mostrarAyuda(mostrarAyuda) {}
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring& carpeta) override {
         m_archivos = archivos;
@@ -20,6 +24,11 @@ public:
     bool ProcesarMensajeRaton(UINT msg, WPARAM, LPARAM lParam, HWND hwnd) override {
         if (msg != WM_LBUTTONDOWN) return false;
         POINT punto{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+        if (m_mostrarAyuda && PtInRect(&m_rcAyuda, punto)) {
+            m_ayudaAbierta = !m_ayudaAbierta;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return true;
+        }
         if (!PtInRect(&m_rcComparar, punto)) return false;
         if (PuedeCompararSeleccionV2(m_archivos)) {
             PostMessageW(hwnd, WM_SIDEVIEW_REQUEST_COMPARADOR_ARCHIVOS, 0, 0);
@@ -74,9 +83,25 @@ public:
         // Título de vista
         SetTextColor(hdc, tema.textoPrincipal);
         std::wstring headerText = m_iconoVista + L"  " + m_nombreVista;
-        RECT rectTextoTitulo{rect.left + 16, rect.top + 8, rect.right - 16, rect.top + 28};
+        RECT rectTextoTitulo{rect.left + 16, rect.top + 8,
+                             rect.right - (m_mostrarAyuda ? 56 : 16),
+                             rect.top + 28};
         DrawTextW(hdc, headerText.c_str(), -1, &rectTextoTitulo,
                   DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
+
+        if (m_mostrarAyuda) {
+            m_rcAyuda = {rect.right - 48, rect.top + 10,
+                         rect.right - 16, rect.top + 40};
+            HBRUSH fondoAyuda = CreateSolidBrush(m_ayudaAbierta
+                ? tema.acento : tema.botonFondo);
+            FillRect(hdc, &m_rcAyuda, fondoAyuda);
+            DeleteObject(fondoAyuda);
+            SetTextColor(hdc, tema.textoPrincipal);
+            DrawTextW(hdc, L"?", -1, &m_rcAyuda,
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        } else {
+            m_rcAyuda = {};
+        }
 
         // Subtítulo
         SelectObject(hdc, fuenteSubtitulo);
@@ -155,6 +180,32 @@ public:
         DrawTextW(hdc, L"Comparar archivos", -1, &m_rcComparar,
                   DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 
+        if (m_ayudaAbierta) {
+            RECT ayuda{rcTarjeta.left + 16, rcTarjeta.bottom + 12,
+                       rcTarjeta.right - 16, rect.bottom - 16};
+            HBRUSH fondoAyuda = CreateSolidBrush(tema.fondoTarjeta);
+            FillRect(hdc, &ayuda, fondoAyuda);
+            DeleteObject(fondoAyuda);
+            HPEN bordeAyuda = CreatePen(PS_SOLID, 1, tema.borde);
+            HPEN anteriorBorde = static_cast<HPEN>(SelectObject(hdc, bordeAyuda));
+            HBRUSH nulo = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+            HBRUSH anteriorBrocha = static_cast<HBRUSH>(SelectObject(hdc, nulo));
+            Rectangle(hdc, ayuda.left, ayuda.top, ayuda.right, ayuda.bottom);
+            SelectObject(hdc, anteriorBrocha);
+            SelectObject(hdc, anteriorBorde);
+            DeleteObject(bordeAyuda);
+            SelectObject(hdc, fuenteSubtitulo);
+            SetTextColor(hdc, tema.textoSecundario);
+            const wchar_t* textoAyuda =
+                L"Selecciona un PDF o un archivo de Word para verlo aquí. "
+                L"El botón Comparar se habilita sólo con dos documentos compatibles "
+                L"y abre ambos lado a lado. En el comparador, los sliders controlan "
+                L"el desplazamiento individual y el resumen muestra Archivo 1, "
+                L"Archivo 2 y sus diferencias.";
+            DrawTextW(hdc, textoAyuda, -1, &ayuda,
+                      DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX);
+        }
+
         SelectObject(hdc, fuenteVieja);
         DeleteObject(fuenteTitulo);
         DeleteObject(fuenteSubtitulo);
@@ -169,6 +220,9 @@ private:
     std::vector<std::wstring> m_archivos;
     std::wstring m_carpeta;
     RECT m_rcComparar{};
+    RECT m_rcAyuda{};
+    bool m_mostrarAyuda{false};
+    bool m_ayudaAbierta{false};
 };
 
 } // namespace SideViewV2

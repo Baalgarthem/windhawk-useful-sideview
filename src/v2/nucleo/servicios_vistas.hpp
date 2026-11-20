@@ -9,6 +9,7 @@
 #include "v2/nucleo/servicio_enlaces.hpp"
 #include "v2/nucleo/servicio_inspeccion_carpetas.hpp"
 #include "v2/nucleo/servicio_comparador_videos.hpp"
+#include "v2/nucleo/servicio_comparador_imagenes.hpp"
 #include "v2/nucleo/servicio_diff.hpp"
 #include "v2/nucleo/servicio_reproductor_video.hpp"
 #include "v2/nucleo/servicio_persistencia_windhawk.hpp"
@@ -37,6 +38,7 @@ struct DependenciasVistaV2 {
     std::shared_ptr<ServicioContenidoComprimidoV2> contenidoComprimido{std::make_shared<ServicioContenidoComprimidoV2>()};
     std::shared_ptr<ServicioEnlacesV2> enlaces{std::make_shared<ServicioEnlacesV2>()};
     std::shared_ptr<ServicioPrevisualizacionMediaV2> previsualizacionMedia{std::make_shared<ServicioPrevisualizacionMediaV2>()};
+    std::shared_ptr<ServicioComparadorImagenesV2> comparadorImagenes{std::make_shared<ServicioComparadorImagenesV2>(previsualizacionMedia)};
     std::shared_ptr<ServicioFusionCarpetasV2> fusionCarpetas{std::make_shared<ServicioFusionCarpetasV2>()};
     std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccionCarpetas{std::make_shared<ServicioInspeccionCarpetasV2>()};
     std::shared_ptr<ServicioReproductorVideoV2> reproductorVideo{std::make_shared<ServicioReproductorVideoV2>()};

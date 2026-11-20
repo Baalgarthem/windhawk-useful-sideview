@@ -10,6 +10,7 @@
 #include "v2/vistas/vista_medios.hpp"
 #include "v2/vistas/vista_texto_codigo.hpp"
 #include "v2/vistas/vista_comparador_videos.hpp"
+#include "v2/vistas/vista_comparador_imagenes.hpp"
 #include "v2/vistas/vista_comparador_archivos.hpp"
 #include "v2/vistas/vista_comparador_texto.hpp"
 #include "v2/vistas/vista_comparador_documentos.hpp"
@@ -58,6 +59,12 @@ public:
         if (!SeleccionaDosDelMismoTipo(seleccion, &tipo)) return nullptr;
         if (tipo == TipoVistaContenido::Video) {
             return CrearVistaComparadorVideos(seleccion);
+        }
+        if (tipo == TipoVistaContenido::Imagen) {
+            auto vista = std::make_shared<VistaComparadorImagenesV2>(
+                Dependencias().comparadorImagenes);
+            vista->AlCambiarSeleccion(seleccion, carpeta);
+            return vista;
         }
         if (tipo == TipoVistaContenido::Texto ||
             tipo == TipoVistaContenido::Codigo) {
@@ -126,7 +133,16 @@ public:
                 vista = std::make_shared<VistaEnDesarrollo>(
                     L"Visor de Documentos de Oficina",
                     L"📑",
-                    L"Visualización embebida de archivos PDF, Word (DOCX), Excel (XLSX) y presentaciones (PPTX)."
+                    L"Visualización embebida de archivos PDF y Word (DOC/DOCX).",
+                    true
+                );
+                break;
+
+            case TipoVistaContenido::Presentaciones:
+                vista = std::make_shared<VistaEnDesarrollo>(
+                    L"Visor de diapositivas",
+                    L"📊",
+                    L"Vista de diapositivas para archivos PowerPoint (PPT/PPTX/PPS/PPSX)."
                 );
                 break;
 
