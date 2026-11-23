@@ -23,10 +23,10 @@ struct EntradaScriptBoxV2 {
     std::wstring ruta;
 };
 
-// Servicio atómico del toolbox Script Box. La lista visible no se obtiene
-// enumerando toda una carpeta: sólo se resuelven los archivos expresamente
-// incluidos por el usuario en los ajustes. Esto evita ejecutar o mostrar
-// scripts no autorizados por la configuración del mod.
+// Servicio atómico del Script Box. Las ubicaciones son persistentes y se
+// mantienen en orden de incorporación. Una ubicación elegida no autoriza por
+// sí sola la ejecución: cada script también debe aparecer en la lista blanca
+// de ajustes "scriptBoxScripts".
 class ServicioScriptBoxV2 final {
 public:
     explicit ServicioScriptBoxV2(
@@ -36,22 +36,44 @@ public:
     }
 
     void RecargarConfiguracion() {
-        const std::wstring rutaConfigurada = LeerAjusteCadena(L"scriptBoxUbicacion");
-        const std::wstring rutaPersistida = m_persistencia
-            ? m_persistencia->LeerCadena(Clave(L"ubicacion"))
-            : std::wstring{};
-        m_ubicacion = rutaConfigurada.empty() ? rutaPersistida : rutaConfigurada;
-        m_ubicacion = NormalizarRuta(m_ubicacion);
-
         m_incluidos = SepararLineas(LeerAjusteCadena(L"scriptBoxScripts"));
-        m_disponibles.clear();
-        ResolverEntradas();
+        CargarUbicaciones();
     }
 
-    const std::wstring& Ubicacion() const { return m_ubicacion; }
+    const std::vector<std::wstring>& Ubicaciones() const {
+        return m_ubicaciones;
+    }
 
-    const std::vector<EntradaScriptBoxV2>& Disponibles() const {
-        return m_disponibles;
+    std::vector<EntradaScriptBoxV2> ScriptsDeUbicacion(
+        std::size_t indiceUbicacion) const {
+        std::vector<EntradaScriptBoxV2> resultado;
+        if (indiceUbicacion >= m_ubicaciones.size()) return resultado;
+
+        const std::wstring& raiz = m_ubicaciones[indiceUbicacion];
+        if (!EsDirectorio(raiz)) return resultado;
+
+        for (const std::wstring& incluido : m_incluidos) {
+            std::wstring candidato = incluido;
+            if (!EsRutaAbsoluta(candidato)) {
+                candidato = raiz + L"\\" + candidato;
+            }
+            candidato = NormalizarRuta(candidato);
+            if (!RutaDentroDe(candidato, raiz) || !EsArchivoRegular(candidato)) continue;
+            if (!EsExtensionAdmitida(ExtensionMinuscula(candidato))) continue;
+
+            bool repetido = false;
+            for (const auto& existente : resultado) {
+                if (_wcsicmp(existente.ruta.c_str(), candidato.c_str()) == 0) {
+                    repetido = true;
+                    break;
+                }
+            }
+            if (repetido) continue;
+
+            const wchar_t* nombre = PathFindFileNameW(candidato.c_str());
+            resultado.push_back({nombre ? nombre : candidato, std::move(candidato)});
+        }
+        return resultado;
     }
 
     bool SeleccionarUbicacion(HWND hwndPadre) {
@@ -60,7 +82,7 @@ public:
         BROWSEINFOW info{};
         info.hwndOwner = hwndPadre;
         info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
-        info.lpszTitle = L"Selecciona la carpeta de scripts de Script Box";
+        info.lpszTitle = L"Selecciona una carpeta de scripts de Script Box";
         PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&info);
         if (!pidl) return false;
 
@@ -69,42 +91,19 @@ public:
         CoTaskMemFree(pidl);
         if (!obtenida || !ruta[0]) return false;
 
-        m_ubicacion = NormalizarRuta(ruta);
-        if (m_persistencia) {
-            m_persistencia->GuardarCadena(Clave(L"ubicacion"), m_ubicacion);
-        }
-        ResolverEntradas();
+        const std::wstring normalizada = NormalizarRuta(ruta);
+        if (normalizada.empty() || !EsDirectorio(normalizada)) return false;
+
+        AgregarUbicacion(normalizada, false);
+        GuardarUbicaciones();
         return true;
     }
 
-    bool Ejecutar(std::size_t indice) const {
-        if (g_descargandoMod.load(std::memory_order_acquire) ||
-            indice >= m_disponibles.size()) {
-            return false;
-        }
-
-        const std::wstring& ruta = m_disponibles[indice].ruta;
-        if (!EsArchivoRegular(ruta)) return false;
-
-        wchar_t directorio[MAX_PATH * 4]{};
-        wcsncpy_s(directorio, ruta.c_str(), _TRUNCATE);
-        PathRemoveFileSpecW(directorio);
-
-        const std::wstring extension = ExtensionMinuscula(ruta);
-        if (extension == L".ps1") {
-            std::wstring parametros = L"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" +
-                                       ruta + L"\"";
-            return EjecutarConInterprete(L"powershell.exe", parametros, directorio);
-        }
-        if (extension == L".py") {
-            const std::wstring parametros = L"-3 \"" + ruta + L"\"";
-            if (EjecutarConInterprete(L"py.exe", parametros, directorio)) return true;
-            return EjecutarConInterprete(L"python.exe", L"\"" + ruta + L"\"", directorio);
-        }
-
-        const HINSTANCE resultado = ShellExecuteW(nullptr, L"open", ruta.c_str(),
-                                                  nullptr, directorio, SW_SHOWNORMAL);
-        return reinterpret_cast<INT_PTR>(resultado) > 32;
+    bool Ejecutar(std::size_t indiceUbicacion, std::size_t indiceScript) const {
+        if (g_descargandoMod.load(std::memory_order_acquire)) return false;
+        const std::vector<EntradaScriptBoxV2> scripts = ScriptsDeUbicacion(indiceUbicacion);
+        if (indiceScript >= scripts.size()) return false;
+        return EjecutarRuta(scripts[indiceScript].ruta);
     }
 
 private:
@@ -135,13 +134,13 @@ private:
         std::size_t inicio = 0;
         while (inicio <= texto.size()) {
             const std::size_t fin = texto.find_first_of(L"\r\n", inicio);
-            std::wstring linea = Recortar(texto.substr(inicio, fin == std::wstring::npos
-                                                                ? std::wstring::npos
-                                                                : fin - inicio));
+            std::wstring linea = Recortar(texto.substr(
+                inicio, fin == std::wstring::npos ? std::wstring::npos : fin - inicio));
             if (!linea.empty()) resultado.push_back(std::move(linea));
             if (fin == std::wstring::npos) break;
             inicio = fin + 1;
-            while (inicio < texto.size() && (texto[inicio] == L'\r' || texto[inicio] == L'\n')) {
+            while (inicio < texto.size() &&
+                   (texto[inicio] == L'\r' || texto[inicio] == L'\n')) {
                 ++inicio;
             }
         }
@@ -151,7 +150,8 @@ private:
     static std::wstring NormalizarRuta(const std::wstring& ruta) {
         if (ruta.empty()) return {};
         wchar_t completa[MAX_PATH * 4]{};
-        const DWORD longitud = GetFullPathNameW(ruta.c_str(), ARRAYSIZE(completa), completa, nullptr);
+        const DWORD longitud = GetFullPathNameW(
+            ruta.c_str(), ARRAYSIZE(completa), completa, nullptr);
         if (longitud == 0 || longitud >= ARRAYSIZE(completa)) return {};
         std::wstring resultado(completa, longitud);
         while (resultado.size() > 3 && !resultado.empty() &&
@@ -161,15 +161,23 @@ private:
         return resultado;
     }
 
+    static bool EsRutaAbsoluta(const std::wstring& ruta) {
+        return (ruta.size() >= 2 && ruta[1] == L':') ||
+               (ruta.size() >= 2 && ruta[0] == L'\\' && ruta[1] == L'\\');
+    }
+
     static std::wstring ExtensionMinuscula(const std::wstring& ruta) {
         const std::size_t punto = ruta.find_last_of(L'.');
         const std::size_t separador = ruta.find_last_of(L"\\/");
-        if (punto == std::wstring::npos || (separador != std::wstring::npos && punto < separador)) {
+        if (punto == std::wstring::npos ||
+            (separador != std::wstring::npos && punto < separador)) {
             return {};
         }
         std::wstring extension = ruta.substr(punto);
         std::transform(extension.begin(), extension.end(), extension.begin(),
-                       [](wchar_t caracter) { return static_cast<wchar_t>(std::towlower(caracter)); });
+                       [](wchar_t caracter) {
+                           return static_cast<wchar_t>(std::towlower(caracter));
+                       });
         return extension;
     }
 
@@ -178,10 +186,24 @@ private:
                extension == L".vbs" || extension == L".js" || extension == L".py";
     }
 
+    static bool EsDirectorio(const std::wstring& ruta) {
+        const DWORD atributos = GetFileAttributesW(ruta.c_str());
+        return atributos != INVALID_FILE_ATTRIBUTES &&
+               (atributos & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+
     static bool EsArchivoRegular(const std::wstring& ruta) {
         const DWORD atributos = GetFileAttributesW(ruta.c_str());
         return atributos != INVALID_FILE_ATTRIBUTES &&
                (atributos & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    static bool RutaDentroDe(const std::wstring& ruta, const std::wstring& raiz) {
+        if (ruta.empty() || raiz.empty()) return false;
+        if (_wcsnicmp(ruta.c_str(), raiz.c_str(), raiz.size()) != 0) return false;
+        return ruta.size() == raiz.size() ||
+               (ruta.size() > raiz.size() &&
+                (ruta[raiz.size()] == L'\\' || ruta[raiz.size()] == L'/'));
     }
 
     static bool EjecutarConInterprete(const wchar_t* interprete,
@@ -199,52 +221,87 @@ private:
         return ShellExecuteExW(&ejecutar) != FALSE;
     }
 
-    static bool RutaDentroDe(const std::wstring& ruta, const std::wstring& raiz) {
-        if (ruta.empty() || raiz.empty()) return false;
-        if (_wcsnicmp(ruta.c_str(), raiz.c_str(), raiz.size()) != 0) return false;
-        return ruta.size() == raiz.size() ||
-               (ruta.size() > raiz.size() &&
-                (ruta[raiz.size()] == L'\\' || ruta[raiz.size()] == L'/'));
+    static bool EjecutarRuta(const std::wstring& ruta) {
+        if (!EsArchivoRegular(ruta)) return false;
+
+        wchar_t directorio[MAX_PATH * 4]{};
+        wcsncpy_s(directorio, ruta.c_str(), _TRUNCATE);
+        PathRemoveFileSpecW(directorio);
+
+        const std::wstring extension = ExtensionMinuscula(ruta);
+        if (extension == L".ps1") {
+            const std::wstring parametros =
+                L"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" + ruta + L"\"";
+            return EjecutarConInterprete(L"powershell.exe", parametros, directorio);
+        }
+        if (extension == L".py") {
+            const std::wstring parametros = L"-3 \"" + ruta + L"\"";
+            if (EjecutarConInterprete(L"py.exe", parametros, directorio)) return true;
+            return EjecutarConInterprete(L"python.exe", L"\"" + ruta + L"\"", directorio);
+        }
+
+        const HINSTANCE resultado = ShellExecuteW(
+            nullptr, L"open", ruta.c_str(), nullptr, directorio, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(resultado) > 32;
     }
 
-    void ResolverEntradas() {
-        if (m_ubicacion.empty() || !EsArchivoRegular(m_ubicacion)) {
-            const DWORD atributos = GetFileAttributesW(m_ubicacion.c_str());
-            if (m_ubicacion.empty() || atributos == INVALID_FILE_ATTRIBUTES ||
-                (atributos & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                m_disponibles.clear();
-                return;
+    void AgregarUbicacion(const std::wstring& ruta, bool alFrente) {
+        const std::wstring normalizada = NormalizarRuta(ruta);
+        if (normalizada.empty()) return;
+        for (const std::wstring& existente : m_ubicaciones) {
+            if (_wcsicmp(existente.c_str(), normalizada.c_str()) == 0) return;
+        }
+        if (alFrente) {
+            m_ubicaciones.insert(m_ubicaciones.begin(), normalizada);
+        } else {
+            m_ubicaciones.push_back(normalizada);
+        }
+    }
+
+    void CargarUbicaciones() {
+        m_ubicaciones.clear();
+
+        if (m_persistencia) {
+            const std::wstring serializadas =
+                m_persistencia->LeerCadena(Clave(L"ubicaciones"));
+            for (const std::wstring& ruta : SepararLineas(serializadas)) {
+                AgregarUbicacion(ruta, false);
+            }
+
+            // Migración transparente de la versión anterior de Script Box.
+            if (serializadas.empty()) {
+                AgregarUbicacion(
+                    m_persistencia->LeerCadena(Clave(L"ubicacion")), false);
             }
         }
 
-        for (const std::wstring& incluido : m_incluidos) {
-            std::wstring candidato = incluido;
-            if (candidato.find(L':') == std::wstring::npos &&
-                !(candidato.size() >= 2 && candidato[0] == L'\\' && candidato[1] == L'\\')) {
-                candidato = m_ubicacion + L"\\" + candidato;
-            }
-            candidato = NormalizarRuta(candidato);
-            if (!RutaDentroDe(candidato, m_ubicacion) || !EsArchivoRegular(candidato)) continue;
-            if (!EsExtensionAdmitida(ExtensionMinuscula(candidato))) continue;
+        // Un ajuste explícito nuevo se incorpora al frente; los demás ajustes
+        // se agregan sin alterar el orden persistido por el usuario.
+        AgregarUbicacion(LeerAjusteCadena(L"scriptBoxUbicacion"), true);
+        for (const std::wstring& ruta : SepararLineas(
+                 LeerAjusteCadena(L"scriptBoxUbicaciones"))) {
+            AgregarUbicacion(ruta, false);
+        }
+    }
 
-            bool repetido = false;
-            for (const auto& existente : m_disponibles) {
-                if (_wcsicmp(existente.ruta.c_str(), candidato.c_str()) == 0) {
-                    repetido = true;
-                    break;
-                }
-            }
-            if (repetido) continue;
-
-            const wchar_t* nombre = PathFindFileNameW(candidato.c_str());
-            m_disponibles.push_back({nombre ? nombre : candidato, std::move(candidato)});
+    void GuardarUbicaciones() const {
+        if (!m_persistencia) return;
+        std::wstring serializadas;
+        for (const std::wstring& ruta : m_ubicaciones) {
+            if (!serializadas.empty()) serializadas.push_back(L'\n');
+            serializadas += ruta;
+        }
+        m_persistencia->GuardarCadena(Clave(L"ubicaciones"), serializadas);
+        if (!m_ubicaciones.empty()) {
+            // Mantiene compatibilidad con builds V2 anteriores que sólo
+            // conocían una ubicación.
+            m_persistencia->GuardarCadena(Clave(L"ubicacion"), m_ubicaciones.front());
         }
     }
 
     std::shared_ptr<ServicioPersistenciaWindhawkV2> m_persistencia;
-    std::wstring m_ubicacion;
+    std::vector<std::wstring> m_ubicaciones;
     std::vector<std::wstring> m_incluidos;
-    std::vector<EntradaScriptBoxV2> m_disponibles;
 };
 
 } // namespace SideViewV2

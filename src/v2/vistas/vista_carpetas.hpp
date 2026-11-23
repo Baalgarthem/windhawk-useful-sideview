@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <utility>
 
 namespace SideViewV2 {
 
@@ -186,9 +187,9 @@ public:
         POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
         if (msg == WM_MOUSEMOVE) {
-            bool hoverScriptBox = m_carpetasSeleccionadas.empty() &&
+            bool hoverScriptBox = EsVistaGeneralCarpetas() &&
                                   PtInRect(&m_rcSelectorScriptBox, pt) &&
-                                  m_scriptBox && !m_scriptBox->Disponibles().empty();
+                                  m_scriptBox;
             if (hoverScriptBox != m_scriptBoxHover) {
                 m_scriptBoxHover = hoverScriptBox;
                 InvalidateRect(hwndPanel, nullptr, FALSE);
@@ -290,7 +291,7 @@ public:
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
             }
-            if (m_carpetasSeleccionadas.empty()) {
+            if (EsVistaGeneralCarpetas()) {
                 if (PtInRect(&m_rcBotonCreadorDirectorios, pt) && m_creadorDirectorios) {
                     m_creadorDirectorios->MostrarDialogo(hwndPanel);
                     InvalidateRect(hwndPanel, nullptr, FALSE);
@@ -623,27 +624,19 @@ public:
 
         yCursor += 38;
 
-        if (m_carpetasSeleccionadas.empty() && m_scriptBox && m_creadorDirectorios) {
+        if (EsVistaGeneralCarpetas() && m_scriptBox && m_creadorDirectorios) {
             const int anchoAccion = ((rect.right - rect.left) - (margen * 2) - 8) / 2;
             m_rcBotonCreadorDirectorios = {rect.left + margen, yCursor,
                                            rect.left + margen + anchoAccion, yCursor + 30};
             m_rcSelectorScriptBox = {m_rcBotonCreadorDirectorios.right + 8, yCursor,
                                      rect.right - margen, yCursor + 30};
             DibujarBoton(hdc, m_rcBotonCreadorDirectorios,
-                         L"📁 Crear estructura", tema, true);
+                         L"Generador carpetas", tema, true);
 
-            std::wstring textoScript = L"Script Box ▾";
-            if (m_scriptBox->Disponibles().empty()) {
-                textoScript = L"Script Box · configura scripts";
-            } else if (!m_scriptBoxSeleccionado.empty()) {
-                textoScript = m_scriptBoxSeleccionado + L"  ▾";
-            } else {
-                textoScript += L" (" + std::to_wstring(m_scriptBox->Disponibles().size()) + L")";
-            }
             // El botón permanece activo aunque todavía no haya scripts: así
             // el usuario puede abrir el menú y elegir la ubicación o revisar
             // cómo configurarlos desde Ajustes.
-            DibujarBoton(hdc, m_rcSelectorScriptBox, textoScript.c_str(), tema, true);
+            DibujarBoton(hdc, m_rcSelectorScriptBox, L"Scripts", tema, true);
             yCursor += 38;
         }
 
@@ -765,6 +758,14 @@ public:
     }
 
 private:
+    // Explorer conserva la carpeta actual como contexto aunque no existan
+    // varias carpetas seleccionadas. Una sola ruta sigue siendo la vista
+    // general; sólo se ocultan estas herramientas durante operaciones sobre
+    // múltiples carpetas.
+    bool EsVistaGeneralCarpetas() const {
+        return m_carpetasSeleccionadas.size() <= 1;
+    }
+
     void DibujarTooltipScriptBox(HDC hdc, const RECT& rect, const TemaVisual& tema,
                                 HFONT fuente) {
         if (m_scriptBoxSeleccionado.empty()) return;
@@ -1022,42 +1023,69 @@ private:
 
     void MostrarMenuScriptBox(HWND hwndPadre) {
         if (!m_scriptBox) return;
-        const auto& scripts = m_scriptBox->Disponibles();
         HMENU menu = CreatePopupMenu();
-        if (scripts.empty()) {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 1,
-                        L"No hay scripts incluidos en Ajustes");
-        } else {
-            constexpr UINT comandoInicial = 3000;
-            for (std::size_t i = 0; i < scripts.size(); ++i) {
-                if (i >= static_cast<std::size_t>(0x0FFF)) break;
-                AppendMenuW(menu, MF_STRING, comandoInicial + static_cast<UINT>(i),
-                            scripts[i].nombre.c_str());
+        constexpr UINT comandoInicial = 3000;
+        constexpr UINT comandoNuevaUbicacion = 0x7000;
+        std::vector<std::pair<std::size_t, std::size_t>> comandos;
+
+        const auto& ubicaciones = m_scriptBox->Ubicaciones();
+        for (std::size_t indiceUbicacion = 0;
+             indiceUbicacion < ubicaciones.size() && comandos.size() < 0x3FFF;
+             ++indiceUbicacion) {
+            HMENU submenu = CreatePopupMenu();
+            const std::vector<EntradaScriptBoxV2> scripts =
+                m_scriptBox->ScriptsDeUbicacion(indiceUbicacion);
+            if (scripts.empty()) {
+                AppendMenuW(submenu, MF_STRING | MF_GRAYED, 1,
+                            L"No hay scripts incluidos en Ajustes");
+            } else {
+                for (std::size_t indiceScript = 0;
+                     indiceScript < scripts.size() && comandos.size() < 0x3FFF;
+                     ++indiceScript) {
+                    const UINT comando = comandoInicial +
+                        static_cast<UINT>(comandos.size());
+                    AppendMenuW(submenu, MF_STRING, comando,
+                                scripts[indiceScript].nombre.c_str());
+                    comandos.push_back({indiceUbicacion, indiceScript});
+                }
             }
+            const wchar_t* nombreUbicacion = PathFindFileNameW(ubicaciones[indiceUbicacion].c_str());
+            const std::wstring etiqueta = nombreUbicacion && *nombreUbicacion
+                ? std::wstring(nombreUbicacion) + L"  (" + ubicaciones[indiceUbicacion] + L")"
+                : ubicaciones[indiceUbicacion];
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), etiqueta.c_str());
+        }
+
+        if (ubicaciones.empty()) {
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 1,
+                        L"No hay ubicaciones guardadas");
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 3000 + 0x1000,
+        AppendMenuW(menu, MF_STRING, comandoNuevaUbicacion,
                     L"Elegir ubicación de scripts...");
 
         POINT punto{m_rcSelectorScriptBox.left, m_rcSelectorScriptBox.bottom};
         ClientToScreen(hwndPadre, &punto);
-        const int comando = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN |
-                                           TPM_RETURNCMD, punto.x, punto.y, 0,
-                                           hwndPadre, nullptr);
+        const UINT comando = static_cast<UINT>(TrackPopupMenu(
+            menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+            punto.x, punto.y, 0, hwndPadre, nullptr));
         DestroyMenu(menu);
 
-        constexpr int comandoInicial = 3000;
-        if (comando == comandoInicial + 0x1000) {
+        if (comando == comandoNuevaUbicacion) {
             m_scriptBox->SeleccionarUbicacion(hwndPadre);
             m_scriptBoxSeleccionado.clear();
             InvalidateRect(hwndPadre, nullptr, FALSE);
             return;
         }
         if (comando >= comandoInicial &&
-            comando < comandoInicial + static_cast<int>(scripts.size())) {
+            comando < comandoInicial + static_cast<UINT>(comandos.size())) {
             const std::size_t indice = static_cast<std::size_t>(comando - comandoInicial);
-            if (m_scriptBox->Ejecutar(indice)) {
-                m_scriptBoxSeleccionado = scripts[indice].nombre;
+            const auto [indiceUbicacion, indiceScript] = comandos[indice];
+            const std::vector<EntradaScriptBoxV2> scripts =
+                m_scriptBox->ScriptsDeUbicacion(indiceUbicacion);
+            if (indiceScript < scripts.size() &&
+                m_scriptBox->Ejecutar(indiceUbicacion, indiceScript)) {
+                m_scriptBoxSeleccionado = scripts[indiceScript].nombre;
             } else {
                 MessageBoxW(hwndPadre, L"No se pudo ejecutar el script seleccionado.",
                             L"Script Box", MB_OK | MB_ICONWARNING);

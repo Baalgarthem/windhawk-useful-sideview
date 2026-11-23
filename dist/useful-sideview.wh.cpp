@@ -3,7 +3,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.10
+// @version         4.1.11
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -72,8 +72,15 @@
 - scriptBoxUbicacion: ""
   $name: Ubicación de Script Box
   $description: >-
-    Carpeta raíz desde la que Script Box resolverá los scripts incluidos. Si se
-    deja vacía, se usa la última ubicación elegida desde la vista general.
+    Carpeta raíz inicial de Script Box. La primera ubicación elegida desde la
+    vista general se guarda persistentemente y se conserva aunque este campo
+    permanezca vacío.
+- scriptBoxUbicaciones: ""
+  $name: Ubicaciones adicionales de Script Box
+  $description: >-
+    Lista opcional de carpetas adicionales, una por línea. Las ubicaciones
+    elegidas desde la interfaz se guardan automáticamente y aparecen primero
+    en el desplegable según su orden de incorporación.
 - scriptBoxScripts: ""
   $name: Scripts incluidos en Script Box
   $description: >-
@@ -85,7 +92,7 @@
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.10)
+# Useful Side View V2 (4.1.11)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
@@ -3063,7 +3070,7 @@ namespace SideViewV2 {
 
 // Fuente de verdad legible por la UI. El compilador comprueba que coincida con
 // el campo @version antes de crear el bundle distribuible.
-inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.10";
+inline constexpr wchar_t VERSION_MOD_V2[] = L"4.1.11";
 
 class ServicioVersionModV2 final {
 public:
@@ -4121,10 +4128,10 @@ struct EntradaScriptBoxV2 {
     std::wstring ruta;
 };
 
-// Servicio atómico del toolbox Script Box. La lista visible no se obtiene
-// enumerando toda una carpeta: sólo se resuelven los archivos expresamente
-// incluidos por el usuario en los ajustes. Esto evita ejecutar o mostrar
-// scripts no autorizados por la configuración del mod.
+// Servicio atómico del Script Box. Las ubicaciones son persistentes y se
+// mantienen en orden de incorporación. Una ubicación elegida no autoriza por
+// sí sola la ejecución: cada script también debe aparecer en la lista blanca
+// de ajustes "scriptBoxScripts".
 class ServicioScriptBoxV2 final {
 public:
     explicit ServicioScriptBoxV2(
@@ -4134,22 +4141,44 @@ public:
     }
 
     void RecargarConfiguracion() {
-        const std::wstring rutaConfigurada = LeerAjusteCadena(L"scriptBoxUbicacion");
-        const std::wstring rutaPersistida = m_persistencia
-            ? m_persistencia->LeerCadena(Clave(L"ubicacion"))
-            : std::wstring{};
-        m_ubicacion = rutaConfigurada.empty() ? rutaPersistida : rutaConfigurada;
-        m_ubicacion = NormalizarRuta(m_ubicacion);
-
         m_incluidos = SepararLineas(LeerAjusteCadena(L"scriptBoxScripts"));
-        m_disponibles.clear();
-        ResolverEntradas();
+        CargarUbicaciones();
     }
 
-    const std::wstring& Ubicacion() const { return m_ubicacion; }
+    const std::vector<std::wstring>& Ubicaciones() const {
+        return m_ubicaciones;
+    }
 
-    const std::vector<EntradaScriptBoxV2>& Disponibles() const {
-        return m_disponibles;
+    std::vector<EntradaScriptBoxV2> ScriptsDeUbicacion(
+        std::size_t indiceUbicacion) const {
+        std::vector<EntradaScriptBoxV2> resultado;
+        if (indiceUbicacion >= m_ubicaciones.size()) return resultado;
+
+        const std::wstring& raiz = m_ubicaciones[indiceUbicacion];
+        if (!EsDirectorio(raiz)) return resultado;
+
+        for (const std::wstring& incluido : m_incluidos) {
+            std::wstring candidato = incluido;
+            if (!EsRutaAbsoluta(candidato)) {
+                candidato = raiz + L"\\" + candidato;
+            }
+            candidato = NormalizarRuta(candidato);
+            if (!RutaDentroDe(candidato, raiz) || !EsArchivoRegular(candidato)) continue;
+            if (!EsExtensionAdmitida(ExtensionMinuscula(candidato))) continue;
+
+            bool repetido = false;
+            for (const auto& existente : resultado) {
+                if (_wcsicmp(existente.ruta.c_str(), candidato.c_str()) == 0) {
+                    repetido = true;
+                    break;
+                }
+            }
+            if (repetido) continue;
+
+            const wchar_t* nombre = PathFindFileNameW(candidato.c_str());
+            resultado.push_back({nombre ? nombre : candidato, std::move(candidato)});
+        }
+        return resultado;
     }
 
     bool SeleccionarUbicacion(HWND hwndPadre) {
@@ -4158,7 +4187,7 @@ public:
         BROWSEINFOW info{};
         info.hwndOwner = hwndPadre;
         info.ulFlags = BIF_RETURNONLYFSDIRS | BIF_USENEWUI;
-        info.lpszTitle = L"Selecciona la carpeta de scripts de Script Box";
+        info.lpszTitle = L"Selecciona una carpeta de scripts de Script Box";
         PIDLIST_ABSOLUTE pidl = SHBrowseForFolderW(&info);
         if (!pidl) return false;
 
@@ -4167,42 +4196,19 @@ public:
         CoTaskMemFree(pidl);
         if (!obtenida || !ruta[0]) return false;
 
-        m_ubicacion = NormalizarRuta(ruta);
-        if (m_persistencia) {
-            m_persistencia->GuardarCadena(Clave(L"ubicacion"), m_ubicacion);
-        }
-        ResolverEntradas();
+        const std::wstring normalizada = NormalizarRuta(ruta);
+        if (normalizada.empty() || !EsDirectorio(normalizada)) return false;
+
+        AgregarUbicacion(normalizada, false);
+        GuardarUbicaciones();
         return true;
     }
 
-    bool Ejecutar(std::size_t indice) const {
-        if (g_descargandoMod.load(std::memory_order_acquire) ||
-            indice >= m_disponibles.size()) {
-            return false;
-        }
-
-        const std::wstring& ruta = m_disponibles[indice].ruta;
-        if (!EsArchivoRegular(ruta)) return false;
-
-        wchar_t directorio[MAX_PATH * 4]{};
-        wcsncpy_s(directorio, ruta.c_str(), _TRUNCATE);
-        PathRemoveFileSpecW(directorio);
-
-        const std::wstring extension = ExtensionMinuscula(ruta);
-        if (extension == L".ps1") {
-            std::wstring parametros = L"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" +
-                                       ruta + L"\"";
-            return EjecutarConInterprete(L"powershell.exe", parametros, directorio);
-        }
-        if (extension == L".py") {
-            const std::wstring parametros = L"-3 \"" + ruta + L"\"";
-            if (EjecutarConInterprete(L"py.exe", parametros, directorio)) return true;
-            return EjecutarConInterprete(L"python.exe", L"\"" + ruta + L"\"", directorio);
-        }
-
-        const HINSTANCE resultado = ShellExecuteW(nullptr, L"open", ruta.c_str(),
-                                                  nullptr, directorio, SW_SHOWNORMAL);
-        return reinterpret_cast<INT_PTR>(resultado) > 32;
+    bool Ejecutar(std::size_t indiceUbicacion, std::size_t indiceScript) const {
+        if (g_descargandoMod.load(std::memory_order_acquire)) return false;
+        const std::vector<EntradaScriptBoxV2> scripts = ScriptsDeUbicacion(indiceUbicacion);
+        if (indiceScript >= scripts.size()) return false;
+        return EjecutarRuta(scripts[indiceScript].ruta);
     }
 
 private:
@@ -4233,13 +4239,13 @@ private:
         std::size_t inicio = 0;
         while (inicio <= texto.size()) {
             const std::size_t fin = texto.find_first_of(L"\r\n", inicio);
-            std::wstring linea = Recortar(texto.substr(inicio, fin == std::wstring::npos
-                                                                ? std::wstring::npos
-                                                                : fin - inicio));
+            std::wstring linea = Recortar(texto.substr(
+                inicio, fin == std::wstring::npos ? std::wstring::npos : fin - inicio));
             if (!linea.empty()) resultado.push_back(std::move(linea));
             if (fin == std::wstring::npos) break;
             inicio = fin + 1;
-            while (inicio < texto.size() && (texto[inicio] == L'\r' || texto[inicio] == L'\n')) {
+            while (inicio < texto.size() &&
+                   (texto[inicio] == L'\r' || texto[inicio] == L'\n')) {
                 ++inicio;
             }
         }
@@ -4249,7 +4255,8 @@ private:
     static std::wstring NormalizarRuta(const std::wstring& ruta) {
         if (ruta.empty()) return {};
         wchar_t completa[MAX_PATH * 4]{};
-        const DWORD longitud = GetFullPathNameW(ruta.c_str(), ARRAYSIZE(completa), completa, nullptr);
+        const DWORD longitud = GetFullPathNameW(
+            ruta.c_str(), ARRAYSIZE(completa), completa, nullptr);
         if (longitud == 0 || longitud >= ARRAYSIZE(completa)) return {};
         std::wstring resultado(completa, longitud);
         while (resultado.size() > 3 && !resultado.empty() &&
@@ -4259,15 +4266,23 @@ private:
         return resultado;
     }
 
+    static bool EsRutaAbsoluta(const std::wstring& ruta) {
+        return (ruta.size() >= 2 && ruta[1] == L':') ||
+               (ruta.size() >= 2 && ruta[0] == L'\\' && ruta[1] == L'\\');
+    }
+
     static std::wstring ExtensionMinuscula(const std::wstring& ruta) {
         const std::size_t punto = ruta.find_last_of(L'.');
         const std::size_t separador = ruta.find_last_of(L"\\/");
-        if (punto == std::wstring::npos || (separador != std::wstring::npos && punto < separador)) {
+        if (punto == std::wstring::npos ||
+            (separador != std::wstring::npos && punto < separador)) {
             return {};
         }
         std::wstring extension = ruta.substr(punto);
         std::transform(extension.begin(), extension.end(), extension.begin(),
-                       [](wchar_t caracter) { return static_cast<wchar_t>(std::towlower(caracter)); });
+                       [](wchar_t caracter) {
+                           return static_cast<wchar_t>(std::towlower(caracter));
+                       });
         return extension;
     }
 
@@ -4276,10 +4291,24 @@ private:
                extension == L".vbs" || extension == L".js" || extension == L".py";
     }
 
+    static bool EsDirectorio(const std::wstring& ruta) {
+        const DWORD atributos = GetFileAttributesW(ruta.c_str());
+        return atributos != INVALID_FILE_ATTRIBUTES &&
+               (atributos & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    }
+
     static bool EsArchivoRegular(const std::wstring& ruta) {
         const DWORD atributos = GetFileAttributesW(ruta.c_str());
         return atributos != INVALID_FILE_ATTRIBUTES &&
                (atributos & FILE_ATTRIBUTE_DIRECTORY) == 0;
+    }
+
+    static bool RutaDentroDe(const std::wstring& ruta, const std::wstring& raiz) {
+        if (ruta.empty() || raiz.empty()) return false;
+        if (_wcsnicmp(ruta.c_str(), raiz.c_str(), raiz.size()) != 0) return false;
+        return ruta.size() == raiz.size() ||
+               (ruta.size() > raiz.size() &&
+                (ruta[raiz.size()] == L'\\' || ruta[raiz.size()] == L'/'));
     }
 
     static bool EjecutarConInterprete(const wchar_t* interprete,
@@ -4297,52 +4326,87 @@ private:
         return ShellExecuteExW(&ejecutar) != FALSE;
     }
 
-    static bool RutaDentroDe(const std::wstring& ruta, const std::wstring& raiz) {
-        if (ruta.empty() || raiz.empty()) return false;
-        if (_wcsnicmp(ruta.c_str(), raiz.c_str(), raiz.size()) != 0) return false;
-        return ruta.size() == raiz.size() ||
-               (ruta.size() > raiz.size() &&
-                (ruta[raiz.size()] == L'\\' || ruta[raiz.size()] == L'/'));
+    static bool EjecutarRuta(const std::wstring& ruta) {
+        if (!EsArchivoRegular(ruta)) return false;
+
+        wchar_t directorio[MAX_PATH * 4]{};
+        wcsncpy_s(directorio, ruta.c_str(), _TRUNCATE);
+        PathRemoveFileSpecW(directorio);
+
+        const std::wstring extension = ExtensionMinuscula(ruta);
+        if (extension == L".ps1") {
+            const std::wstring parametros =
+                L"-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"" + ruta + L"\"";
+            return EjecutarConInterprete(L"powershell.exe", parametros, directorio);
+        }
+        if (extension == L".py") {
+            const std::wstring parametros = L"-3 \"" + ruta + L"\"";
+            if (EjecutarConInterprete(L"py.exe", parametros, directorio)) return true;
+            return EjecutarConInterprete(L"python.exe", L"\"" + ruta + L"\"", directorio);
+        }
+
+        const HINSTANCE resultado = ShellExecuteW(
+            nullptr, L"open", ruta.c_str(), nullptr, directorio, SW_SHOWNORMAL);
+        return reinterpret_cast<INT_PTR>(resultado) > 32;
     }
 
-    void ResolverEntradas() {
-        if (m_ubicacion.empty() || !EsArchivoRegular(m_ubicacion)) {
-            const DWORD atributos = GetFileAttributesW(m_ubicacion.c_str());
-            if (m_ubicacion.empty() || atributos == INVALID_FILE_ATTRIBUTES ||
-                (atributos & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-                m_disponibles.clear();
-                return;
+    void AgregarUbicacion(const std::wstring& ruta, bool alFrente) {
+        const std::wstring normalizada = NormalizarRuta(ruta);
+        if (normalizada.empty()) return;
+        for (const std::wstring& existente : m_ubicaciones) {
+            if (_wcsicmp(existente.c_str(), normalizada.c_str()) == 0) return;
+        }
+        if (alFrente) {
+            m_ubicaciones.insert(m_ubicaciones.begin(), normalizada);
+        } else {
+            m_ubicaciones.push_back(normalizada);
+        }
+    }
+
+    void CargarUbicaciones() {
+        m_ubicaciones.clear();
+
+        if (m_persistencia) {
+            const std::wstring serializadas =
+                m_persistencia->LeerCadena(Clave(L"ubicaciones"));
+            for (const std::wstring& ruta : SepararLineas(serializadas)) {
+                AgregarUbicacion(ruta, false);
+            }
+
+            // Migración transparente de la versión anterior de Script Box.
+            if (serializadas.empty()) {
+                AgregarUbicacion(
+                    m_persistencia->LeerCadena(Clave(L"ubicacion")), false);
             }
         }
 
-        for (const std::wstring& incluido : m_incluidos) {
-            std::wstring candidato = incluido;
-            if (candidato.find(L':') == std::wstring::npos &&
-                !(candidato.size() >= 2 && candidato[0] == L'\\' && candidato[1] == L'\\')) {
-                candidato = m_ubicacion + L"\\" + candidato;
-            }
-            candidato = NormalizarRuta(candidato);
-            if (!RutaDentroDe(candidato, m_ubicacion) || !EsArchivoRegular(candidato)) continue;
-            if (!EsExtensionAdmitida(ExtensionMinuscula(candidato))) continue;
+        // Un ajuste explícito nuevo se incorpora al frente; los demás ajustes
+        // se agregan sin alterar el orden persistido por el usuario.
+        AgregarUbicacion(LeerAjusteCadena(L"scriptBoxUbicacion"), true);
+        for (const std::wstring& ruta : SepararLineas(
+                 LeerAjusteCadena(L"scriptBoxUbicaciones"))) {
+            AgregarUbicacion(ruta, false);
+        }
+    }
 
-            bool repetido = false;
-            for (const auto& existente : m_disponibles) {
-                if (_wcsicmp(existente.ruta.c_str(), candidato.c_str()) == 0) {
-                    repetido = true;
-                    break;
-                }
-            }
-            if (repetido) continue;
-
-            const wchar_t* nombre = PathFindFileNameW(candidato.c_str());
-            m_disponibles.push_back({nombre ? nombre : candidato, std::move(candidato)});
+    void GuardarUbicaciones() const {
+        if (!m_persistencia) return;
+        std::wstring serializadas;
+        for (const std::wstring& ruta : m_ubicaciones) {
+            if (!serializadas.empty()) serializadas.push_back(L'\n');
+            serializadas += ruta;
+        }
+        m_persistencia->GuardarCadena(Clave(L"ubicaciones"), serializadas);
+        if (!m_ubicaciones.empty()) {
+            // Mantiene compatibilidad con builds V2 anteriores que sólo
+            // conocían una ubicación.
+            m_persistencia->GuardarCadena(Clave(L"ubicacion"), m_ubicaciones.front());
         }
     }
 
     std::shared_ptr<ServicioPersistenciaWindhawkV2> m_persistencia;
-    std::wstring m_ubicacion;
+    std::vector<std::wstring> m_ubicaciones;
     std::vector<std::wstring> m_incluidos;
-    std::vector<EntradaScriptBoxV2> m_disponibles;
 };
 
 } // namespace SideViewV2
@@ -5762,6 +5826,7 @@ private:
 #include <algorithm>
 #include <atomic>
 #include <mutex>
+#include <utility>
 
 namespace SideViewV2 {
 
@@ -5932,9 +5997,9 @@ public:
         POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 
         if (msg == WM_MOUSEMOVE) {
-            bool hoverScriptBox = m_carpetasSeleccionadas.empty() &&
+            bool hoverScriptBox = EsVistaGeneralCarpetas() &&
                                   PtInRect(&m_rcSelectorScriptBox, pt) &&
-                                  m_scriptBox && !m_scriptBox->Disponibles().empty();
+                                  m_scriptBox;
             if (hoverScriptBox != m_scriptBoxHover) {
                 m_scriptBoxHover = hoverScriptBox;
                 InvalidateRect(hwndPanel, nullptr, FALSE);
@@ -6036,7 +6101,7 @@ public:
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
             }
-            if (m_carpetasSeleccionadas.empty()) {
+            if (EsVistaGeneralCarpetas()) {
                 if (PtInRect(&m_rcBotonCreadorDirectorios, pt) && m_creadorDirectorios) {
                     m_creadorDirectorios->MostrarDialogo(hwndPanel);
                     InvalidateRect(hwndPanel, nullptr, FALSE);
@@ -6369,27 +6434,19 @@ public:
 
         yCursor += 38;
 
-        if (m_carpetasSeleccionadas.empty() && m_scriptBox && m_creadorDirectorios) {
+        if (EsVistaGeneralCarpetas() && m_scriptBox && m_creadorDirectorios) {
             const int anchoAccion = ((rect.right - rect.left) - (margen * 2) - 8) / 2;
             m_rcBotonCreadorDirectorios = {rect.left + margen, yCursor,
                                            rect.left + margen + anchoAccion, yCursor + 30};
             m_rcSelectorScriptBox = {m_rcBotonCreadorDirectorios.right + 8, yCursor,
                                      rect.right - margen, yCursor + 30};
             DibujarBoton(hdc, m_rcBotonCreadorDirectorios,
-                         L"📁 Crear estructura", tema, true);
+                         L"Generador carpetas", tema, true);
 
-            std::wstring textoScript = L"Script Box ▾";
-            if (m_scriptBox->Disponibles().empty()) {
-                textoScript = L"Script Box · configura scripts";
-            } else if (!m_scriptBoxSeleccionado.empty()) {
-                textoScript = m_scriptBoxSeleccionado + L"  ▾";
-            } else {
-                textoScript += L" (" + std::to_wstring(m_scriptBox->Disponibles().size()) + L")";
-            }
             // El botón permanece activo aunque todavía no haya scripts: así
             // el usuario puede abrir el menú y elegir la ubicación o revisar
             // cómo configurarlos desde Ajustes.
-            DibujarBoton(hdc, m_rcSelectorScriptBox, textoScript.c_str(), tema, true);
+            DibujarBoton(hdc, m_rcSelectorScriptBox, L"Scripts", tema, true);
             yCursor += 38;
         }
 
@@ -6511,6 +6568,14 @@ public:
     }
 
 private:
+    // Explorer conserva la carpeta actual como contexto aunque no existan
+    // varias carpetas seleccionadas. Una sola ruta sigue siendo la vista
+    // general; sólo se ocultan estas herramientas durante operaciones sobre
+    // múltiples carpetas.
+    bool EsVistaGeneralCarpetas() const {
+        return m_carpetasSeleccionadas.size() <= 1;
+    }
+
     void DibujarTooltipScriptBox(HDC hdc, const RECT& rect, const TemaVisual& tema,
                                 HFONT fuente) {
         if (m_scriptBoxSeleccionado.empty()) return;
@@ -6768,42 +6833,69 @@ private:
 
     void MostrarMenuScriptBox(HWND hwndPadre) {
         if (!m_scriptBox) return;
-        const auto& scripts = m_scriptBox->Disponibles();
         HMENU menu = CreatePopupMenu();
-        if (scripts.empty()) {
-            AppendMenuW(menu, MF_STRING | MF_GRAYED, 1,
-                        L"No hay scripts incluidos en Ajustes");
-        } else {
-            constexpr UINT comandoInicial = 3000;
-            for (std::size_t i = 0; i < scripts.size(); ++i) {
-                if (i >= static_cast<std::size_t>(0x0FFF)) break;
-                AppendMenuW(menu, MF_STRING, comandoInicial + static_cast<UINT>(i),
-                            scripts[i].nombre.c_str());
+        constexpr UINT comandoInicial = 3000;
+        constexpr UINT comandoNuevaUbicacion = 0x7000;
+        std::vector<std::pair<std::size_t, std::size_t>> comandos;
+
+        const auto& ubicaciones = m_scriptBox->Ubicaciones();
+        for (std::size_t indiceUbicacion = 0;
+             indiceUbicacion < ubicaciones.size() && comandos.size() < 0x3FFF;
+             ++indiceUbicacion) {
+            HMENU submenu = CreatePopupMenu();
+            const std::vector<EntradaScriptBoxV2> scripts =
+                m_scriptBox->ScriptsDeUbicacion(indiceUbicacion);
+            if (scripts.empty()) {
+                AppendMenuW(submenu, MF_STRING | MF_GRAYED, 1,
+                            L"No hay scripts incluidos en Ajustes");
+            } else {
+                for (std::size_t indiceScript = 0;
+                     indiceScript < scripts.size() && comandos.size() < 0x3FFF;
+                     ++indiceScript) {
+                    const UINT comando = comandoInicial +
+                        static_cast<UINT>(comandos.size());
+                    AppendMenuW(submenu, MF_STRING, comando,
+                                scripts[indiceScript].nombre.c_str());
+                    comandos.push_back({indiceUbicacion, indiceScript});
+                }
             }
+            const wchar_t* nombreUbicacion = PathFindFileNameW(ubicaciones[indiceUbicacion].c_str());
+            const std::wstring etiqueta = nombreUbicacion && *nombreUbicacion
+                ? std::wstring(nombreUbicacion) + L"  (" + ubicaciones[indiceUbicacion] + L")"
+                : ubicaciones[indiceUbicacion];
+            AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(submenu), etiqueta.c_str());
+        }
+
+        if (ubicaciones.empty()) {
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 1,
+                        L"No hay ubicaciones guardadas");
         }
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(menu, MF_STRING, 3000 + 0x1000,
+        AppendMenuW(menu, MF_STRING, comandoNuevaUbicacion,
                     L"Elegir ubicación de scripts...");
 
         POINT punto{m_rcSelectorScriptBox.left, m_rcSelectorScriptBox.bottom};
         ClientToScreen(hwndPadre, &punto);
-        const int comando = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN |
-                                           TPM_RETURNCMD, punto.x, punto.y, 0,
-                                           hwndPadre, nullptr);
+        const UINT comando = static_cast<UINT>(TrackPopupMenu(
+            menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+            punto.x, punto.y, 0, hwndPadre, nullptr));
         DestroyMenu(menu);
 
-        constexpr int comandoInicial = 3000;
-        if (comando == comandoInicial + 0x1000) {
+        if (comando == comandoNuevaUbicacion) {
             m_scriptBox->SeleccionarUbicacion(hwndPadre);
             m_scriptBoxSeleccionado.clear();
             InvalidateRect(hwndPadre, nullptr, FALSE);
             return;
         }
         if (comando >= comandoInicial &&
-            comando < comandoInicial + static_cast<int>(scripts.size())) {
+            comando < comandoInicial + static_cast<UINT>(comandos.size())) {
             const std::size_t indice = static_cast<std::size_t>(comando - comandoInicial);
-            if (m_scriptBox->Ejecutar(indice)) {
-                m_scriptBoxSeleccionado = scripts[indice].nombre;
+            const auto [indiceUbicacion, indiceScript] = comandos[indice];
+            const std::vector<EntradaScriptBoxV2> scripts =
+                m_scriptBox->ScriptsDeUbicacion(indiceUbicacion);
+            if (indiceScript < scripts.size() &&
+                m_scriptBox->Ejecutar(indiceUbicacion, indiceScript)) {
+                m_scriptBoxSeleccionado = scripts[indiceScript].nombre;
             } else {
                 MessageBoxW(hwndPadre, L"No se pudo ejecutar el script seleccionado.",
                             L"Script Box", MB_OK | MB_ICONWARNING);
