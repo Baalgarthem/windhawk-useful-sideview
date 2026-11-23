@@ -16,6 +16,8 @@
 #include "v2/nucleo/servicio_version_mod.hpp"
 #include "v2/nucleo/servicio_compatibilidad_gpu.hpp"
 #include "v2/nucleo/servicio_notas.hpp"
+#include "v2/nucleo/servicio_script_box.hpp"
+#include "v2/nucleo/servicio_creador_directorios.hpp"
 #include "v2/nucleo/configuracion_v2.hpp"
 #include <memory>
 namespace SideViewV2 {
@@ -27,6 +29,8 @@ struct DependenciasVistaV2 {
     std::shared_ptr<ServicioCompatibilidadGpuV2> compatibilidadGpu{std::make_shared<ServicioCompatibilidadGpuV2>()};
     std::shared_ptr<ServicioNotasV2> notas{std::make_shared<ServicioNotasV2>(
         persistencia, [] { return SincronizacionNotasWinKlokDisponibleV2(); })};
+    std::shared_ptr<ServicioScriptBoxV2> scriptBox{std::make_shared<ServicioScriptBoxV2>(persistencia)};
+    std::shared_ptr<ServicioCreadorDirectoriosV2> creadorDirectorios{std::make_shared<ServicioCreadorDirectoriosV2>(persistencia)};
     std::shared_ptr<ServicioAbrirConV2> abrirConCarpetas{std::make_shared<ServicioAbrirConV2>(persistencia, L"carpetas", std::vector<std::wstring>{L"code.exe",L"explorer.exe",L"cmd.exe",L"powershell.exe"})};
     std::shared_ptr<ServicioAbrirConV2> abrirConComprimidos{std::make_shared<ServicioAbrirConV2>(persistencia, L"comprimidos")};
     std::shared_ptr<ServicioAbrirConV2> abrirConImagenes{std::make_shared<ServicioAbrirConV2>(persistencia, L"imagenes")};

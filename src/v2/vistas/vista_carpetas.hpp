@@ -137,14 +137,19 @@ public:
                            std::shared_ptr<ServicioFusionCarpetasV2> fusion,
                            std::shared_ptr<ServicioInspeccionCarpetasV2> inspeccion,
                            std::shared_ptr<ServicioVersionModV2> versionMod,
-                           std::shared_ptr<ServicioNotasV2> notas)
+                           std::shared_ptr<ServicioNotasV2> notas,
+                           std::shared_ptr<ServicioScriptBoxV2> scriptBox,
+                           std::shared_ptr<ServicioCreadorDirectoriosV2> creadorDirectorios)
         : m_servicio(std::move(servicio)), m_navegacion(std::move(navegacion)),
           m_fusion(std::move(fusion)), m_inspeccion(std::move(inspeccion)),
-          m_versionMod(std::move(versionMod)), m_notas(std::move(notas)) {
+          m_versionMod(std::move(versionMod)), m_notas(std::move(notas)),
+          m_scriptBox(std::move(scriptBox)), m_creadorDirectorios(std::move(creadorDirectorios)) {
         m_programasRecordados = m_servicio ? m_servicio->Programas()
                                            : std::vector<std::wstring>{};
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
         if (m_notas) m_notas->Cargar();
+        if (m_scriptBox) m_scriptBox->RecargarConfiguracion();
+        if (m_creadorDirectorios) m_creadorDirectorios->RecargarConfiguracion();
     }
 
     void AlCambiarSeleccion(const std::vector<std::wstring>& archivos, const std::wstring&) override {
@@ -160,6 +165,10 @@ public:
             m_notaSeleccionada = 0;
             m_mostrarDetalleNota = false;
         }
+        if (m_carpetasSeleccionadas.empty() && m_scriptBox) {
+            m_scriptBox->RecargarConfiguracion();
+            m_scriptBoxSeleccionado.clear();
+        }
         CargarCarpetaActual();
     }
 
@@ -168,10 +177,24 @@ public:
         m_limiteCarpetasPesadas = std::max(1, std::min(g_limiteCarpetasPesadasConfig.load(), 100));
         if (limiteAnterior != m_limiteCarpetasPesadas) CargarCarpetaActual();
         if (m_carpetasSeleccionadas.empty() && m_notas) m_notas->Recargar();
+        if (m_scriptBox) m_scriptBox->RecargarConfiguracion();
+        if (m_creadorDirectorios) m_creadorDirectorios->RecargarConfiguracion();
+        m_scriptBoxSeleccionado.clear();
     }
 
     bool ProcesarMensajeRaton(UINT msg, WPARAM wParam, LPARAM lParam, HWND hwndPanel) override {
         POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+
+        if (msg == WM_MOUSEMOVE) {
+            bool hoverScriptBox = m_carpetasSeleccionadas.empty() &&
+                                  PtInRect(&m_rcSelectorScriptBox, pt) &&
+                                  m_scriptBox && !m_scriptBox->Disponibles().empty();
+            if (hoverScriptBox != m_scriptBoxHover) {
+                m_scriptBoxHover = hoverScriptBox;
+                InvalidateRect(hwndPanel, nullptr, FALSE);
+            }
+            return false;
+        }
 
         if (msg == WM_MOUSEWHEEL) {
             short delta = GET_WHEEL_DELTA_WPARAM(wParam);
@@ -266,6 +289,17 @@ public:
             if (PtInRect(&m_rcBotonCopiarContenido, pt)) {
                 CopiarListaAlPortapapeles(hwndPanel);
                 return true;
+            }
+            if (m_carpetasSeleccionadas.empty()) {
+                if (PtInRect(&m_rcBotonCreadorDirectorios, pt) && m_creadorDirectorios) {
+                    m_creadorDirectorios->MostrarDialogo(hwndPanel);
+                    InvalidateRect(hwndPanel, nullptr, FALSE);
+                    return true;
+                }
+                if (PtInRect(&m_rcSelectorScriptBox, pt) && m_scriptBox) {
+                    MostrarMenuScriptBox(hwndPanel);
+                    return true;
+                }
             }
             if (m_carpetasSeleccionadas.empty() && m_notas) {
                 if (PtInRect(&m_rcBotonNuevaNota, pt)) {
@@ -453,6 +487,8 @@ public:
         int margen = 16;
         int yCursor = rect.top + altoCabecera + 14;
         m_rcBotonCompararVideos = {};
+        m_rcBotonCreadorDirectorios = {};
+        m_rcSelectorScriptBox = {};
         m_rcBotonFusionCarpetas = {};
         m_rcBotonEliminarVacias = {};
         m_rcBotonNuevaNota = {};
@@ -587,6 +623,30 @@ public:
 
         yCursor += 38;
 
+        if (m_carpetasSeleccionadas.empty() && m_scriptBox && m_creadorDirectorios) {
+            const int anchoAccion = ((rect.right - rect.left) - (margen * 2) - 8) / 2;
+            m_rcBotonCreadorDirectorios = {rect.left + margen, yCursor,
+                                           rect.left + margen + anchoAccion, yCursor + 30};
+            m_rcSelectorScriptBox = {m_rcBotonCreadorDirectorios.right + 8, yCursor,
+                                     rect.right - margen, yCursor + 30};
+            DibujarBoton(hdc, m_rcBotonCreadorDirectorios,
+                         L"📁 Crear estructura", tema, true);
+
+            std::wstring textoScript = L"Script Box ▾";
+            if (m_scriptBox->Disponibles().empty()) {
+                textoScript = L"Script Box · configura scripts";
+            } else if (!m_scriptBoxSeleccionado.empty()) {
+                textoScript = m_scriptBoxSeleccionado + L"  ▾";
+            } else {
+                textoScript += L" (" + std::to_wstring(m_scriptBox->Disponibles().size()) + L")";
+            }
+            // El botón permanece activo aunque todavía no haya scripts: así
+            // el usuario puede abrir el menú y elegir la ubicación o revisar
+            // cómo configurarlos desde Ajustes.
+            DibujarBoton(hdc, m_rcSelectorScriptBox, textoScript.c_str(), tema, true);
+            yCursor += 38;
+        }
+
         if (m_carpetasSeleccionadas.empty() && m_notas) {
             DibujarNotas(hdc, rect, tema, fuentePequena, fuenteSubtitulo, fuenteBold, yCursor);
         }
@@ -599,6 +659,10 @@ public:
             DibujarBoton(hdc, m_rcBotonCompararVideos,
                          L"Comparador de videos · selecciona 2 videos", tema, false);
             yCursor += 40;
+        }
+
+        if (m_scriptBoxHover && !m_scriptBoxSeleccionado.empty()) {
+            DibujarTooltipScriptBox(hdc, rect, tema, fuenteSubtitulo);
         }
 
         // 6. OPERACIONES CON CARPETA (Fusión o Eliminación de vacías)
@@ -701,6 +765,30 @@ public:
     }
 
 private:
+    void DibujarTooltipScriptBox(HDC hdc, const RECT& rect, const TemaVisual& tema,
+                                HFONT fuente) {
+        if (m_scriptBoxSeleccionado.empty()) return;
+        const int margen = 16;
+        RECT tooltip{rect.left + margen, m_rcSelectorScriptBox.bottom + 4,
+                     rect.right - margen, m_rcSelectorScriptBox.bottom + 52};
+        HBRUSH fondo = CreateSolidBrush(tema.fondoCabecera);
+        FillRect(hdc, &tooltip, fondo);
+        DeleteObject(fondo);
+        HPEN borde = CreatePen(PS_SOLID, 1, tema.acento);
+        HPEN viejo = static_cast<HPEN>(SelectObject(hdc, borde));
+        HBRUSH sinRelleno = static_cast<HBRUSH>(GetStockObject(NULL_BRUSH));
+        HBRUSH viejoRelleno = static_cast<HBRUSH>(SelectObject(hdc, sinRelleno));
+        RoundRect(hdc, tooltip.left, tooltip.top, tooltip.right, tooltip.bottom, 6, 6);
+        SelectObject(hdc, viejoRelleno);
+        SelectObject(hdc, viejo);
+        DeleteObject(borde);
+        SelectObject(hdc, fuente);
+        SetTextColor(hdc, tema.textoPrincipal);
+        RECT texto{tooltip.left + 8, tooltip.top + 5, tooltip.right - 8, tooltip.bottom - 5};
+        DrawTextW(hdc, m_scriptBoxSeleccionado.c_str(), -1, &texto,
+                  DT_LEFT | DT_VCENTER | DT_WORDBREAK | DT_NOPREFIX);
+    }
+
     void DibujarNotas(HDC hdc, const RECT& rect, const TemaVisual& tema,
                       HFONT fuentePequena, HFONT fuenteSubtitulo, HFONT fuenteBold,
                       int& yCursor) {
@@ -845,7 +933,8 @@ private:
 
         SetTextColor(hdc, habilitado ? tema.textoPrincipal : tema.textoSecundario);
         RECT rcTexto = rc;
-        DrawTextW(hdc, texto, -1, &rcTexto, DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_NOPREFIX);
+        DrawTextW(hdc, texto, -1, &rcTexto,
+                  DT_SINGLELINE | DT_CENTER | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX);
     }
 
     void DibujarContenedor(HDC hdc, const RECT& rc, const TemaVisual& tema) {
@@ -927,6 +1016,52 @@ private:
             }
         } else if (cmd > 0 && cmd <= static_cast<int>(m_programasRecordados.size())) {
             m_servicio->Seleccionar(m_programasRecordados[static_cast<std::size_t>(cmd - 1)]);
+            InvalidateRect(hwndPadre, nullptr, FALSE);
+        }
+    }
+
+    void MostrarMenuScriptBox(HWND hwndPadre) {
+        if (!m_scriptBox) return;
+        const auto& scripts = m_scriptBox->Disponibles();
+        HMENU menu = CreatePopupMenu();
+        if (scripts.empty()) {
+            AppendMenuW(menu, MF_STRING | MF_GRAYED, 1,
+                        L"No hay scripts incluidos en Ajustes");
+        } else {
+            constexpr UINT comandoInicial = 3000;
+            for (std::size_t i = 0; i < scripts.size(); ++i) {
+                if (i >= static_cast<std::size_t>(0x0FFF)) break;
+                AppendMenuW(menu, MF_STRING, comandoInicial + static_cast<UINT>(i),
+                            scripts[i].nombre.c_str());
+            }
+        }
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, 3000 + 0x1000,
+                    L"Elegir ubicación de scripts...");
+
+        POINT punto{m_rcSelectorScriptBox.left, m_rcSelectorScriptBox.bottom};
+        ClientToScreen(hwndPadre, &punto);
+        const int comando = TrackPopupMenu(menu, TPM_LEFTALIGN | TPM_TOPALIGN |
+                                           TPM_RETURNCMD, punto.x, punto.y, 0,
+                                           hwndPadre, nullptr);
+        DestroyMenu(menu);
+
+        constexpr int comandoInicial = 3000;
+        if (comando == comandoInicial + 0x1000) {
+            m_scriptBox->SeleccionarUbicacion(hwndPadre);
+            m_scriptBoxSeleccionado.clear();
+            InvalidateRect(hwndPadre, nullptr, FALSE);
+            return;
+        }
+        if (comando >= comandoInicial &&
+            comando < comandoInicial + static_cast<int>(scripts.size())) {
+            const std::size_t indice = static_cast<std::size_t>(comando - comandoInicial);
+            if (m_scriptBox->Ejecutar(indice)) {
+                m_scriptBoxSeleccionado = scripts[indice].nombre;
+            } else {
+                MessageBoxW(hwndPadre, L"No se pudo ejecutar el script seleccionado.",
+                            L"Script Box", MB_OK | MB_ICONWARNING);
+            }
             InvalidateRect(hwndPadre, nullptr, FALSE);
         }
     }
@@ -1101,6 +1236,10 @@ private:
     std::shared_ptr<ServicioInspeccionCarpetasV2> m_inspeccion;
     std::shared_ptr<ServicioVersionModV2> m_versionMod;
     std::shared_ptr<ServicioNotasV2> m_notas;
+    std::shared_ptr<ServicioScriptBoxV2> m_scriptBox;
+    std::shared_ptr<ServicioCreadorDirectoriosV2> m_creadorDirectorios;
+    std::wstring m_scriptBoxSeleccionado;
+    bool m_scriptBoxHover{false};
     int m_notaSeleccionada{0};
     bool m_mostrarDetalleNota{false};
     bool m_fusionEnCurso{false};
@@ -1115,6 +1254,8 @@ private:
     RECT m_rcBotonCrearEnlace{};
     RECT m_rcBotonCopiarContenido{};
     RECT m_rcBotonCompararVideos{};
+    RECT m_rcBotonCreadorDirectorios{};
+    RECT m_rcSelectorScriptBox{};
     RECT m_rcBotonFusionCarpetas{};
     RECT m_rcBotonEliminarVacias{};
     RECT m_rcBotonLimitePesadas{};

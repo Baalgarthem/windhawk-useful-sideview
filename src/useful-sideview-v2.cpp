@@ -2,7 +2,7 @@
 // @id              useful-sideview
 // @name            Useful Side View
 // @description     Transforma el explorador de Windows 11 con un panel lateral inyectado de alta fidelidad, fluido y cooperativo. Alterna con el atajo configurable (por defecto Ctrl + K).
-// @version         4.1.9
+// @version         4.1.10
 // @author          Baalgarthem
 // @include         explorer.exe
 // @architecture    x86-64
@@ -63,12 +63,28 @@
   $description: >-
     Permite importar y exportar notas con WinKlok. Está desactivado por defecto;
     mientras permanezca desactivado, las notas de Useful Side View son atómicas.
+- creadorDirectoriosIdioma: "es"
+  $name: Idioma del creador de directorios
+  $description: >-
+    Idioma inicial para fechas semánticas y contadores escritos del Creador de
+    directorios. Usa "es" para español o "en" para inglés.
+- scriptBoxUbicacion: ""
+  $name: Ubicación de Script Box
+  $description: >-
+    Carpeta raíz desde la que Script Box resolverá los scripts incluidos. Si se
+    deja vacía, se usa la última ubicación elegida desde la vista general.
+- scriptBoxScripts: ""
+  $name: Scripts incluidos en Script Box
+  $description: >-
+    Lista blanca de nombres o rutas relativas, uno por línea. Sólo se muestran
+    y ejecutan los archivos incluidos explícitamente; admite .ps1, .bat y .py
+    (además de .cmd, .vbs y .js).
 */
 // ==/WindhawkModSettings==
 
 // ==WindhawkModReadme==
 /*
-# Useful Side View V2 (4.1.9)
+# Useful Side View V2 (4.1.10)
 
 Prototipo modular de nueva generación con arquitectura canónica de Windows 11:
 - Inyección cooperativa con `CreateWindowExW` y subclaseo de `CabinetWClass` / `ShellTabWindowClass`.
